@@ -1,0 +1,164 @@
+# TexLocal
+
+A lightweight, self-hosted LaTeX editor that runs entirely on your own machine — no internet dependency, no compile timeout, full multi-file project support. Use it as a browser app or install the standalone Windows desktop build with bundled MiKTeX.
+
+![Version](https://img.shields.io/badge/version-4.3.0-informational)
+![Python](https://img.shields.io/badge/Python-3.8%2B-blue)
+![Flask](https://img.shields.io/badge/Flask-2.x-lightgrey)
+![Platform](https://img.shields.io/badge/Desktop-Windows-0078d6)
+![License](https://img.shields.io/badge/License-MIT-green)
+
+---
+
+## Features
+
+### Editing
+- **Multi-project management** — create, switch, and delete projects from the UI
+- **Template chooser** — start new projects from visual card-style templates (Article, Beamer, Thesis, Blank)
+- **CodeMirror 5 editor** — LaTeX syntax highlighting, section folding (`Ctrl+Shift+[ / ]`), auto-close brackets, multi-tab editing
+- **Autocomplete** — `\cite{}` (reads your `.bib` keys), `\ref{}` (reads your labels), `\begin{}` environments, and LaTeX commands
+- **Snippet library** — tab-expandable snippets with placeholder navigation; per-project custom snippets
+- **Spell check** — English (Typo.js/Hunspell) with red wavy underlines, right-click suggestions, and per-project custom dictionary
+- **Find & Replace** — in-file, plus project-wide replace-all
+- **Quick Open** — fuzzy file switcher (`Ctrl+P`)
+- **Symbol & environment palettes** — insert math symbols and LaTeX environments from a panel
+- **Auto-save** — every 800 ms; manual save with `Ctrl+S`
+
+### Compiling
+- **pdflatex / xelatex / lualatex** — no timeout; per-project compiler preference is remembered
+- **Draft mode** — skip figures for fast recompiles on figure-heavy documents
+- **`\includeonly` support** — compile a subset of chapters without editing the source
+- **Auto-compile toggle** — recompile on every save; `Ctrl+Enter` to compile manually
+- **BibTeX / Biber** — auto-detected and run as needed
+- **Parsed log panel** — Errors / Warnings / Info with jump-to-line, error grouping, and missing-package detection; raw log viewer for debugging
+- **Compile history** — recent compiles with their logs
+
+### PDF & Navigation
+- **In-browser PDF preview** (pdf.js) — zoom, page jump, outline panel, dark-mode tint; one-click download
+- **SyncTeX** — forward search (`Ctrl+Alt+→`) and backward search (Ctrl-click in the PDF jumps to the source line)
+
+### Project Tools
+- **File manager** — create, rename, delete files/folders; drag-and-drop upload
+- **Image viewer** — preview image files inline
+- **Import / Export ZIP** — import an Overleaf-exported ZIP; export a clean project ZIP
+- **Writing goals & word count** — per-project goals tracking with live word count
+- **TODO scanner** — collects `\todo{}` and `% TODO / FIXME / XXX` markers
+- **Light / dark themes** — independent UI theme and editor theme
+
+---
+
+## Two Ways to Run
+
+### A) Windows Desktop App (recommended)
+
+Download **`TexLocal-Setup-4.2.0.exe`** from the [Releases page](https://github.com/FourthPs/Tex-Local/releases) and run it. Per-user install (no admin required), bundles a portable MiKTeX — nothing else to set up. The app opens in a native window and checks for updates automatically on launch.
+
+### B) From Source
+
+**1. Clone**
+```bash
+git clone https://github.com/FourthPs/Tex-Local.git
+cd Tex-Local
+```
+
+**2. Install Python dependencies**
+```bash
+pip install -r requirements.txt
+```
+
+**3. Run**
+```bash
+python texlocal.py
+```
+
+**4. Open** `http://localhost:5000`
+
+Source mode uses whatever LaTeX distribution is on your system PATH.
+
+---
+
+## Requirements (source mode only)
+
+- Python 3.8+
+- A LaTeX distribution:
+  - **Windows** — [MiKTeX](https://miktex.org/download)
+  - **macOS** — [MacTeX](https://www.tug.org/mactex/) or `brew install --cask mactex`
+  - **Linux** — `sudo apt install texlive-full`
+
+The desktop installer (option A) bundles MiKTeX — no separate install needed.
+
+---
+
+## Project Structure
+
+```
+texlocal/
+├── texlocal.py             ← Flask backend (routes, compile, SyncTeX, APIs)
+├── texlocal_app.py         ← Desktop bootstrap (PyWebView window)
+├── templates/
+│   ├── index.html          ← Editor UI shell (HTML structure + CDN libs)
+│   └── dashboard.html      ← Project list + auto-update banner
+├── static/
+│   ├── editor.css          ← All editor styling
+│   └── editor.js           ← All editor logic
+├── projects/               ← Your LaTeX projects (git-ignored)
+├── texlocal.spec           ← PyInstaller build spec
+├── texlocal.iss            ← Inno Setup installer script
+└── requirements.txt
+```
+
+---
+
+## Building the Desktop Installer (Windows)
+
+From an Anaconda Prompt:
+```cmd
+python make_icon.py
+rmdir /s /q build
+pyinstaller texlocal.spec --noconfirm
+"C:\Program Files (x86)\Inno Setup 6\iscc.exe" texlocal.iss
+```
+
+Output: `dist\TexLocal-Setup-X.Y.Z.exe`. MiKTeX-portable must be extracted to `miktex\` before running `iscc`.
+
+---
+
+## Thai Language Support
+
+To compile documents with Thai text, use **XeLaTeX** and install Thai fonts such as TH Sarabun New or [Kinnari](https://linux.thai.net/projects/thaifonts-scalable). TexLocal is used in production for a Thai+English physics thesis compiled with `polyglossia`.
+
+---
+
+## Tech Stack
+
+| Layer     | Technology                           |
+|-----------|--------------------------------------|
+| Backend   | Python + Flask                       |
+| Desktop   | PyWebView + PyInstaller + Inno Setup |
+| Frontend  | Vanilla HTML / CSS / JavaScript      |
+| Editor    | CodeMirror 5 (stex mode)             |
+| PDF       | pdf.js                               |
+| Spell     | Typo.js (Hunspell)                   |
+| LaTeX     | pdflatex / xelatex / lualatex (MiKTeX) |
+| Fonts     | JetBrains Mono + Sora                |
+
+---
+
+## Third-Party Licenses
+
+TexLocal bundles or links the following open-source libraries:
+
+| Library | License |
+|---------|---------|
+| Flask | BSD-3-Clause |
+| CodeMirror 5 | MIT |
+| pdf.js | Apache-2.0 |
+| Typo.js | BSD / LGPL |
+| PyWebView | BSD-3-Clause |
+| MiKTeX (desktop installer) | Mixed (LPPL, MIT, GPL per package) |
+
+---
+
+## License
+
+MIT
