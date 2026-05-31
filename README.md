@@ -2,7 +2,7 @@
 
 A lightweight, self-hosted LaTeX editor that runs entirely on your own machine — no internet dependency, no compile timeout, full multi-file project support. Use it as a browser app or install the standalone Windows desktop build with bundled MiKTeX.
 
-![Version](https://img.shields.io/badge/version-4.3.0-informational)
+![Version](https://img.shields.io/badge/version-4.3.1-informational)
 ![Python](https://img.shields.io/badge/Python-3.8%2B-blue)
 ![Flask](https://img.shields.io/badge/Flask-2.x-lightgrey)
 ![Platform](https://img.shields.io/badge/Desktop-Windows-0078d6)
@@ -51,14 +51,14 @@ A lightweight, self-hosted LaTeX editor that runs entirely on your own machine �
 
 ### A) Windows Desktop App (recommended)
 
-Download **`TexLocal-Setup-4.2.0.exe`** from the [Releases page](https://github.com/FourthPs/Tex-Local/releases) and run it. Per-user install (no admin required), bundles a portable MiKTeX — nothing else to set up. The app opens in a native window and checks for updates automatically on launch.
+Download **`TexLocal-Setup-4.3.1.exe`** from the [Releases page](https://github.com/FourthPs/Tex-Local-Public/releases) and run it. Per-user install (no admin required), bundles a portable MiKTeX — nothing else to set up. The app opens in a native window and checks for updates automatically on launch.
 
 ### B) From Source
 
 **1. Clone**
 ```bash
-git clone https://github.com/FourthPs/Tex-Local.git
-cd Tex-Local
+git clone https://github.com/FourthPs/Tex-Local-Public.git
+cd Tex-Local-Public
 ```
 
 **2. Install Python dependencies**
@@ -102,24 +102,8 @@ texlocal/
 │   ├── editor.css          ← All editor styling
 │   └── editor.js           ← All editor logic
 ├── projects/               ← Your LaTeX projects (git-ignored)
-├── texlocal.spec           ← PyInstaller build spec
-├── texlocal.iss            ← Inno Setup installer script
 └── requirements.txt
 ```
-
----
-
-## Building the Desktop Installer (Windows)
-
-From an Anaconda Prompt:
-```cmd
-python make_icon.py
-rmdir /s /q build
-pyinstaller texlocal.spec --noconfirm
-"C:\Program Files (x86)\Inno Setup 6\iscc.exe" texlocal.iss
-```
-
-Output: `dist\TexLocal-Setup-X.Y.Z.exe`. MiKTeX-portable must be extracted to `miktex\` before running `iscc`.
 
 ---
 

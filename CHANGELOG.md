@@ -4,6 +4,16 @@ All notable changes to TexLocal are documented here.
 
 ---
 
+## v4.3.1 — 2026-06-01
+
+### Desktop app
+- Auto-update check and About modal link now point to the correct public repository
+- Fixed: saving a file could silently corrupt it if the process was interrupted mid-write — all file writes are now atomic (write to temp → rename)
+- Fixed: moving a file to a name that already exists now returns an error instead of silently overwriting the destination
+- Fixed: uploading a file that already exists no longer overwrites it silently; the existing file is preserved and the duplicate is reported
+
+---
+
 ## v4.3.0 — 2026-05-31
 
 ### Editor & UI
