@@ -1,0 +1,548 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TeX Local</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Sora:wght@300;400;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/hint/show-hint.min.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/dialog/dialog.min.css">
+<!-- v3.2.3 — section folding addon. Custom rangeFinder for \chapter / \section
+     / \subsection / \subsubsection / \paragraph is registered in JS below. -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/fold/foldgutter.min.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%235b9cf6'/><text x='16' y='24' text-anchor='middle' font-size='22' font-weight='bold' fill='white' font-family='Georgia,serif'>T</text></svg>">
+<link rel="stylesheet" href="{{ url_for('static', filename='editor.css') }}">
+</head>
+<body>
+
+<!-- HEADER -->
+<header>
+  <a href="/" class="logo" title="Back to Projects" style="text-decoration:none;color:inherit">Tex<span style="color:var(--accent)">Local</span></a>
+  <select class="project-selector" id="project-select" onchange="switchProject(this.value)">
+    <option value="">— select project —</option>
+  </select>
+  <button class="btn btn-ghost" onclick="openProjectsModal()" title="Manage projects">⚙ Projects</button>
+  <div class="header-sep"></div>
+  <span class="compile-status" id="compile-status"></span>
+  <button class="btn btn-ghost" id="settings-btn" onclick="toggleSettingsPanel(event)" title="Settings" style="font-size:13px">⚙</button>
+  <button class="btn btn-success" onclick="compile()" id="compile-btn">▶ Compile</button>
+</header>
+
+<!-- MAIN -->
+<main>
+
+  <!-- SIDEBAR -->
+  <aside>
+    <div class="sidebar-title">
+      Files
+      <div class="sidebar-actions">
+        <button class="icon-btn" onclick="showNewFolder()" title="New folder">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+            <line x1="12" y1="11" x2="12" y2="17"/><line x1="9" y1="14" x2="15" y2="14"/>
+          </svg>
+        </button>
+        <button class="icon-btn" onclick="showNewFile()" title="New file">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+            <polyline points="14 2 14 8 20 8"/>
+            <line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/>
+          </svg>
+        </button>
+        <button class="icon-btn" onclick="triggerUpload()" title="Upload files">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+    <!-- hidden file inputs -->
+    <input type="file" id="upload-input" multiple style="display:none" onchange="handleUpload(this.files)">
+
+    <div class="file-tree" id="file-tree"></div>
+    <!-- v3.2.3 — Drag to resize the Outline section relative to Files. -->
+    <div class="resize-handle-h" id="rh-outline" data-resize="outline" title="Drag to resize Outline"></div>
+    <div class="outline-section" id="outline-section">
+      <div class="sidebar-title">
+        Outline
+        <button onclick="toggleOutline()" id="outline-toggle" title="Toggle outline">−</button>
+      </div>
+      <div class="outline-tree" id="outline-tree">
+        <div class="outline-empty">Open a .tex file</div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- RESIZE: sidebar ↔ editor -->
+  <div class="resize-handle" id="rh-sidebar" data-resize="sidebar"></div>
+
+  <!-- EDITOR PANE -->
+  <div class="editor-pane">
+    <div class="editor-tabs" id="editor-tabs"></div>
+
+    <!-- EDITOR TOOLBAR -->
+    <div class="editor-toolbar" id="editor-toolbar">
+      <div class="etb-group">
+        <button class="etb-btn" onclick="wrapSel('\\textbf{','}')" title="Bold — \textbf{}"><b>B</b></button>
+        <button class="etb-btn" onclick="wrapSel('\\textit{','}')" title="Italic — \textit{}"><i>I</i></button>
+        <button class="etb-btn" onclick="wrapSel('\\underline{','}')" title="Underline — \underline{}" style="text-decoration:underline">U</button>
+        <button class="etb-btn" onclick="wrapSel('\\texttt{','}')" title="Monospace — \texttt{}" style="font-family:var(--font-code);font-size:11px">TT</button>
+        <div class="etb-sep"></div>
+        <button class="etb-btn" onclick="wrapSel('$','$')" title="Inline math — $...$" style="font-family:var(--font-code)">$</button>
+        <button class="etb-btn" onclick="insertDisplayMath()" title="Display math — \[...\]" style="font-family:var(--font-code);font-size:11px">\[…\]</button>
+      </div>
+      <div class="etb-spacer"></div>
+      <div class="etb-group">
+        <span id="cursor-pos" class="etb-wc" style="font-family:var(--font-code)">Ln 1, Col 1</span>
+        <span id="word-count" class="etb-wc"></span>
+        <div class="etb-sep"></div>
+        <select class="etb-select" id="font-size-select" onchange="setFontSize(this.value)" title="Font size">
+          <option value="12">12px</option>
+          <option value="13" selected>13px</option>
+          <option value="14">14px</option>
+          <option value="15">15px</option>
+          <option value="16">16px</option>
+        </select>
+        <select class="etb-select" id="tab-size-select" onchange="setTabSize(this.value)" title="Tab size">
+          <option value="2" selected>2 sp</option>
+          <option value="4">4 sp</option>
+        </select>
+        <div class="etb-sep"></div>
+        <button class="etb-btn" id="search-toggle-btn" onclick="toggleSearchPanel()" title="Search across files — Ctrl+Shift+F">🔍</button>
+        <button class="etb-btn" id="sym-toggle-btn" onclick="toggleSymbolPanel(event)" title="Insert LaTeX symbol" style="font-weight:700;font-size:14px">Ω</button>
+        <!-- v3.2.2 — Insert math/figure/list environment templates. -->
+        <button class="etb-btn" id="env-toggle-btn" onclick="toggleEnvPanel(event)" title="Insert environment (equation, figure, table, …)" style="font-family:var(--font-code);font-size:11px">env</button>
+        <!-- v3.3.0 — Snippet library (type trigger + Tab to expand). -->
+        <button class="etb-btn" id="snippet-toggle-btn" onclick="toggleSnippetPanel(event)" title="Snippet library — type trigger + Tab to expand. ${1} ${2} ${0} placeholders" style="font-size:14px">❖</button>
+        <!-- v3.2.2 — \includeonly chapter selector. Only enabled when the main file uses \include{}. -->
+        <button class="etb-btn" id="chapters-toggle-btn" onclick="toggleChaptersPanel(event)" title="Compile only selected chapters (\includeonly)" style="font-size:14px">📑</button>
+        <!-- v3.2.2 — \todo / TODO / FIXME tracker. -->
+        <button class="etb-btn" id="todo-toggle-btn" onclick="toggleTodoPanel(event)" title="Show \todo / TODO / FIXME markers across the project" style="font-size:14px">✓</button>
+        <!-- v3.2.3 — Word-count goals per chapter -->
+        <button class="etb-btn" id="goals-toggle-btn" onclick="toggleGoalsPanel(event)" title="Word-count goals per chapter" style="font-size:14px">🎯</button>
+        <button class="etb-btn" id="focus-mode-btn" onclick="toggleFocusMode()" title="Focus mode — Esc to exit" style="font-size:14px">⛶</button>
+      </div>
+    </div>
+
+    <div id="editor-host"></div>
+    <div id="image-viewer"></div>
+    <div class="log-panel" id="log-panel">
+      <div class="log-header">
+        Compile Log
+        <button onclick="toggleLog()">✕</button>
+      </div>
+      <div id="log-content"></div>
+    </div>
+
+    <!-- Floating Go-to-PDF button — sits at the editor↔PDF seam.
+         Single button, deliberately bright so it's always the most obvious
+         way to send the cursor location over to the PDF preview. -->
+    <button id="synctex-btn"
+            onclick="syncForward()"
+            title="Go to PDF location — Ctrl+Alt+→"
+            aria-label="Go to PDF location">⇢</button>
+  </div>
+
+  <!-- RESIZE: editor ↔ pdf -->
+  <div class="resize-handle" id="rh-pdf" data-resize="pdf"></div>
+
+  <!-- PDF PANE -->
+  <div class="pdf-pane">
+    <div class="pdf-toolbar">
+      <!-- v3.2.2 — toggle for the PDF outline / TOC sidebar. Hidden until
+           a PDF is loaded; the JS sets display:inline once getOutline()
+           returns at least one entry. -->
+      <button class="btn btn-ghost" id="pdf-outline-btn" onclick="togglePdfOutline()"
+              style="font-size:13px;padding:2px 8px;display:none;margin-right:4px"
+              title="Toggle PDF outline / table of contents">🗂</button>
+      <span id="pdf-pane-title">PDF Preview</span>
+      <div class="pdf-zoom-sep" id="pdf-zoom-controls" style="display:none;contents:''"></div>
+      <!-- v3.2.3 — Step bumped from 0.25 → 0.10 for finer-grained zoom.
+           Previous 25% step jumped 50→75→100 which felt coarse; 10% gives
+           50/60/70/80/90/100/110… and matches the pinch zoom rate better. -->
+      <button class="btn btn-ghost" id="pdf-zoom-out" onclick="pdfZoom(-0.1)" style="font-size:13px;padding:2px 8px;display:none" title="Zoom out (-10%)">−</button>
+      <span class="pdf-zoom-label" id="pdf-zoom-label" style="display:none">150%</span>
+      <button class="btn btn-ghost" id="pdf-zoom-in"  onclick="pdfZoom(+0.1)" style="font-size:13px;padding:2px 8px;display:none" title="Zoom in (+10%)">+</button>
+      <!-- v3.2.3 — Page jump input. Type a number + Enter to scroll the PDF
+           to that page. Hidden until a PDF is loaded. -->
+      <input type="number" id="pdf-page-input" min="1" placeholder="p"
+             title="Jump to page"
+             onkeydown="if(event.key==='Enter') pdfJumpToPage(this.value, this)"
+             style="display:none;width:46px;background:var(--bg);border:1px solid var(--border);
+                    color:var(--text);font:11px var(--font-code);padding:2px 5px;
+                    border-radius:4px;text-align:right;margin-left:6px;outline:none">
+      <span id="pdf-page-total" style="display:none;font:11px var(--font-code);color:var(--muted);margin-left:2px">/ 0</span>
+      <div class="pdf-zoom-sep" id="pdf-zoom-sep2" style="display:none"></div>
+      <!-- v3.3.1 — moved 📜 history button ก่อน Logs ตามคำขอ Pol
+           Logic: history เป็น scope กว้างกว่า (trend หลายๆ ครั้ง) ผู้ใช้มักดู trend ก่อน
+           แล้วจึงเปิด Logs ของรอบล่าสุด ถ้าเห็น regression. ย้าย margin-left:auto
+           มาที่ history-btn เพราะตอนนี้มันคือตัวซ้ายสุดของกลุ่ม -->
+      <button class="btn btn-ghost" id="history-btn" onclick="toggleHistoryPanel(event)" style="font-size:11px;padding:3px 10px;margin-left:auto;margin-right:4px" title="Recent compile log history (last 10 runs)">📜</button>
+      <button class="btn btn-ghost" onclick="toggleLogsPanel()" style="font-size:11px;padding:3px 10px;margin-right:4px">Logs<span id="logs-btn-badge"></span></button>
+      <button class="btn btn-ghost" onclick="toggleLog()" style="font-size:11px;padding:3px 10px;margin-right:4px">Raw Log</button>
+      <a id="pdf-download" href="#" download style="display:none">⬇ Download</a>
+    </div>
+    <!-- Content wrapper — ให้ error-panel ใช้ position:absolute ได้ -->
+    <div class="pdf-content">
+      <!-- Error panel — แสดงเมื่อ compile ไม่ผ่าน -->
+      <div id="error-panel"></div>
+      <!-- Logs panel — เปิดได้เสมอ แสดง errors/warnings/info -->
+      <div id="logs-panel"></div>
+      <div class="pdf-placeholder" id="pdf-placeholder">
+        <div class="icon">📄</div>
+        <p>Compile to see PDF preview</p>
+      </div>
+      <!-- v3.2.2 — PDF outline / TOC sidebar. Hidden by default; toggled
+           via the 🗂 button. When open, pdf-canvas-container's `left`
+           shifts right by the sidebar width via the .outline-open class
+           on .pdf-content. -->
+      <div id="pdf-outline-panel">
+        <div class="po-header">
+          <span>Outline</span>
+          <button class="po-close" onclick="togglePdfOutline()">✕</button>
+        </div>
+        <div id="pdf-outline-list"></div>
+      </div>
+      <div id="pdf-canvas-container"></div>
+    </div>
+  </div>
+
+</main>
+
+<!-- MODALS -->
+<div class="modal-overlay" id="modal-projects">
+  <div class="modal" style="width:480px">
+    <h3 style="margin-bottom:14px">Projects</h3>
+    <div class="project-list" id="project-list"></div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="closeModal('modal-projects')">Close</button>
+      <button class="btn btn-primary" onclick="closeModal('modal-projects');showNewProject()">+ New Project</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="modal-import-zip">
+  <div class="modal" style="width:460px">
+    <h3>Import ZIP</h3>
+    <div class="zip-drop-zone" id="zip-drop-zone" onclick="document.getElementById('zip-file-input').click()">
+      <span class="zip-icon">📦</span>
+      <span id="zip-drop-label">คลิกเพื่อเลือก หรือลาก .zip มาวางที่นี่</span>
+    </div>
+    <input type="file" id="zip-file-input" accept=".zip" style="display:none" onchange="onZipSelected(this)">
+    <input id="input-zip-name" placeholder="ชื่อ project" style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);font-family:var(--font-ui);font-size:14px;padding:10px 14px;border-radius:8px;outline:none;margin-bottom:16px">
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="closeModal('modal-import-zip')">Cancel</button>
+      <button class="btn btn-primary" id="import-zip-btn" onclick="importZip()">Import</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="modal-folder">
+  <div class="modal">
+    <h3>New Folder</h3>
+    <input id="input-folder-name" placeholder="e.g. chapters or figures/sub" onkeydown="if(event.key==='Enter')createFolder()">
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="closeModal('modal-folder')">Cancel</button>
+      <button class="btn btn-primary" onclick="createFolder()">Create</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="modal-project">
+  <div class="modal">
+    <h3>New Project</h3>
+    <input id="input-project-name" placeholder="Project name" onkeydown="if(event.key==='Enter')createProject()">
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="closeModal('modal-project')">Cancel</button>
+      <button class="btn btn-primary" onclick="createProject()">Create</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="modal-file">
+  <div class="modal">
+    <h3>New File</h3>
+    <input id="input-file-name" placeholder="e.g. chapter1.tex or figures/fig1.png" onkeydown="if(event.key==='Enter')createFile()">
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="closeModal('modal-file')">Cancel</button>
+      <button class="btn btn-primary" onclick="createFile()">Create</button>
+    </div>
+  </div>
+</div>
+
+<!-- SETTINGS PANEL -->
+<div id="settings-panel">
+  <div class="settings-hdr">
+    <span>Settings</span>
+    <button class="settings-close" onclick="closeSettingsPanel()">✕</button>
+  </div>
+  <div class="settings-body">
+    <div class="setting-row">
+      <span class="setting-label">Theme</span>
+      <div class="theme-opt-group">
+        <!-- v3.3.1 — สลับให้ Light ซ้าย Dark ขวา ตรงกับ Editor theme row ด้านล่าง
+             (ก่อนหน้านี้ UI row เรียง Dark→Light แต่ Editor row เรียง Light→Dark
+              ผู้ใช้สับสน — เลือกเอา convention OS-toggle: Light=off, Dark=on) -->
+        <button class="theme-opt" id="theme-light-btn" onclick="setTheme('light')">☀ Light</button>
+        <button class="theme-opt" id="theme-dark-btn" onclick="setTheme('dark')">🌙 Dark</button>
+      </div>
+    </div>
+    <!-- v3.2.3 — Editor theme is independent of UI theme so users can pair
+         dark UI with light editor (good for long writing sessions) or vice versa. -->
+    <div class="setting-row">
+      <span class="setting-label" title="Color theme for the code editor (independent of UI theme)">Editor theme</span>
+      <div class="theme-opt-group">
+        <button class="theme-opt" id="editor-theme-light-btn" onclick="setEditorTheme('light')">☀ Light</button>
+        <button class="theme-opt" id="editor-theme-dark-btn" onclick="setEditorTheme('dark')">🌙 Dark</button>
+      </div>
+    </div>
+    <div class="setting-row">
+      <span class="setting-label">Compiler</span>
+      <select id="compiler-select" class="settings-select" onchange="saveCompilerPref(this.value)">
+        <option value="pdflatex">pdflatex</option>
+        <option value="xelatex">xelatex</option>
+        <option value="lualatex">lualatex</option>
+      </select>
+    </div>
+    <div class="setting-row">
+      <span class="setting-label">Auto-compile on save</span>
+      <label class="toggle-sw">
+        <input type="checkbox" id="auto-compile-toggle" onchange="onAutoCompileToggle()">
+        <div class="toggle-track"></div>
+      </label>
+    </div>
+    <!-- v3.2.2 — Draft mode skips figure rasterisation for fast iteration -->
+    <div class="setting-row">
+      <span class="setting-label" title="Skip figure rendering — much faster compile. Figures appear as empty boxes.">Draft mode (skip figures)</span>
+      <label class="toggle-sw">
+        <input type="checkbox" id="draft-mode-toggle" onchange="onDraftModeToggle()">
+        <div class="toggle-track"></div>
+      </label>
+    </div>
+    <!-- v3.3.2 — English spell check (Typo.js, token-aware). First enable lazy-
+         loads ~1.7MB en_US dictionary from CDN; subsequent loads are cached.
+         Add proper nouns to `.texlocal-dict.txt` (one word per line) at the
+         project root. Skips \commands, math mode, citation/ref braces. -->
+    <div class="setting-row">
+      <span class="setting-label" title="English spell check — underlines misspelled words. Skips \commands, math, and citations. Add proper nouns to .texlocal-dict.txt at project root.">Spell check (English)</span>
+      <label class="toggle-sw">
+        <input type="checkbox" id="spellcheck-toggle" onchange="onSpellCheckToggle()">
+        <div class="toggle-track"></div>
+      </label>
+    </div>
+    <!-- v3.3.5 — Manage custom dictionary. Opens a modal listing every word
+         in `.texlocal-dict.txt` with a × button per row to delete one. Hot-
+         reloads the in-memory customDict + triggers a spell rescan after
+         each delete so wavy underlines reappear without a page refresh. -->
+    <div class="setting-row">
+      <span class="setting-label" title="View and remove words you've added to this project's custom dictionary (.texlocal-dict.txt).">Custom dictionary</span>
+      <button class="settings-btn" onclick="openDictManager()" title="View and remove words in the per-project custom dictionary">📚 Manage…</button>
+    </div>
+  </div>
+</div>
+
+<!-- v3.3.2 — Spell-check status indicator (loading / dict count). Fixed-position
+     toast in the bottom-right, only shown during dict-load or when reporting
+     a non-trivial count. Auto-fades after success. -->
+<div id="spell-status" class="spell-status">Loading dictionary…</div>
+
+<!-- v3.3.3 — Spell-check right-click context menu. Populated dynamically on
+     contextmenu when the click lands inside a .spell-error TextMarker. Single
+     item: "Add «word» to dictionary" which POSTs to /api/projects/<p>/dict. -->
+<div id="spell-context-menu" class="spell-context-menu"
+     onclick="event.stopPropagation()">
+  <div class="scm-item" id="scm-add" onclick="onAddToDictClick()">
+    <span class="scm-icon">＋</span>
+    <span>Add <span class="scm-word" id="scm-word">word</span> to dictionary</span>
+  </div>
+</div>
+
+<!-- v3.3.5 — "Manage custom dictionary" modal. Populated from /dict GET on
+     open. Each row has a × to DELETE that word; counter updates live.
+     Click outside the inner panel closes the modal. -->
+<div id="dict-mgr-overlay" onclick="if(event.target===this) closeDictManager()">
+  <div class="dm-modal" onclick="event.stopPropagation()">
+    <div class="dm-header">
+      <span>Custom dictionary <span id="dm-count" class="dm-count"></span></span>
+      <button class="dm-close" onclick="closeDictManager()">✕</button>
+    </div>
+    <div class="dm-body">
+      <input id="dm-filter" class="dm-filter" placeholder="Filter…" autocomplete="off" spellcheck="false" oninput="onDictMgrFilterInput()">
+      <div id="dm-list" class="dm-list"></div>
+      <div id="dm-empty" class="dm-empty">No words yet. Right-click a misspelled word and choose <i>Add to dictionary</i>.</div>
+    </div>
+    <div class="dm-foot">
+      <span>File: <code>.texlocal-dict.txt</code> at project root</span>
+    </div>
+  </div>
+</div>
+
+<!-- v3.2.3 — Quick file switcher (Ctrl+P). Modal w/ fuzzy file search.
+     Files are pulled from `quickOpenFiles` (cached by loadFiles); the matcher
+     scores by subsequence + basename boost so typing "ch6" beats "Content/...
+     Ch06". Esc closes, arrows navigate, Enter opens. -->
+<div id="quick-open-overlay" onclick="if(event.target===this) closeQuickOpen()">
+  <div class="qo-modal" onclick="event.stopPropagation()">
+    <input id="qo-input" class="qo-input" placeholder="Type to find a file…" autocomplete="off" spellcheck="false">
+    <div id="qo-list"></div>
+    <div class="qo-hint">
+      <span><kbd>↑</kbd><kbd>↓</kbd> navigate</span>
+      <span><kbd>Enter</kbd> open</span>
+      <span><kbd>Esc</kbd> close</span>
+    </div>
+  </div>
+</div>
+
+<!-- v3.2.2 — Image hover preview. Lazy-positioned by JS near the mouse
+     when hovering over \includegraphics{...} paths in the editor. -->
+<div id="img-hover-preview"></div>
+
+<!-- v3.2.2 — TODO tracker. Lists \todo{...}, % TODO, % FIXME, % XXX
+     across all .tex files in the project. Click → jump to file:line. -->
+<div id="todo-panel">
+  <div class="td-header">
+    <span>TODOs <span id="td-count" class="td-count"></span></span>
+    <span style="flex:1"></span>
+    <button class="cp-btn-mini" onclick="loadTodosUI()" title="Re-scan project">↻</button>
+    <button class="td-close" onclick="toggleTodoPanel(event)">✕</button>
+  </div>
+  <div id="td-list"></div>
+</div>
+
+<!-- v3.2.3 — Recent compile log history. Stored in localStorage per project. -->
+<div id="history-panel">
+  <div class="hp-header">
+    <span>Compile history <span id="hp-sub" class="hp-sub"></span></span>
+    <span style="flex:1"></span>
+    <button class="cp-btn-mini" id="hp-clear-btn" onclick="clearCompileHistory()" title="Delete all entries">Clear</button>
+    <button class="hp-close" onclick="toggleHistoryPanel(event)">✕</button>
+  </div>
+  <div id="hp-list"></div>
+  <div id="hp-detail"></div>
+  <div class="hp-foot">
+    <span>Click a row to view its log · Latest 10 runs · Per project</span>
+  </div>
+</div>
+
+<!-- v3.2.3 — Word-count-per-chapter goals. Lists .tex files (default: only
+     those that have a goal set; toggle 'Show all' to inline-set goals on
+     anything). Stored as .texlocal-goals.json per project. -->
+<div id="goals-panel">
+  <div class="gp-header">
+    <span>Word-count goals <span id="gp-totals" class="gp-sub"></span></span>
+    <span style="flex:1"></span>
+    <label class="gp-sub" style="display:flex;align-items:center;gap:4px;cursor:pointer">
+      <input type="checkbox" id="gp-show-all" onchange="renderGoalsPanel()" style="accent-color:var(--accent)">
+      Show all files
+    </label>
+    <button class="cp-btn-mini" onclick="loadGoalsUI()" title="Re-scan word counts">↻</button>
+    <button class="gp-close" onclick="toggleGoalsPanel(event)">✕</button>
+  </div>
+  <div id="gp-list"></div>
+  <div class="gp-foot">
+    <span>Total: <strong id="gp-foot-count">0</strong> / <strong id="gp-foot-target">0</strong></span>
+    <span style="flex:1"></span>
+    <span>Edit target → blur to save</span>
+  </div>
+</div>
+
+<!-- v3.2.2 — \includeonly chapter selector. Lists every \include{} in the
+     current main file so the user can compile a subset for fast iteration.
+     Empty list / no main file → shows a clarifying message instead. -->
+<div id="chapters-panel">
+  <div class="cp-header">
+    <span>Compile Only Selected Chapters</span>
+    <button class="cp-close" onclick="toggleChaptersPanel(event)">✕</button>
+  </div>
+  <div class="cp-actions">
+    <button class="cp-btn-mini" onclick="setAllIncludes(true)">All</button>
+    <button class="cp-btn-mini" onclick="setAllIncludes(false)">None</button>
+    <button class="cp-btn-mini" onclick="loadIncludesUI()" title="Re-scan main file">↻</button>
+    <span class="cp-hint" id="cp-hint">…</span>
+  </div>
+  <div class="cp-list" id="cp-list"></div>
+  <div class="cp-foot">Empty selection = compile all (no <code>\\includeonly</code>).</div>
+</div>
+
+<!-- v3.2.2 — Environment templates (equation, align, figure, table, …).
+     Separate from the symbol panel because environments are multi-line
+     templates with a cursor placeholder, not single glyph insertions. -->
+<div id="env-panel">
+  <div class="env-header">
+    <span>Insert Environment</span>
+    <button class="env-close" onclick="toggleEnvPanel(event)">✕</button>
+  </div>
+  <div class="env-cats" id="env-cats"></div>
+  <div class="env-list" id="env-list"></div>
+</div>
+
+<!-- v3.3.0 — SNIPPET PANEL -->
+<div id="snippet-panel">
+  <div class="env-header">
+    <span>Snippets <span style="color:var(--muted);font-size:11px;font-weight:400">· type trigger + Tab</span></span>
+    <button class="env-close" onclick="toggleSnippetPanel(event)">✕</button>
+  </div>
+  <div id="snip-list" class="env-list"></div>
+  <div style="padding:6px 12px;border-top:1px solid var(--border);font-size:10.5px;color:var(--muted);font-family:var(--font-ui);line-height:1.5">
+    <b>Edit custom snippets:</b> <code style="font-family:var(--font-code);color:var(--accent)">.texlocal-snippets.json</code> at project root.<br>
+    Syntax: <code style="font-family:var(--font-code)">&#36;{1}</code>, <code style="font-family:var(--font-code)">&#36;{2:default}</code>, <code style="font-family:var(--font-code)">&#36;{0}</code> (final cursor).
+  </div>
+</div>
+
+<!-- SYMBOL PANEL -->
+<div id="symbol-panel">
+  <div class="sym-header">
+    <span>Insert Symbol</span>
+    <button class="sym-close" onclick="toggleSymbolPanel(event)">✕</button>
+  </div>
+  <div class="sym-cats" id="sym-cats"></div>
+  <div class="sym-grid" id="sym-grid"></div>
+</div>
+
+<!-- SEARCH PANEL -->
+<div id="search-panel">
+  <div class="search-input-row">
+    <input id="search-input" placeholder="Search across .tex and .bib files…"
+           onkeydown="if(event.key==='Enter')doSearch(); if(event.key==='Escape')hideSearchPanel()">
+    <button class="btn btn-primary" onclick="doSearch()" style="font-size:12px;padding:5px 14px;flex-shrink:0">Search</button>
+    <button class="search-close" onclick="hideSearchPanel()" title="Close">✕</button>
+  </div>
+  <!-- v3.2.2 — Replace row. Hidden by default; toggle with the ⇄ button. -->
+  <div class="search-input-row" id="replace-row" style="display:none">
+    <input id="replace-input" placeholder="Replace with…"
+           onkeydown="if(event.key==='Escape')hideSearchPanel()">
+    <button class="btn btn-ghost" onclick="doReplaceAll()" style="font-size:12px;padding:5px 14px;flex-shrink:0" title="Replace ALL matches in the project (writes files)">Replace All</button>
+  </div>
+  <div class="search-opts">
+    <label><input type="checkbox" id="search-regex"> regex</label>
+    <label><input type="checkbox" id="search-case"> case</label>
+    <button class="btn btn-ghost" id="search-toggle-replace" onclick="toggleReplaceMode()" style="font-size:11px;padding:3px 8px;margin-left:auto" title="Show / hide Replace row">⇄ Replace</button>
+  </div>
+  <div id="search-count" class="search-count" style="display:none"></div>
+  <div class="search-results" id="search-results">
+    <div class="search-empty">Search across all .tex and .bib files in the current project</div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/stex/stex.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/hint/show-hint.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/search/searchcursor.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/search/search.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/dialog/dialog.min.js"></script>
+<!-- v3.2.2 — auto-close brackets / quotes / dollars in LaTeX source -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/edit/closebrackets.min.js"></script>
+<!-- v3.2.3 — section folding -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/fold/foldcode.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/fold/foldgutter.min.js"></script>
+<!-- v3.3.2 — Typo.js (Hunspell-compatible JS port) for English spell check.
+     Loaded eagerly so the constructor is available on toggle-on, but the heavy
+     ~1.7MB en_US dictionary is fetched lazily inside _ensureSpellDict() so
+     users who never enable spell check don't pay the network cost. -->
+<script src="https://cdn.jsdelivr.net/npm/typo-js@1.2.4/typo.js"></script>
+<script defer src="{{ url_for('static', filename='editor.js') }}"></script>
+</body>
+</html>

@@ -1,0 +1,1016 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TeX Local — Projects</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Sora:wght@300;400;600;700&display=swap" rel="stylesheet">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%235b9cf6'/><text x='16' y='24' text-anchor='middle' font-size='22' font-weight='bold' fill='white' font-family='Georgia,serif'>T</text></svg>">
+<style>
+  :root {
+    --bg:       #0d0f14;
+    --surface:  #13161e;
+    --panel:    #191c26;
+    --border:   #252935;
+    --accent:   #5b9cf6;
+    --accent2:  #a78bfa;
+    --green:    #34d399;
+    --red:      #f87171;
+    --yellow:   #fbbf24;
+    --text:     #e2e8f0;
+    --muted:    #64748b;
+    --font-ui:  'Sora', sans-serif;
+    --font-code:'JetBrains Mono', monospace;
+  }
+  [data-theme="light"] {
+    --bg:      #f4f6fb;
+    --surface: #ffffff;
+    --panel:   #eef0f6;
+    --border:  #d6dae6;
+    --text:    #1e2330;
+    --muted:   #7a8499;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: var(--font-ui); min-height: 100vh; }
+
+  /* ── HEADER ── */
+  header {
+    height: 56px; background: var(--surface); border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; padding: 0 28px; gap: 12px;
+    position: sticky; top: 0; z-index: 10;
+  }
+  .logo { font-weight: 700; font-size: 16px; letter-spacing: -0.5px; margin-right: 4px; }
+  .logo span { color: var(--accent); }
+  .header-sep { flex: 1; }
+  .btn {
+    padding: 7px 16px; border-radius: 7px; font-family: var(--font-ui); font-size: 12px;
+    font-weight: 600; border: none; cursor: pointer; transition: all .15s; letter-spacing: .3px;
+  }
+  .btn-primary  { background: var(--accent); color: #fff; }
+  .btn-primary:hover  { background: #4a8ae8; transform: translateY(-1px); }
+  .btn-ghost    { background: transparent; color: var(--muted); border: 1px solid var(--border); }
+  .btn-ghost:hover    { color: var(--text); border-color: var(--accent); }
+  .btn-danger   { background: transparent; color: var(--red); border: 1px solid transparent; }
+  .btn-danger:hover   { border-color: var(--red); background: rgba(248,113,113,.08); }
+  .btn-sm { padding: 4px 11px; font-size: 11px; border-radius: 5px; }
+
+  /* ── MAIN CONTAINER ── */
+  .dash-main { max-width: 920px; margin: 0 auto; padding: 44px 24px 80px; }
+
+  /* ── TOP ROW ── */
+  .dash-toprow {
+    display: flex; align-items: center; justify-content: space-between; margin-bottom: 22px;
+  }
+  .dash-title { font-size: 21px; font-weight: 700; }
+
+  /* ── SEARCH ── */
+  .search-wrap { position: relative; margin-bottom: 18px; }
+  .search-wrap svg {
+    position: absolute; left: 13px; top: 50%; transform: translateY(-50%);
+    color: var(--muted); pointer-events: none;
+  }
+  .search-wrap input {
+    width: 100%; padding: 10px 14px 10px 40px;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 8px; color: var(--text); font-family: var(--font-ui); font-size: 13px;
+    outline: none; transition: border-color .15s;
+  }
+  .search-wrap input:focus { border-color: var(--accent); }
+  .search-wrap input::placeholder { color: var(--muted); }
+
+  /* ── TABLE ── */
+  .proj-table-wrap {
+    border: 1px solid var(--border); border-radius: 10px; overflow: hidden;
+    background: var(--surface);
+  }
+  table { width: 100%; border-collapse: collapse; }
+  thead { background: var(--panel); }
+  th {
+    padding: 10px 16px; font-size: 10.5px; font-weight: 600; letter-spacing: 1.2px;
+    text-transform: uppercase; color: var(--muted); text-align: left;
+    border-bottom: 1px solid var(--border); cursor: pointer; user-select: none;
+    transition: color .15s; white-space: nowrap;
+  }
+  th:hover { color: var(--text); }
+  th.sorted { color: var(--accent); }
+  th .sort-ico { margin-left: 4px; font-size: 10px; opacity: .6; }
+  th.sorted .sort-ico { opacity: 1; }
+  th:last-child { cursor: default; text-align: right; }
+
+  td {
+    padding: 14px 16px; border-bottom: 1px solid var(--border);
+    vertical-align: middle; font-size: 13px;
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr { cursor: pointer; transition: background .1s; }
+  tbody tr:hover { background: rgba(91,156,246,.05); }
+
+  .proj-name { font-weight: 600; color: var(--text); transition: color .15s; }
+  tbody tr:hover .proj-name { color: var(--accent); }
+  .proj-sub  { font-size: 11px; color: var(--muted); margin-top: 3px; font-family: var(--font-code); }
+  .proj-date { font-size: 12px; color: var(--muted); white-space: nowrap; }
+  .proj-date-full { font-size: 10.5px; color: var(--muted); margin-top: 2px; font-family: var(--font-code); }
+
+  .proj-actions {
+    display: flex; gap: 5px; justify-content: flex-end; align-items: center;
+    opacity: 0; transition: opacity .15s;
+  }
+  tbody tr:hover .proj-actions { opacity: 1; }
+
+  /* ── EMPTY STATE ── */
+  .empty-state {
+    text-align: center; padding: 72px 24px; color: var(--muted);
+  }
+  .empty-icon { font-size: 52px; display: block; margin-bottom: 16px; opacity: .35; }
+  .empty-title { font-size: 16px; font-weight: 600; color: var(--text); margin-bottom: 8px; }
+  .empty-sub { font-size: 13px; }
+
+  /* ── MODAL ── */
+  .modal-overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,.65);
+    display: none; align-items: center; justify-content: center; z-index: 100;
+  }
+  .modal-overlay.open { display: flex; }
+  .modal {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+    padding: 28px; width: 420px; max-width: 94vw;
+  }
+  .modal h3 { font-size: 16px; margin-bottom: 18px; }
+  .modal input {
+    width: 100%; background: var(--bg); border: 1px solid var(--border); color: var(--text);
+    font-family: var(--font-ui); font-size: 14px; padding: 10px 14px; border-radius: 8px;
+    outline: none; margin-bottom: 16px; transition: border-color .15s;
+  }
+  .modal input:focus { border-color: var(--accent); }
+  .modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
+  /* v4.2.1 — template chooser cards: 2x2 grid with SVG preview on top */
+  .template-grid {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
+  }
+  .template-opt {
+    position: relative;
+    display: flex; flex-direction: column;
+    border: 1px solid var(--border); border-radius: 9px;
+    cursor: pointer; overflow: hidden;
+    transition: border-color .15s, background .15s, transform .15s, box-shadow .15s;
+  }
+  .template-opt:hover {
+    border-color: var(--accent); transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+  }
+  /* hide native radio — visual state comes from :has(input:checked) */
+  .template-opt input[type=radio] {
+    position: absolute; opacity: 0; pointer-events: none;
+    width: 0; height: 0;
+  }
+  .template-opt:has(input:checked) {
+    border-color: var(--accent); background: rgba(91,156,246,.06);
+  }
+  .template-opt:has(input:checked) .template-graphic {
+    background: rgba(91,156,246,.10); color: var(--accent);
+  }
+  .template-graphic {
+    height: 72px;
+    display: flex; align-items: center; justify-content: center;
+    background: var(--bg); color: var(--muted);
+    border-bottom: 1px solid var(--border);
+    transition: background .15s, color .15s;
+  }
+  .template-graphic svg {
+    width: 78%; height: 78%;
+    display: block;
+  }
+  .template-info {
+    padding: 8px 10px 10px; display: flex; flex-direction: column; gap: 2px;
+  }
+  .template-info span:first-child { font-size: 13px; font-weight: 600; color: var(--text); }
+  .template-desc { font-size: 11px; color: var(--muted); line-height: 1.35; }
+
+  .zip-drop-zone {
+    border: 2px dashed var(--border); border-radius: 8px; padding: 26px 16px;
+    text-align: center; cursor: pointer; color: var(--muted); font-size: 12px;
+    transition: all .2s; margin-bottom: 14px;
+  }
+  .zip-drop-zone:hover, .zip-drop-zone.over { border-color: var(--accent); color: var(--accent); background: rgba(91,156,246,.06); }
+  .zip-icon { font-size: 30px; display: block; margin-bottom: 6px; }
+
+  /* ── SCROLLBAR ── */
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+  /* v4.2.3 - About button + About modal */
+  .about-btn {
+    padding: 6px 8px !important;
+    margin-left: 4px;
+    color: var(--muted);
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  .about-btn:hover { color: var(--accent); }
+  .about-modal-body { padding: 4px 0 12px; }
+  .about-logo { text-align: center; margin-bottom: 14px; }
+  .about-logo .name {
+    font-size: 22px; font-weight: 700; letter-spacing: -0.5px;
+    color: var(--text);
+  }
+  .about-logo .name span { color: var(--accent); }
+  .about-logo .ver {
+    font-size: 12px; color: var(--muted); margin-top: 2px;
+    font-family: var(--font-code, ui-monospace, monospace);
+  }
+  .about-row {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 9px 0; border-top: 1px solid var(--border);
+    font-size: 13px;
+  }
+  .about-row .lbl { color: var(--muted); }
+  .about-row .val { color: var(--text); font-weight: 500; text-align: right; }
+  .about-row a.val { color: var(--accent); text-decoration: none; }
+  .about-row a.val:hover { text-decoration: underline; }
+  .about-update-status {
+    font-size: 12px; color: var(--muted);
+    min-height: 16px; margin-top: 4px;
+    text-align: center;
+  }
+  .about-update-status.ok    { color: var(--text); }
+  .about-update-status.newer { color: var(--accent); font-weight: 600; }
+  .about-update-status.err   { color: #e88; }
+  .about-tagline {
+    font-size: 11px; color: var(--muted);
+    text-align: center; margin-top: 14px; line-height: 1.5;
+  }
+
+  /* ── STATS BAR ── */
+  .stats-bar {
+    display: flex; gap: 6px; align-items: center;
+    font-size: 12px; color: var(--muted); margin-bottom: 10px;
+  }
+  .stats-bar span { color: var(--text); font-weight: 600; }
+
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .spinner { display: inline-block; width: 13px; height: 13px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .6s linear infinite; vertical-align: middle; }
+
+  /* v4.2.0-phase4 — auto-update banner + modal */
+  .update-banner {
+    position: fixed; top: 0; left: 0; right: 0;
+    background: var(--accent); color: white;
+    padding: 10px 16px;
+    display: none;
+    align-items: center; gap: 12px;
+    z-index: 9999;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+    font-family: inherit;
+  }
+  .update-banner.show { display: flex; }
+  .update-banner-body { flex: 1; font-size: 14px; }
+  .update-banner-body strong { font-weight: 700; }
+  .update-banner button {
+    background: rgba(255,255,255,0.2);
+    border: 1px solid rgba(255,255,255,0.35);
+    color: white; padding: 6px 14px; border-radius: 4px; cursor: pointer;
+    font-size: 13px; font-family: inherit;
+  }
+  .update-banner button:hover { background: rgba(255,255,255,0.32); }
+  .update-banner .later {
+    background: transparent; border-color: transparent;
+    opacity: 0.85;
+  }
+  .update-banner .later:hover { background: rgba(255,255,255,0.12); opacity: 1; }
+  body.has-update-banner { padding-top: 48px; }
+
+  .update-modal-backdrop {
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.6);
+    display: none; align-items: center; justify-content: center;
+    z-index: 10000;
+  }
+  .update-modal-backdrop.show { display: flex; }
+  .update-modal {
+    background: var(--bg); color: var(--text);
+    border-radius: 8px; padding: 24px;
+    min-width: 420px; max-width: 90vw;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+    border: 1px solid var(--border);
+  }
+  .update-modal h3 { margin: 0 0 12px 0; font-size: 16px; }
+  .update-progress {
+    width: 100%; height: 8px;
+    background: var(--border);
+    border-radius: 4px; overflow: hidden;
+    margin: 14px 0 8px 0;
+  }
+  .update-progress-bar {
+    height: 100%; background: var(--accent);
+    width: 0%; transition: width 0.3s ease;
+  }
+  .update-modal-status {
+    font-size: 13px; color: var(--muted);
+    min-height: 18px;
+  }
+  .update-modal-actions {
+    margin-top: 18px; text-align: right;
+  }
+  .update-modal-actions button {
+    background: transparent; border: 1px solid var(--border);
+    color: var(--text); padding: 7px 14px; border-radius: 4px;
+    cursor: pointer; font-size: 13px; font-family: inherit;
+  }
+  .update-modal-actions button:hover { background: var(--border); }
+</style>
+</head>
+<body>
+
+<!-- v4.2.0-phase4 — Auto-update banner (hidden until /api/update/check confirms) -->
+<div id="update-banner" class="update-banner" role="alert">
+  <div class="update-banner-body">
+    ↑ TexLocal <strong id="update-banner-version"></strong> is available — you have <span id="update-banner-current"></span>
+  </div>
+  <button onclick="startUpdate()">Update Now</button>
+  <button class="later" onclick="dismissUpdate()">Later</button>
+</div>
+
+<!-- v4.2.0-phase4 — Download progress modal -->
+<div id="update-modal-backdrop" class="update-modal-backdrop" role="dialog" aria-modal="true">
+  <div class="update-modal">
+    <h3 id="update-modal-title">Downloading update...</h3>
+    <div class="update-progress"><div id="update-progress-bar" class="update-progress-bar"></div></div>
+    <div id="update-modal-status" class="update-modal-status">Connecting to GitHub...</div>
+    <div class="update-modal-actions">
+      <button id="update-modal-cancel" onclick="cancelUpdate()">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- HEADER -->
+<header>
+  <div class="logo">Tex<span>Local</span></div>
+  <div class="header-sep"></div>
+  <button class="btn btn-ghost" onclick="openModal('modal-import-zip')" title="Import a ZIP from Overleaf">⬆ Import ZIP</button>
+  <button class="btn btn-primary" onclick="openModal('modal-new-project')">+ New Project</button>
+  <!-- v4.2.3 - About / version info -->
+  <button class="btn btn-ghost about-btn" onclick="openAboutModal()" title="About TexLocal" aria-label="About">
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle">
+      <circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>
+    </svg>
+  </button>
+</header>
+
+<!-- MAIN -->
+<div class="dash-main">
+
+  <div class="dash-toprow">
+    <h1 class="dash-title">All Projects</h1>
+  </div>
+
+  <!-- SEARCH -->
+  <div class="search-wrap">
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+    </svg>
+    <input id="search-input" type="search" placeholder="Search projects…" oninput="filterProjects()">
+  </div>
+
+  <!-- STATS -->
+  <div class="stats-bar" id="stats-bar"></div>
+
+  <!-- TABLE -->
+  <div class="proj-table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th onclick="sortBy('name')" id="th-name">Title <span class="sort-ico">↕</span></th>
+          <th onclick="sortBy('modified')" id="th-modified" class="sorted">Last Modified <span class="sort-ico">↓</span></th>
+          <th style="cursor:default;text-align:right;color:var(--muted)">Actions</th>
+        </tr>
+      </thead>
+      <tbody id="proj-body">
+        <tr><td colspan="3"><div class="empty-state"><span class="spinner"></span></div></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+</div>
+
+<!-- MODAL: New Project -->
+<div class="modal-overlay" id="modal-new-project">
+  <div class="modal" style="width:480px">
+    <h3>New Project</h3>
+    <input id="input-project-name" placeholder="Project name"
+           onkeydown="if(event.key==='Enter')createProject()">
+    <div style="margin-bottom:16px">
+      <div style="font-size:11px;color:var(--muted);margin-bottom:8px;font-weight:600;letter-spacing:.5px;text-transform:uppercase">Template</div>
+      <div class="template-grid" id="template-list">
+
+        <!-- ARTICLE — single page with title + section heads + paragraph lines -->
+        <label class="template-opt">
+          <input type="radio" name="template" value="article" checked>
+          <div class="template-graphic">
+            <svg viewBox="0 0 80 60" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+              <rect x="14" y="6" width="52" height="48" rx="2"/>
+              <line x1="20" y1="14" x2="42" y2="14" stroke-width="2.6"/>
+              <line x1="20" y1="22" x2="60" y2="22"/>
+              <line x1="20" y1="27" x2="58" y2="27"/>
+              <line x1="20" y1="32" x2="54" y2="32"/>
+              <line x1="20" y1="40" x2="38" y2="40" stroke-width="2.2"/>
+              <line x1="20" y1="46" x2="58" y2="46"/>
+              <line x1="20" y1="51" x2="52" y2="51"/>
+            </svg>
+          </div>
+          <div class="template-info"><span>Article</span><span class="template-desc">Standard article with sections</span></div>
+        </label>
+
+        <!-- BEAMER — 16:9 slide with header bar + bullets -->
+        <label class="template-opt">
+          <input type="radio" name="template" value="beamer">
+          <div class="template-graphic">
+            <svg viewBox="0 0 80 60" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+              <rect x="8" y="12" width="64" height="38" rx="2"/>
+              <rect x="8" y="12" width="64" height="9" fill="currentColor" stroke="none" opacity="0.55"/>
+              <circle cx="16" cy="29" r="1.3" fill="currentColor"/>
+              <line x1="20" y1="29" x2="50" y2="29"/>
+              <circle cx="16" cy="36" r="1.3" fill="currentColor"/>
+              <line x1="20" y1="36" x2="58" y2="36"/>
+              <circle cx="16" cy="43" r="1.3" fill="currentColor"/>
+              <line x1="20" y1="43" x2="46" y2="43"/>
+            </svg>
+          </div>
+          <div class="template-info"><span>Beamer Presentation</span><span class="template-desc">Slide deck with frames</span></div>
+        </label>
+
+        <!-- THESIS — stacked pages with chapter heading -->
+        <label class="template-opt">
+          <input type="radio" name="template" value="thesis">
+          <div class="template-graphic">
+            <svg viewBox="0 0 80 60" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+              <rect x="22" y="12" width="44" height="44" rx="2" opacity="0.35"/>
+              <rect x="14" y="6" width="44" height="44" rx="2" fill="var(--bg)"/>
+              <line x1="20" y1="14" x2="34" y2="14" stroke-width="2.4"/>
+              <line x1="20" y1="22" x2="50" y2="22"/>
+              <line x1="20" y1="27" x2="52" y2="27"/>
+              <line x1="20" y1="32" x2="48" y2="32"/>
+              <line x1="20" y1="37" x2="50" y2="37"/>
+              <line x1="20" y1="42" x2="44" y2="42"/>
+            </svg>
+          </div>
+          <div class="template-info"><span>Thesis (XeLaTeX)</span><span class="template-desc">Chapter-based, Thai-friendly</span></div>
+        </label>
+
+        <!-- BLANK — dashed empty page with a plus -->
+        <label class="template-opt">
+          <input type="radio" name="template" value="blank">
+          <div class="template-graphic">
+            <svg viewBox="0 0 80 60" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+              <rect x="20" y="6" width="40" height="48" rx="2" stroke-dasharray="3 3"/>
+              <line x1="40" y1="22" x2="40" y2="38" stroke-width="2.2"/>
+              <line x1="32" y1="30" x2="48" y2="30" stroke-width="2.2"/>
+            </svg>
+          </div>
+          <div class="template-info"><span>Blank</span><span class="template-desc">Empty main.tex</span></div>
+        </label>
+
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="closeModal('modal-new-project')">Cancel</button>
+      <button class="btn btn-primary" onclick="createProject()">Create</button>
+    </div>
+  </div>
+</div>
+
+<!-- v4.2.3 - MODAL: About TexLocal -->
+<div class="modal-overlay" id="modal-about">
+  <div class="modal" style="width:380px">
+    <div class="about-modal-body">
+      <div class="about-logo">
+        <div class="name">Tex<span>Local</span></div>
+        <div class="ver">v{{ texlocal_version }}</div>
+      </div>
+
+      <div class="about-row">
+        <span class="lbl">Created by</span>
+        <span class="val">PoL</span>
+      </div>
+      <div class="about-row">
+        <span class="lbl">Repository</span>
+        <a class="val" href="{{ texlocal_repo_url }}" target="_blank" rel="noopener">FourthPs/Tex-Local &#8599;</a>
+      </div>
+      <div class="about-row">
+        <span class="lbl">Latest release</span>
+        <a class="val" href="{{ texlocal_releases_url }}" target="_blank" rel="noopener">View on GitHub &#8599;</a>
+      </div>
+
+      <div style="margin-top:14px;text-align:center">
+        <button class="btn btn-ghost" id="about-check-btn" onclick="aboutCheckForUpdates()" style="font-size:12px;padding:6px 14px">
+          Check for updates
+        </button>
+        <div id="about-update-status" class="about-update-status"></div>
+      </div>
+
+      <div class="about-tagline">
+        A local LaTeX editor - Overleaf alternative<br>
+        running entirely on your machine.
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-primary" onclick="closeModal('modal-about')">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL: Import ZIP -->
+<div class="modal-overlay" id="modal-import-zip">
+  <div class="modal" style="width:460px">
+    <h3>Import ZIP</h3>
+    <div class="zip-drop-zone" id="zip-drop-zone" onclick="document.getElementById('zip-file-input').click()">
+      <span class="zip-icon">📦</span>
+      <span id="zip-drop-label">Click to select or drag a .zip here</span>
+    </div>
+    <input type="file" id="zip-file-input" accept=".zip" style="display:none" onchange="onZipSelected(this)">
+    <input id="input-zip-name" placeholder="Project name (auto-detected from ZIP)">
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="closeModal('modal-import-zip')">Cancel</button>
+      <button class="btn btn-primary" id="import-zip-btn" onclick="importZip()">Import</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── DATA ─────────────────────────────────────────────────────
+let allProjects  = [];
+let filteredProjects = [];
+let sortKey      = "modified";
+let sortAsc      = false;   // newest first by default
+
+// ── THEME (follows editor Settings) ───────────────────────────
+if (localStorage.getItem("texlocal_theme") === "light") {
+  document.documentElement.setAttribute("data-theme", "light");
+}
+
+// ── LOAD PROJECTS ─────────────────────────────────────────────
+async function loadProjects() {
+  const res  = await fetch("/api/projects");
+  allProjects = await res.json();
+  filteredProjects = [...allProjects];
+  renderTable();
+}
+
+// ── FILTER ───────────────────────────────────────────────────
+function filterProjects() {
+  const q = document.getElementById("search-input").value.toLowerCase();
+  filteredProjects = q
+    ? allProjects.filter(p => p.name.toLowerCase().includes(q))
+    : [...allProjects];
+  renderTable();
+}
+
+// ── SORT ─────────────────────────────────────────────────────
+function sortBy(key) {
+  if (sortKey === key) {
+    sortAsc = !sortAsc;
+  } else {
+    sortKey = key;
+    sortAsc = key === "name";
+  }
+  updateSortHeaders();
+  filteredProjects.sort((a, b) => {
+    let va = a[key], vb = b[key];
+    if (typeof va === "string") va = va.toLowerCase();
+    if (typeof vb === "string") vb = vb.toLowerCase();
+    if (va < vb) return sortAsc ? -1 : 1;
+    if (va > vb) return sortAsc ? 1 : -1;
+    return 0;
+  });
+  renderTable();
+}
+
+function updateSortHeaders() {
+  ["name","modified"].forEach(k => {
+    const th = document.getElementById("th-" + k);
+    if (!th) return;
+    const ico = th.querySelector(".sort-ico");
+    if (k === sortKey) {
+      th.classList.add("sorted");
+      ico.textContent = sortAsc ? "↑" : "↓";
+    } else {
+      th.classList.remove("sorted");
+      ico.textContent = "↕";
+    }
+  });
+}
+
+// ── RELATIVE TIME ─────────────────────────────────────────────
+function timeAgo(ts) {
+  const diff = Date.now() / 1000 - ts;
+  if (diff < 60)        return "just now";
+  if (diff < 3600)      return `${Math.floor(diff/60)}m ago`;
+  if (diff < 86400)     return `${Math.floor(diff/3600)}h ago`;
+  if (diff < 86400*7)   return `${Math.floor(diff/86400)} days ago`;
+  if (diff < 86400*30)  return `${Math.floor(diff/86400/7)} weeks ago`;
+  if (diff < 86400*365) return `${Math.floor(diff/86400/30)} months ago`;
+  return `${Math.floor(diff/86400/365)}y ago`;
+}
+function dateStr(ts) {
+  const d = new Date(ts * 1000);
+  return d.toLocaleDateString(undefined, { day:"numeric", month:"short", year:"numeric" })
+       + "  " + d.toLocaleTimeString(undefined, { hour:"2-digit", minute:"2-digit" });
+}
+
+// ── RENDER TABLE ─────────────────────────────────────────────
+function renderTable() {
+  const tbody = document.getElementById("proj-body");
+  const stats = document.getElementById("stats-bar");
+
+  // stats bar
+  const q = document.getElementById("search-input").value;
+  if (allProjects.length === 0) {
+    stats.innerHTML = "";
+  } else if (q) {
+    stats.innerHTML = `<span>${filteredProjects.length}</span> of <span>${allProjects.length}</span> projects match`;
+  } else {
+    stats.innerHTML = `<span>${allProjects.length}</span> project${allProjects.length !== 1 ? "s" : ""}`;
+  }
+
+  if (!filteredProjects.length) {
+    const msg = allProjects.length === 0
+      ? `<span class="empty-icon">📂</span>
+         <div class="empty-title">No projects yet</div>
+         <div class="empty-sub">Click <strong>+ New Project</strong> to get started</div>`
+      : `<span class="empty-icon">🔍</span>
+         <div class="empty-title">No matches found</div>
+         <div class="empty-sub">Try a different search term</div>`;
+    tbody.innerHTML = `<tr><td colspan="3"><div class="empty-state">${msg}</div></td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = "";
+  filteredProjects.forEach(p => {
+    const tr = document.createElement("tr");
+    const texLabel = p.tex_files ? `${p.tex_files} .tex file${p.tex_files !== 1 ? "s" : ""}` : "no .tex files";
+    tr.innerHTML = `
+      <td>
+        <div class="proj-name">${esc(p.name)}</div>
+        <div class="proj-sub">${texLabel}</div>
+      </td>
+      <td>
+        <div class="proj-date">${timeAgo(p.modified)}</div>
+        <div class="proj-date-full">${dateStr(p.modified)}</div>
+      </td>
+      <td>
+        <div class="proj-actions">
+          <button class="btn btn-ghost btn-sm" onclick="openProject(event,'${esc(p.name)}')">Open</button>
+          <button class="btn btn-ghost btn-sm" onclick="renameProject(event,'${esc(p.name)}')" title="Rename">✏</button>
+          <button class="btn btn-ghost btn-sm" onclick="duplicateProject(event,'${esc(p.name)}')" title="Duplicate">⧉</button>
+          <button class="btn btn-ghost btn-sm" onclick="exportZip(event,'${esc(p.name)}')" title="Export ZIP">⬇</button>
+          <button class="btn btn-danger btn-sm" onclick="deleteProject(event,'${esc(p.name)}')" title="Delete">🗑</button>
+        </div>
+      </td>
+    `;
+    tr.addEventListener("click", e => {
+      if (e.target.closest("button")) return;
+      openProject(e, p.name);
+    });
+    tbody.appendChild(tr);
+  });
+}
+
+function esc(s) {
+  return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+}
+
+// ── ACTIONS ──────────────────────────────────────────────────
+function openProject(e, name) {
+  e.stopPropagation();
+  window.location.href = `/editor?project=${encodeURIComponent(name)}`;
+}
+
+function exportZip(e, name) {
+  e.stopPropagation();
+  const a = document.createElement("a");
+  a.href = `/api/projects/${encodeURIComponent(name)}/export-zip`;
+  a.download = `${name}.zip`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+}
+
+async function deleteProject(e, name) {
+  e.stopPropagation();
+  if (!confirm(`Delete project "${name}"?\n\nThis cannot be undone.`)) return;
+  await fetch(`/api/projects/${encodeURIComponent(name)}`, { method: "DELETE" });
+  await loadProjects();
+}
+
+async function renameProject(e, name) {
+  e.stopPropagation();
+  const newName = prompt(`Rename "${name}" to:`, name);
+  if (!newName || newName.trim() === name) return;
+  const res  = await fetch(`/api/projects/${encodeURIComponent(name)}/rename`, {
+    method: "POST", headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({ name: newName.trim() })
+  });
+  const data = await res.json();
+  if (data.error) { alert(data.error); return; }
+  await loadProjects();
+}
+
+async function duplicateProject(e, name) {
+  e.stopPropagation();
+  const newName = prompt(`Duplicate "${name}" as:`, name + "-copy");
+  if (!newName || !newName.trim()) return;
+  const res  = await fetch(`/api/projects/${encodeURIComponent(name)}/duplicate`, {
+    method: "POST", headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({ name: newName.trim() })
+  });
+  const data = await res.json();
+  if (data.error) { alert(data.error); return; }
+  await loadProjects();
+}
+
+// ── NEW PROJECT ───────────────────────────────────────────────
+async function createProject() {
+  const name = document.getElementById("input-project-name").value.trim();
+  if (!name) return;
+  const template = document.querySelector('input[name="template"]:checked')?.value || "article";
+  const btn = document.querySelector('#modal-new-project .btn-primary');
+  btn.textContent = "Creating…"; btn.disabled = true;
+  const res  = await fetch("/api/projects", {
+    method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({name, template})
+  });
+  const data = await res.json();
+  btn.textContent = "Create"; btn.disabled = false;
+  if (data.error) { alert(data.error); return; }
+  closeModal("modal-new-project");
+  window.location.href = `/editor?project=${encodeURIComponent(name)}`;
+}
+
+// ── IMPORT ZIP ────────────────────────────────────────────────
+function onZipSelected(input) {
+  const file = input.files[0];
+  if (!file) return;
+  document.getElementById("zip-drop-label").textContent = `📦 ${file.name}`;
+  const name = file.name.replace(/\.zip$/i,"").replace(/[^a-zA-Z0-9_\- ]/g,"_");
+  document.getElementById("input-zip-name").value = name;
+}
+
+;(function(){
+  const zone = document.getElementById("zip-drop-zone");
+  zone.addEventListener("dragover",  e => { e.preventDefault(); zone.classList.add("over"); });
+  zone.addEventListener("dragleave", () => zone.classList.remove("over"));
+  zone.addEventListener("drop", e => {
+    e.preventDefault(); zone.classList.remove("over");
+    const file = e.dataTransfer.files[0];
+    if (!file || !file.name.endsWith(".zip")) return alert("Please drop a .zip file");
+    const dt = new DataTransfer(); dt.items.add(file);
+    document.getElementById("zip-file-input").files = dt.files;
+    onZipSelected(document.getElementById("zip-file-input"));
+  });
+})();
+
+async function importZip() {
+  const fileInput = document.getElementById("zip-file-input");
+  const name      = document.getElementById("input-zip-name").value.trim();
+  if (!fileInput.files[0]) return alert("Please select a ZIP file.");
+  if (!name)               return alert("Please enter a project name.");
+
+  const btn = document.getElementById("import-zip-btn");
+  btn.innerHTML = '<span class="spinner"></span> Importing…'; btn.disabled = true;
+
+  const form = new FormData();
+  form.append("file", fileInput.files[0]);
+  form.append("name", name);
+
+  const res  = await fetch("/api/import-zip", { method:"POST", body: form });
+  const data = await res.json();
+  btn.innerHTML = "Import"; btn.disabled = false;
+
+  if (data.ok) {
+    closeModal("modal-import-zip");
+    window.location.href = `/editor?project=${encodeURIComponent(data.name)}`;
+  } else {
+    alert("Import failed: " + data.error);
+  }
+}
+
+// ── MODALS ────────────────────────────────────────────────────
+function openModal(id) {
+  document.getElementById(id).classList.add("open");
+  // focus first input
+  setTimeout(() => {
+    const inp = document.querySelector(`#${id} input[type="text"], #${id} input:not([type])`);
+    if (inp) inp.focus();
+  }, 80);
+}
+function closeModal(id) {
+  document.getElementById(id).classList.remove("open");
+}
+document.querySelectorAll(".modal-overlay").forEach(o => {
+  o.addEventListener("click", e => { if (e.target === o) o.classList.remove("open"); });
+});
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape") document.querySelectorAll(".modal-overlay.open").forEach(o => o.classList.remove("open"));
+});
+
+// ── INIT ─────────────────────────────────────────────────────
+loadProjects();
+
+// ── Auto-update (v4.2.0-phase4) ─────────────────────────────────
+// Polls the backend's /api/update/check after page load. If a newer
+// release is available on GitHub AND the user hasn't dismissed that
+// specific version yet, shows a top banner. Banner offers Update Now
+// (download → progress modal → installer) or Later (dismiss until a
+// newer version appears).
+let _updateLatest = null;
+let _updateProgressTimer = null;
+
+async function checkForUpdate() {
+  try {
+    const r = await fetch("/api/update/check");
+    if (!r.ok) return;
+    const data = await r.json();
+    if (!data.available) return;
+
+    // Skip if user previously dismissed THIS exact version. localStorage
+    // key resets when a newer version appears (different `latest`).
+    const dismissedFor = localStorage.getItem("texlocal_update_dismissed");
+    if (dismissedFor === data.latest) return;
+
+    if (!data.asset_url) {
+      // Release exists but no installer .exe attached - shouldn't happen
+      // for our own releases (texlocal.iss outputs TexLocal-Setup-*.exe).
+      // Silent skip rather than misleading the user.
+      console.warn("[update] release available but no installer asset:", data);
+      return;
+    }
+
+    _updateLatest = data;
+    document.getElementById("update-banner-version").textContent = data.latest;
+    document.getElementById("update-banner-current").textContent = "v" + data.current;
+    document.getElementById("update-banner").classList.add("show");
+    document.body.classList.add("has-update-banner");
+  } catch (e) {
+    // Silent fail - no network, GitHub down, rate-limited, etc.
+    // User shouldn't see anything; check will retry next launch.
+  }
+}
+
+function dismissUpdate() {
+  if (_updateLatest) {
+    localStorage.setItem("texlocal_update_dismissed", _updateLatest.latest);
+  }
+  document.getElementById("update-banner").classList.remove("show");
+  document.body.classList.remove("has-update-banner");
+}
+
+async function startUpdate() {
+  if (!_updateLatest || !_updateLatest.asset_url) return;
+
+  document.getElementById("update-modal-backdrop").classList.add("show");
+  document.getElementById("update-modal-title").textContent = "Downloading update...";
+  document.getElementById("update-modal-status").textContent = "Connecting to GitHub...";
+  document.getElementById("update-progress-bar").style.width = "0%";
+  document.getElementById("update-modal-cancel").style.display = "";
+  document.getElementById("update-modal-cancel").textContent = "Cancel";
+
+  let r;
+  try {
+    r = await fetch("/api/update/download", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        asset_url: _updateLatest.asset_url,
+        asset_name: _updateLatest.asset_name,
+      }),
+    });
+  } catch (e) {
+    document.getElementById("update-modal-status").textContent = "Failed to start: " + e;
+    return;
+  }
+  if (!r.ok) {
+    document.getElementById("update-modal-status").textContent = "Backend rejected download request";
+    return;
+  }
+
+  // Poll progress every 500ms. Backend writes to module-level state dict.
+  _updateProgressTimer = setInterval(async () => {
+    let p;
+    try {
+      const pr = await fetch("/api/update/progress");
+      p = await pr.json();
+    } catch (e) {
+      // Network blip - skip this tick
+      return;
+    }
+
+    if (p.total > 0) {
+      const pct = (p.downloaded / p.total) * 100;
+      document.getElementById("update-progress-bar").style.width = pct.toFixed(1) + "%";
+      const mb = (b) => (b / 1024 / 1024).toFixed(1);
+      document.getElementById("update-modal-status").textContent =
+        `${mb(p.downloaded)} MB / ${mb(p.total)} MB (${pct.toFixed(0)}%)`;
+    } else if (p.downloaded > 0) {
+      // Total unknown (server didn't send Content-Length) - just show bytes
+      const mb = (b) => (b / 1024 / 1024).toFixed(1);
+      document.getElementById("update-modal-status").textContent = `${mb(p.downloaded)} MB downloaded...`;
+    }
+
+    if (p.phase === "ready") {
+      clearInterval(_updateProgressTimer);
+      _updateProgressTimer = null;
+      document.getElementById("update-modal-title").textContent = "Launching installer...";
+      document.getElementById("update-modal-status").textContent =
+        "TexLocal will close. The installer will replace it. After install, launch from Start Menu.";
+      document.getElementById("update-progress-bar").style.width = "100%";
+      document.getElementById("update-modal-cancel").style.display = "none";
+
+      // Brief delay so user can read the "TexLocal will close" notice,
+      // then trigger apply. The fetch will likely error (server exits
+      // mid-response) - we ignore that.
+      setTimeout(async () => {
+        try {
+          await fetch("/api/update/apply", { method: "POST" });
+        } catch (e) {
+          // Expected - server shut itself down. Window will linger
+          // for a moment until WebView2 notices Flask is gone.
+        }
+      }, 1500);
+    } else if (p.phase === "error") {
+      clearInterval(_updateProgressTimer);
+      _updateProgressTimer = null;
+      document.getElementById("update-modal-title").textContent = "Download failed";
+      document.getElementById("update-modal-status").textContent = p.error || "unknown error";
+      document.getElementById("update-modal-cancel").textContent = "Close";
+    }
+  }, 500);
+}
+
+function cancelUpdate() {
+  if (_updateProgressTimer) {
+    clearInterval(_updateProgressTimer);
+    _updateProgressTimer = null;
+  }
+  document.getElementById("update-modal-backdrop").classList.remove("show");
+  // Note: backend download thread keeps running. If user clicks Update Now
+  // again, /api/update/download is idempotent — it'll see phase=downloading
+  // (or ready) and not restart. They can dismiss + come back later.
+}
+
+// Kick off check shortly after page load (defer 500ms so initial project
+// list render isn't competing with a network request for first paint).
+window.addEventListener("load", () => { setTimeout(checkForUpdate, 500); });
+
+// v4.2.3 - About modal: open + manual "Check for updates" trigger.
+// Reuses the existing /api/update/check endpoint (no new backend route).
+function openAboutModal() {
+  // Reset the inline status line every time the modal opens - stale text
+  // from a previous check would mislead the user about the live state.
+  const s = document.getElementById("about-update-status");
+  if (s) { s.textContent = ""; s.className = "about-update-status"; }
+  openModal("modal-about");
+}
+
+async function aboutCheckForUpdates() {
+  const btn    = document.getElementById("about-check-btn");
+  const status = document.getElementById("about-update-status");
+  if (!btn || !status) return;
+  btn.disabled = true;
+  status.className = "about-update-status";
+  status.textContent = "Checking...";
+  try {
+    const r = await fetch("/api/update/check");
+    const data = await r.json();
+    if (data.error) {
+      // v4.2.4 - surface the actual backend-classified error message
+      // (e.g. "No releases published yet on the repo.", rate-limit text,
+      // or "Network error: ..."). Falls back to a generic line if the
+      // backend ever returns an empty error string.
+      status.className = "about-update-status err";
+      const msg = data.error || "Could not reach GitHub.";
+      // Include a fallback link so the user can manually check the
+      // releases page even when the API path is failing.
+      status.innerHTML = msg +
+        ' <a href="{{ texlocal_releases_url }}" target="_blank" rel="noopener" ' +
+        'style="color:var(--accent);text-decoration:none">Open releases page &#8599;</a>';
+    } else if (data.available && data.latest) {
+      status.className = "about-update-status newer";
+      status.innerHTML = "&#8593; v" + (data.latest||"").replace(/^v/,"") +
+                         " is available - check the banner above to install.";
+      const dismissed = localStorage.getItem("texlocal_update_dismissed");
+      if (dismissed === data.latest) {
+        localStorage.removeItem("texlocal_update_dismissed");
+        setTimeout(checkForUpdate, 250);
+      }
+    } else {
+      status.className = "about-update-status ok";
+      status.textContent = "You're on the latest version (v" +
+                            (data.current || "{{ texlocal_version }}") + ").";
+    }
+  } catch (e) {
+    status.className = "about-update-status err";
+    status.textContent = "Check failed: " + (e && e.message ? e.message : "unknown error");
+  } finally {
+    btn.disabled = false;
+  }
+}
+</script>
+</body>
+</html>

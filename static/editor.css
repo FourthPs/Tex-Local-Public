@@ -1,0 +1,1428 @@
+  :root {
+    --bg:       #0d0f14;
+    --surface:  #13161e;
+    --panel:    #191c26;
+    --border:   #252935;
+    --accent:   #5b9cf6;
+    --accent2:  #a78bfa;
+    --green:    #34d399;
+    --red:      #f87171;
+    --yellow:   #fbbf24;
+    --text:     #e2e8f0;
+    /* v3.2.3 — Bumped --muted from #64748b → #94a3b8 (Tailwind slate-400).
+       The old value was too dim against dark bg; secondary UI like outline
+       items, log lines, tab labels, and panel hints all faded into the bg.
+       Light theme overrides this further down with its own --muted. */
+    --muted:    #94a3b8;
+    --font-ui:  'Sora', sans-serif;
+    --font-code:'JetBrains Mono', monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: var(--font-ui); height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+
+  /* ── TOP BAR ── */
+  header {
+    height: 48px; background: var(--surface); border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; padding: 0 16px; gap: 12px; flex-shrink: 0;
+  }
+  .logo { font-weight: 700; font-size: 15px; letter-spacing: -0.5px; }
+  .logo span { color: var(--accent); }
+  .header-sep { flex: 1; }
+  .project-selector {
+    background: var(--panel); border: 1px solid var(--border); color: var(--text);
+    font-family: var(--font-ui); font-size: 13px; padding: 5px 10px; border-radius: 6px;
+    cursor: pointer; max-width: 200px;
+  }
+  .btn {
+    padding: 6px 14px; border-radius: 6px; font-family: var(--font-ui); font-size: 12px;
+    font-weight: 600; border: none; cursor: pointer; transition: all .15s; letter-spacing: .3px;
+  }
+  .btn-primary { background: var(--accent); color: #fff; }
+  .btn-primary:hover { background: #4a8ae8; transform: translateY(-1px); }
+  .btn-success { background: var(--green); color: #0d0f14; }
+  .btn-success:hover { background: #2ec98a; transform: translateY(-1px); }
+  .btn-ghost { background: transparent; color: var(--muted); border: 1px solid var(--border); }
+  .btn-ghost:hover { color: var(--text); border-color: var(--accent); }
+  .btn-danger { background: transparent; color: var(--red); border: 1px solid var(--border); font-size: 11px; padding: 4px 10px; }
+  .btn-danger:hover { background: var(--red); color: #fff; }
+  .compile-status { font-size: 11px; color: var(--muted); }
+  .compile-status.ok  { color: var(--green); }
+  .compile-status.err { color: var(--red); }
+
+  /* ── MAIN LAYOUT ── */
+  main { flex: 1; display: flex; overflow: hidden; }
+
+  /* ── SIDEBAR ── */
+  aside {
+    width: 220px; background: var(--surface); border-right: 1px solid var(--border);
+    display: flex; flex-direction: column; flex-shrink: 0;
+  }
+  .sidebar-title {
+    padding: 8px 10px 8px 14px; font-size: 10px; font-weight: 600; letter-spacing: 1.5px;
+    text-transform: uppercase; color: var(--muted); border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .sidebar-actions { display: flex; gap: 2px; }
+  .icon-btn {
+    background: none; border: none; color: var(--muted); cursor: pointer;
+    padding: 4px 5px; border-radius: 4px; display: flex; align-items: center;
+    justify-content: center; transition: color .15s, background .15s;
+  }
+  .icon-btn:hover { color: var(--accent); background: rgba(91,156,246,.1); }
+  /* Resize handles */
+  .resize-handle {
+    width: 4px; background: transparent; cursor: col-resize;
+    flex-shrink: 0; position: relative; transition: background .15s;
+  }
+  .resize-handle::after {
+    content: ''; position: absolute; inset: 0 -4px; /* wider hit area */
+  }
+  .resize-handle:hover, .resize-handle.resizing { background: var(--accent); }
+  /* v3.2.3 — Horizontal sibling — same idea but for row resize (e.g. between
+     Files and Outline inside the sidebar). Wider hit area via ::after. */
+  .resize-handle-h {
+    height: 4px; background: transparent; cursor: row-resize;
+    flex-shrink: 0; position: relative; transition: background .15s;
+  }
+  .resize-handle-h::after {
+    content: ''; position: absolute; inset: -4px 0;
+  }
+  .resize-handle-h:hover, .resize-handle-h.resizing { background: var(--accent); }
+  .file-tree { flex: 1; overflow-y: auto; padding: 6px 0; }
+  /* v3.2.3 — File names use full text color (was --muted, too dim in dark mode).
+     Folders stay distinguishable via font-weight: 600, not via color. */
+  .file-item {
+    padding: 6px 14px; font-size: 12px; font-family: var(--font-code); cursor: pointer;
+    display: flex; align-items: center; gap: 8px; color: var(--text);
+    transition: background .1s, color .1s; white-space: nowrap; overflow: hidden;
+  }
+  .file-item:hover { background: var(--panel); color: var(--text); }
+  .file-item.active { background: rgba(91,156,246,.12); color: var(--accent); }
+  .file-item .file-icon { font-size: 11px; flex-shrink: 0; }
+  .file-item .file-ren { opacity: 0; font-size: 12px; color: var(--muted); padding: 0 2px; cursor: pointer; flex-shrink: 0; }
+  .file-item:hover .file-ren { opacity: .6; }
+  .file-item .file-ren:hover { opacity: 1; color: var(--accent); }
+  .file-item .file-del { margin-left: 2px; opacity: 0; font-size: 14px; color: var(--red); }
+  .file-item:hover .file-del { opacity: .6; }
+  .file-item .file-del:hover { opacity: 1; }
+  .file-rename-input {
+    flex: 1; background: var(--bg); border: 1px solid var(--accent);
+    color: var(--text); font-family: var(--font-code); font-size: 12px;
+    padding: 1px 5px; border-radius: 4px; outline: none; min-width: 0;
+  }
+  .file-star { font-size: 11px; color: var(--border); opacity: 0; margin-left: 2px; flex-shrink: 0; cursor: pointer; transition: color .15s; }
+  .file-item:hover .file-star { opacity: 1; }
+  .file-star.is-main { color: var(--yellow) !important; opacity: 1; }
+  .file-star:hover { color: var(--yellow) !important; }
+  .folder-item { color: var(--text) !important; font-weight: 600; }
+  .folder-item:hover { background: var(--panel); }
+  .folder-item span { pointer-events: none; } /* ป้องกัน drag เข้า child span */
+  .folder-arrow { font-size: 9px; color: var(--muted); flex-shrink: 0; transition: transform .15s; }
+  .folder-arrow.open { transform: rotate(90deg); }
+  /* ── ERROR MARKERS ── */
+  .cm-errors-gutter { width: 20px; }
+  .cm-error-marker {
+    width: 14px; height: 14px; border-radius: 50%;
+    background: #e53e3e; color: #fff;
+    font-size: 9px; font-weight: 700; line-height: 14px;
+    text-align: center; display: block; margin: 0 auto;
+    cursor: pointer;
+  }
+  .cm-warn-marker {
+    width: 14px; height: 14px; border-radius: 50%;
+    background: #d97706; color: #fff;
+    font-size: 9px; font-weight: 700; line-height: 14px;
+    text-align: center; display: block; margin: 0 auto;
+    cursor: pointer;
+  }
+  .cm-error-line { background: rgba(229,62,62,.06) !important; }
+  .cm-warn-line  { background: rgba(217,119,6,.05) !important; }
+  /* v3.2.3 — Instant styled tooltip for the gutter error/warn markers.
+     Replaces the browser-default `title` attribute which has a ~1s delay
+     and ugly system styling. Positioned next to the marker via JS. */
+  .cm-marker-tooltip {
+    position: fixed; z-index: 250; display: none;
+    background: var(--surface); border: 1px solid var(--border);
+    color: var(--text); font: 11px var(--font-code); line-height: 1.55;
+    padding: 7px 10px; border-radius: 6px; max-width: 460px;
+    box-shadow: 0 6px 22px rgba(0,0,0,.5); white-space: pre-wrap;
+    pointer-events: none;
+  }
+  .cm-marker-tooltip.error { border-color: #e53e3e; }
+  .cm-marker-tooltip.warn  { border-color: #d97706; }
+  .cm-marker-tooltip .tip-tag {
+    display: block; font: 600 9px var(--font-ui); letter-spacing: 1.5px;
+    margin-bottom: 4px;
+  }
+  .cm-marker-tooltip.error .tip-tag { color: #f87171; }
+  .cm-marker-tooltip.warn  .tip-tag { color: #fbbf24; }
+  /* v3.2.3 — Cross-reference linter. Wavy red underline on \cite{} / \ref{}
+     keys not present in bibkeysCache or labelsCache. Hover shows the failure
+     reason via the `title` attribute set on the marker span. */
+  .cm-xref-broken {
+    text-decoration: underline wavy var(--red);
+    text-decoration-skip-ink: none;
+    text-underline-offset: 2px;
+  }
+  /* Drag & Drop */
+  .file-item.dragging { opacity: 0.35; }
+  .file-item.drag-over { background: rgba(91,156,246,.18) !important; color: var(--accent) !important; outline: 1px dashed var(--accent); outline-offset: -2px; border-radius: 4px; }
+  #file-tree.drag-over-root { background: rgba(91,156,246,.06); }
+  /* ── OUTLINE ── */
+  .outline-section { border-top: 1px solid var(--border); display: flex; flex-direction: column; min-height: 32px; max-height: 220px; flex-shrink: 0; }
+  .outline-section.collapsed .outline-tree { display: none; }
+  .outline-tree { overflow-y: auto; flex: 1; padding: 4px 0; }
+  /* v3.2.3 — Brightened outline base color (was --muted, too dim in dark mode).
+     Hierarchy is now via font-weight + indentation, not via dim-ness. */
+  .outline-item {
+    padding: 4px 14px; font-size: 11px; font-family: var(--font-code); cursor: pointer;
+    color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    transition: color .1s, background .1s;
+  }
+  .outline-item:hover { color: var(--accent); background: var(--panel); }
+  .outline-item.lvl-chapter     { font-weight: 600; padding-left: 14px; }
+  .outline-item.lvl-section     { padding-left: 14px; }
+  .outline-item.lvl-subsection  { padding-left: 26px; opacity: .85; }
+  .outline-item.lvl-subsubsection { padding-left: 38px; font-size: 10.5px; opacity: .75; }
+  .outline-empty { padding: 8px 14px; font-size: 11px; color: var(--muted); font-style: italic; }
+
+  /* ── EDITOR ── */
+  .editor-pane {
+    flex: 1; display: flex; flex-direction: column; min-width: 0;
+    position: relative;          /* anchor for floating Go-to-PDF button */
+  }
+  .editor-tabs {
+    height: 36px; background: var(--surface); border-bottom: 1px solid var(--border);
+    display: flex; align-items: flex-end; padding: 0 8px; gap: 2px; flex-shrink: 0;
+  }
+  .tab {
+    padding: 6px 14px; font-size: 11px; font-family: var(--font-code); cursor: pointer;
+    border-radius: 6px 6px 0 0; color: var(--muted); transition: all .15s;
+    border: 1px solid transparent; border-bottom: none;
+  }
+  .tab.active { background: var(--bg); color: var(--text); border-color: var(--border); }
+  .tab:hover:not(.active) { color: var(--text); }
+  #editor-host {
+    flex: 1;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+  .CodeMirror {
+    flex: 1;
+    height: 100%;
+    font-family: var(--font-code) !important;
+    font-size: 13.5px;
+    line-height: 1.7;
+    background: #ffffff !important;
+    color: #1a1a2e !important;
+  }
+  .CodeMirror-scroll { padding: 8px 12px; }
+  .CodeMirror-gutters { background: #f4f5f7 !important; border-right: 1px solid #dde1ea !important; }
+  .CodeMirror-linenumber { color: #a0aab8 !important; }
+  .CodeMirror-cursor { border-left-color: var(--accent) !important; }
+  .CodeMirror-selected { background: rgba(91,156,246,.18) !important; }
+  /* LaTeX token colors — light bg */
+  .cm-s-default .cm-keyword  { color: #0057b8 !important; font-weight: 600; }  /* \commands — blue */
+  .cm-s-default .cm-tag      { color: #007a4d !important; font-weight: 600; }  /* \begin \end — green */
+  .cm-s-default .cm-comment  { color: #8a9ab0 !important; font-style: italic; }/* % comments */
+  .cm-s-default .cm-string   { color: #9c3a00 !important; }                    /* strings — brown */
+  .cm-s-default .cm-atom     { color: #7b35b8 !important; }                    /* $math$ — purple */
+  .cm-s-default .cm-builtin  { color: #c07000 !important; }                    /* built-in — amber */
+  .cm-s-default .cm-bracket  { color: #2a7de1 !important; }                    /* {}, [] */
+
+  /* v3.2.3 — Optional DARK EDITOR THEME. Opt-in via Settings → Editor theme.
+     Independent of the UI theme (so users can have dark UI + dark editor, or
+     dark UI + light editor, or any combination). The selector lives on <html>
+     as `data-editor-theme="dark"` and uses !important to override the default
+     light-mode rules above. Token hues are tuned for low-luminance bg. */
+  [data-editor-theme="dark"] .CodeMirror {
+    background: #161922 !important;
+    color: #e2e8f0 !important;
+  }
+  [data-editor-theme="dark"] .CodeMirror-gutters {
+    background: #11141b !important;
+    border-right: 1px solid #1f2330 !important;
+  }
+  [data-editor-theme="dark"] .CodeMirror-linenumber { color: #4a5365 !important; }
+  [data-editor-theme="dark"] .CodeMirror-selected  { background: rgba(91,156,246,.22) !important; }
+  [data-editor-theme="dark"] .cm-s-default .cm-keyword  { color: #7eb6ff !important; }  /* sky */
+  [data-editor-theme="dark"] .cm-s-default .cm-tag      { color: #6ee7b7 !important; }  /* mint */
+  [data-editor-theme="dark"] .cm-s-default .cm-comment  { color: #6b7585 !important; }  /* muted */
+  [data-editor-theme="dark"] .cm-s-default .cm-string   { color: #f4a574 !important; }  /* peach */
+  [data-editor-theme="dark"] .cm-s-default .cm-atom     { color: #c8a4ff !important; }  /* lilac */
+  [data-editor-theme="dark"] .cm-s-default .cm-builtin  { color: #fbbf24 !important; }  /* amber */
+  [data-editor-theme="dark"] .cm-s-default .cm-bracket  { color: #93c5fd !important; }  /* pale */
+
+  /* ── IMAGE VIEWER ── */
+  #image-viewer {
+    display: none; flex: 1; overflow: auto;
+    background: var(--bg); flex-direction: column;
+    align-items: center; justify-content: center; gap: 10px;
+    padding: 20px;
+  }
+  #image-viewer img {
+    max-width: 100%; max-height: 100%;
+    object-fit: contain;
+    box-shadow: 0 4px 20px rgba(0,0,0,.4);
+    border-radius: 4px;
+  }
+  #image-viewer .img-info {
+    font-size: 11px; color: var(--muted); font-family: var(--font-code);
+  }
+
+  /* ── LOG PANEL ── */
+  .log-panel {
+    height: 0; background: var(--surface); border-top: 1px solid var(--border);
+    transition: height .2s; overflow: hidden; flex-shrink: 0;
+  }
+  .log-panel.open { height: 180px; }
+  .log-header { padding: 6px 16px; font-size: 10px; font-weight: 600; letter-spacing: 1.5px; text-transform: uppercase; color: var(--muted); display: flex; align-items: center; justify-content: space-between; }
+  .log-header button { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 14px; }
+  #log-content { padding: 0 16px 12px; font-family: var(--font-code); font-size: 11px; line-height: 1.6; color: var(--muted); overflow-y: auto; height: 140px; white-space: pre-wrap; }
+
+  /* ── PDF PANEL ── */
+  .pdf-pane {
+    width: 45%; border-left: 1px solid var(--border); display: flex; flex-direction: column;
+    background: var(--panel); flex-shrink: 0; overflow: hidden;
+  }
+  .pdf-toolbar {
+    height: 36px; background: var(--surface); border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; padding: 0 12px; gap: 8px; flex-shrink: 0;
+    font-size: 11px; color: var(--muted);
+  }
+  .pdf-toolbar a { color: var(--accent); text-decoration: none; font-size: 11px; font-weight: 600; }
+  .pdf-toolbar a:hover { text-decoration: underline; }
+  .pdf-zoom-sep { width:1px; height:16px; background:var(--border); margin:0 2px; }
+  .pdf-zoom-label { font-size:11px; color:var(--muted); min-width:36px; text-align:center; }
+  /* PDF.js canvas viewer */
+  #pdf-canvas-container {
+    position: absolute; inset: 0; z-index: 1;
+    display: none; overflow-y: auto; overflow-x: auto;
+    background: #525659; padding: 16px;
+    flex-direction: column; align-items: center; gap: 12px;
+    scroll-behavior: smooth;
+    transition: left .15s ease;
+  }
+  /* v3.2.2 — PDF outline / TOC sidebar. Slides in from the left edge
+     of .pdf-content; canvas container shifts right via .outline-open. */
+  #pdf-outline-panel {
+    position: absolute; top: 0; bottom: 0; left: 0; width: 240px; z-index: 4;
+    background: var(--surface); border-right: 1px solid var(--border);
+    display: none; flex-direction: column; overflow: hidden;
+    transition: transform .15s ease;
+  }
+  .pdf-content.outline-open #pdf-outline-panel { display: flex; }
+  .pdf-content.outline-open #pdf-canvas-container { left: 240px; }
+  .po-header {
+    padding: 8px 12px; background: var(--panel); border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between;
+    font-size: 11px; font-weight: 600; letter-spacing: 1px; text-transform: uppercase;
+    color: var(--muted); flex-shrink: 0;
+  }
+  .po-close {
+    background: none; border: none; color: var(--muted);
+    font-size: 14px; cursor: pointer; padding: 0 4px;
+  }
+  .po-close:hover { color: var(--accent); }
+  #pdf-outline-list {
+    flex: 1; overflow-y: auto; padding: 4px 0;
+    font-family: var(--font-ui); font-size: 12px;
+  }
+  .po-item {
+    display: flex; align-items: baseline; gap: 6px;
+    padding: 4px 10px 4px 6px; cursor: pointer; user-select: none;
+    color: var(--text); border-left: 2px solid transparent;
+  }
+  .po-item:hover { background: var(--panel); border-left-color: var(--accent); }
+  .po-item .po-title { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .po-item .po-page  { color: var(--muted); font-size: 10px; flex-shrink: 0; font-family: var(--font-code); }
+  .po-empty { padding: 16px; text-align: center; color: var(--muted); font-size: 11px; }
+  .po-children { /* nested level — controlled by inline padding-left */ }
+  .pdf-page-wrap {
+    position: relative; flex-shrink: 0;
+    box-shadow: 0 2px 10px rgba(0,0,0,.5);
+    background: #fff;
+  }
+  .pdf-page-wrap canvas { display: block; }
+  /* v3.2.3 — When the editor theme is set to "dark" we also dim the PDF
+     preview so light/dark choice is symmetric. CSS `invert + hue-rotate`
+     keeps the *colors* of figures roughly intact (blues stay blue-ish)
+     while flipping black text to white-on-black. brightness(.92) tones
+     down the page so it doesn't blast you in a dark room.
+     Caveat: photographs / color figures look slightly off — this is the
+     standard trick web PDF viewers use, and users can switch the editor
+     back to Light when reviewing figure-heavy chapters. */
+  [data-editor-theme="dark"] .pdf-page-wrap canvas {
+    filter: invert(1) hue-rotate(180deg) brightness(.92);
+  }
+  [data-editor-theme="dark"] .pdf-page-wrap { background: #111418; }
+  [data-editor-theme="dark"] #pdf-canvas-container { background: #0d0f14; }
+  /* PDF.js text layer — overlays the canvas with invisible-but-selectable text
+     so the user can select / copy and gets a text cursor over text. */
+  .textLayer {
+    position: absolute;
+    left: 0; top: 0;
+    overflow: hidden;
+    line-height: 1.0;
+    user-select: text;
+    -webkit-user-select: text;
+    pointer-events: auto;
+    z-index: 2;
+  }
+  .textLayer > span,
+  .textLayer > br {
+    color: transparent;
+    position: absolute;
+    white-space: pre;
+    cursor: text;
+    transform-origin: 0% 0%;
+  }
+  .textLayer > span::selection {
+    background: rgba(91, 156, 246, 0.35);
+    color: transparent;
+  }
+  .textLayer > span::-moz-selection {
+    background: rgba(91, 156, 246, 0.35);
+    color: transparent;
+  }
+  /* Light theme tweak — slightly darker selection to stay visible on white */
+  [data-theme="light"] .textLayer > span::selection {
+    background: rgba(91, 156, 246, 0.45);
+  }
+  .pdf-highlight {
+    position: absolute; left: 0; right: 0;
+    background: rgba(255, 200, 0, 0.35);
+    border-top: 1.5px solid rgba(255, 160, 0, 0.7);
+    border-bottom: 1.5px solid rgba(255, 160, 0, 0.7);
+    pointer-events: none;
+    z-index: 3;       /* stay above the text-selection layer */
+    animation: stx-fade 2.4s ease-out forwards;
+  }
+  @keyframes stx-fade {
+    0%   { opacity: 1; }
+    60%  { opacity: 1; }
+    100% { opacity: 0; }
+  }
+  /* backward-search jump flash on editor line */
+  .cm-synctex-jump { background: rgba(91,156,246,0.25) !important; transition: background 1.2s; }
+  .pdf-placeholder { width: 100%; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; color: var(--muted); }
+  .pdf-placeholder .icon { font-size: 48px; opacity: .3; }
+  .pdf-placeholder p { font-size: 13px; }
+
+  /* ── PDF CONTENT WRAPPER ── */
+  .pdf-content {
+    flex: 1; min-height: 0; position: relative; overflow: hidden;
+  }
+  /* ── ERROR PANEL ── */
+  #error-panel {
+    display: none;
+    position: absolute; inset: 0;   /* เต็ม .pdf-content ทุกทิศ */
+    flex-direction: column;
+    background: var(--panel);
+    overflow: hidden;
+    z-index: 2;
+  }
+  #error-panel.visible { display: flex; }
+  .err-panel-header {
+    padding: 8px 14px; background: var(--surface);
+    border-bottom: 1px solid var(--border); flex-shrink: 0;
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .err-summary {
+    font-size: 11px; font-family: var(--font-ui); color: var(--muted);
+  }
+  .err-cards {
+    flex: 1; min-height: 0;
+    overflow-y: auto;
+    padding: 10px;
+    display: block;
+  }
+  .err-card {
+    border-radius: 6px; overflow: hidden;
+    border: 1px solid var(--border); border-left-width: 3px;
+    background: var(--surface);
+    margin-bottom: 6px;
+    display: block;
+  }
+  .err-card.err-error { border-left-color: var(--red); }
+  .err-card.err-warn  { border-left-color: var(--yellow); }
+  .err-header {
+    display: flex; align-items: flex-start; gap: 8px;
+    padding: 9px 12px; cursor: default;
+  }
+  .err-icon { font-size: 11px; margin-top: 2px; flex-shrink: 0; }
+  .err-error .err-icon { color: var(--red); }
+  .err-warn  .err-icon { color: var(--yellow); }
+  .err-msg {
+    flex: 1; font-size: 12px; font-family: var(--font-code);
+    color: var(--text); line-height: 1.5; word-break: break-word;
+  }
+  .err-nav {
+    background: none; border: 1px solid var(--border); border-radius: 4px;
+    color: var(--muted); cursor: pointer; font-size: 13px; padding: 2px 6px;
+    flex-shrink: 0; margin-top: 1px; transition: all .15s;
+  }
+  .err-nav:hover { color: var(--accent); border-color: var(--accent); }
+  .err-loc {
+    font-size: 10.5px; color: var(--muted); font-family: var(--font-code);
+    padding: 4px 12px 8px 31px; border-top: 1px solid var(--border);
+  }
+
+  /* ── LOGS PANEL (parsed warnings/info) ── */
+  #logs-panel {
+    display: none; position: absolute; inset: 0;
+    flex-direction: column; background: var(--panel);
+    overflow: hidden; z-index: 3;
+  }
+  #logs-panel.visible { display: flex; }
+  .logs-tabs {
+    display: flex; align-items: center;
+    background: var(--surface); border-bottom: 1px solid var(--border);
+    flex-shrink: 0; padding: 0 10px;
+  }
+  .logs-tab {
+    padding: 8px 12px; font-size: 11px; font-weight: 600; cursor: pointer;
+    color: var(--muted); border-bottom: 2px solid transparent;
+    background: none; border-top: none; border-left: none; border-right: none;
+    font-family: var(--font-ui); transition: color .15s; white-space: nowrap;
+  }
+  .logs-tab:hover { color: var(--text); }
+  .logs-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .logs-tab .lbadge {
+    display: inline-block; margin-left: 5px; padding: 1px 5px;
+    border-radius: 9px; font-size: 10px; font-weight: 700;
+    background: var(--border); color: var(--muted);
+  }
+  .logs-tab.active .lbadge { background: rgba(91,156,246,.18); color: var(--accent); }
+  .lbadge.b-err  { background: rgba(248,113,113,.15); color: var(--red); }
+  .lbadge.b-warn { background: rgba(251,191,36,.12);  color: var(--yellow); }
+  .lbadge.b-info { background: rgba(167,139,250,.12); color: var(--accent2); }
+  .logs-close {
+    margin-left: auto; background: none; border: none; color: var(--muted);
+    cursor: pointer; font-size: 15px; padding: 4px 6px; border-radius: 4px;
+  }
+  .logs-close:hover { color: var(--text); }
+  .logs-cards { flex: 1; min-height: 0; overflow-y: auto; padding: 10px; display: block; }
+  .err-card.err-info { border-left-color: var(--accent2); }
+  .err-info .err-icon { color: var(--accent2); }
+  /* v3.3.0 — Missing-package install card.
+     Distinguished from generic errors by an accent2 left border + a copy
+     button row underneath. Mono-spaced code block holds the exact CLI the
+     user needs; the copy button writes it to clipboard with a 1.5s ack. */
+  .err-card.err-missing-pkg {
+    border-left-color: var(--accent); background: var(--surface);
+  }
+  .err-missing-pkg .err-icon { color: var(--accent); }
+  .err-missing-pkg .err-msg b { color: var(--accent); font-family: var(--font-code); font-weight: 700; }
+  .err-mpkg-row {
+    display: flex; align-items: center; gap: 8px;
+    padding: 0 12px 10px 31px; flex-wrap: wrap;
+  }
+  .err-mpkg-cmd {
+    flex: 1; min-width: 0;
+    font-family: var(--font-code); font-size: 11px;
+    background: var(--bg); color: var(--text);
+    padding: 5px 8px; border-radius: 4px; border: 1px solid var(--border);
+    user-select: all; word-break: break-all;
+  }
+  .err-mpkg-copy {
+    background: var(--accent); border: 1px solid var(--accent); color: #fff;
+    cursor: pointer; font-size: 11px; padding: 4px 10px; border-radius: 4px;
+    font-family: var(--font-ui); font-weight: 600; flex-shrink: 0;
+    transition: all .15s;
+  }
+  .err-mpkg-copy:hover  { filter: brightness(1.1); }
+  .err-mpkg-copy.copied { background: var(--green); border-color: var(--green); }
+  /* badge บนปุ่ม Logs */
+  #logs-btn-badge {
+    display: inline-block; margin-left: 5px; padding: 1px 6px;
+    border-radius: 9px; font-size: 9px; font-weight: 700; vertical-align: middle;
+    background: var(--border); color: var(--muted);
+  }
+  #logs-btn-badge.b-err  { background: rgba(248,113,113,.15); color: var(--red); }
+  #logs-btn-badge.b-warn { background: rgba(251,191,36,.12);  color: var(--yellow); }
+
+  /* v3.3.2 — Grouped-error count badge + expandable occurrence list.
+     A card now represents a GROUP of identical errors instead of one error per
+     card. The ×N pill in the header shows how many lines share the same shape;
+     clicking it (or the chevron) toggles the file:line list below.
+     Why this matters: a single typo in a macro (\foo) cascades into "Undefined
+     control sequence \foo" at every use site — 12 cards of identical text was
+     numbing. One card with ×12 collapses the visual mass and lets the user
+     fix the root cause once. The occurrences are still clickable to jump. */
+  .err-count-badge {
+    display: inline-block; padding: 1px 7px; margin-left: 4px;
+    border-radius: 9px; font-size: 10px; font-weight: 700;
+    font-family: var(--font-ui); flex-shrink: 0; line-height: 1.5;
+    cursor: pointer; user-select: none; transition: filter .15s;
+  }
+  .err-error .err-count-badge { background: rgba(248,113,113,.16); color: var(--red); }
+  .err-warn  .err-count-badge { background: rgba(251,191,36,.14);  color: var(--yellow); }
+  .err-info  .err-count-badge { background: rgba(167,139,250,.14); color: var(--accent2); }
+  .err-count-badge:hover { filter: brightness(1.15); }
+  .err-card .err-chev {
+    background: none; border: 1px solid var(--border); border-radius: 4px;
+    color: var(--muted); cursor: pointer; font-size: 9px; padding: 2px 5px;
+    flex-shrink: 0; margin-top: 1px; transition: transform .15s, color .15s;
+    line-height: 1;
+  }
+  .err-card .err-chev:hover { color: var(--accent); border-color: var(--accent); }
+  .err-card.err-expanded .err-chev { transform: rotate(90deg); }
+  .err-occurrences {
+    display: none; padding: 4px 12px 8px 31px;
+    border-top: 1px solid var(--border);
+    font-family: var(--font-code); font-size: 10.5px;
+  }
+  .err-card.err-expanded .err-occurrences { display: block; }
+  .err-occ-row {
+    display: block; width: 100%; text-align: left;
+    background: none; border: none; color: var(--muted); cursor: pointer;
+    padding: 3px 0; font-family: var(--font-code); font-size: 10.5px;
+    transition: color .12s;
+  }
+  .err-occ-row:hover { color: var(--accent); }
+
+  /* v3.3.2 — Spell check (English, Typo.js + token-aware overlay).
+     Misspelled English words inside plain-text token regions get a wavy red
+     underline. Words inside \cmd, math, citation/ref braces, comments are NOT
+     checked (per token type guard). Project-local dict at .texlocal-dict.txt
+     adds proper nouns / physics jargon (Rydberg, Hubbard, bibkey author names).
+     The "ignore-token" set was chosen empirically against ./projects/MS_Thesis_
+     2024_25_Pol_First_draft/ which has dense Dirac notation + Thai (XeLaTeX). */
+  .spell-error {
+    text-decoration: underline wavy var(--red);
+    text-decoration-skip-ink: none;
+    text-underline-offset: 2px;
+  }
+  [data-editor-theme="dark"] .spell-error {
+    text-decoration-color: #ff8a8a;
+  }
+  .spell-status {
+    display: none; position: fixed; bottom: 32px; right: 16px;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 6px; padding: 5px 11px;
+    font: 11px var(--font-ui); color: var(--muted);
+    z-index: 50; pointer-events: none;
+    box-shadow: 0 4px 12px rgba(0,0,0,.25);
+  }
+  .spell-status.visible { display: block; }
+
+  /* v3.3.3 — Right-click context menu for spell-flagged words.
+     Single-item menu: "Add «word» to dictionary". Pinned via fixed positioning
+     so it ignores CodeMirror's internal scroll containers. Body click anywhere
+     closes it (handler bound on show, removed on hide). */
+  .spell-context-menu {
+    position: fixed; z-index: 200;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 6px; padding: 4px;
+    box-shadow: 0 6px 18px rgba(0,0,0,.35);
+    font: 12px var(--font-ui); color: var(--text);
+    min-width: 200px; display: none;
+  }
+  .spell-context-menu.open { display: block; }
+  .spell-context-menu .scm-item {
+    padding: 7px 12px; border-radius: 4px; cursor: pointer;
+    display: flex; align-items: center; gap: 8px;
+    transition: background-color .1s;
+  }
+  .spell-context-menu .scm-item:hover { background: var(--bg); }
+  .spell-context-menu .scm-item .scm-icon { color: var(--muted); font-size: 13px; }
+  .spell-context-menu .scm-item .scm-word { color: var(--accent); font-weight: 600; }
+  .spell-context-menu .scm-toast {
+    padding: 6px 12px; font-size: 11px; color: var(--muted);
+    border-top: 1px solid var(--border); margin-top: 4px;
+  }
+  /* v3.3.4 — divider between suggestion rows and the "Add to dictionary"
+     action below them. 1px line + a hair of breathing room on either side. */
+  .spell-context-menu .scm-divider {
+    height: 1px; background: var(--border);
+    margin: 4px 6px; opacity: 0.7;
+  }
+  /* v3.3.4 — suggestion-specific styling. Slightly more compact than the
+     "Add" row, and the icon hue picks up the accent so the eye reads the
+     menu as "primary action: replace; secondary action: add to dict". */
+  .spell-context-menu .scm-suggestion .scm-icon { color: var(--accent); }
+
+  /* v3.3.5 — Small in-settings action button. Used by the "Manage…" entry
+     under Spell check. Visually distinct from <select>/toggle so the row
+     reads as "tap to open a sub-UI" rather than a value control. */
+  .settings-btn {
+    background: var(--bg); border: 1px solid var(--border); color: var(--text);
+    font-family: var(--font-ui); font-size: 11px; font-weight: 600;
+    padding: 4px 10px; border-radius: 6px; cursor: pointer;
+    transition: all .15s;
+  }
+  .settings-btn:hover { background: var(--surface); border-color: var(--accent); color: var(--accent); }
+
+  /* v3.3.5 — "Manage custom dictionary" modal. Sits above everything; clicks
+     on the dim backdrop close it. Inner panel keeps Quick-Open / Goals look:
+     header w/ count + ✕, filter input, scrollable word list, footer note. */
+  #dict-mgr-overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,.65);
+    display: none; align-items: center; justify-content: center; z-index: 240;
+  }
+  #dict-mgr-overlay.open { display: flex; }
+  .dm-modal {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; width: 460px; max-height: 70vh;
+    display: flex; flex-direction: column;
+    box-shadow: 0 12px 36px rgba(0,0,0,.5);
+    font: 12px var(--font-ui); color: var(--text);
+  }
+  .dm-header {
+    padding: 10px 14px; background: var(--panel); border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between;
+    border-top-left-radius: 10px; border-top-right-radius: 10px;
+    flex-shrink: 0;
+  }
+  .dm-header span { font-size: 12px; font-weight: 600; letter-spacing: .3px; }
+  .dm-count { font-weight: 400; color: var(--muted); margin-left: 4px; }
+  .dm-close { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 16px; line-height: 1; }
+  .dm-close:hover { color: var(--text); }
+  .dm-body { padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+  .dm-filter {
+    background: var(--bg); border: 1px solid var(--border); color: var(--text);
+    font-family: var(--font-code); font-size: 12px;
+    padding: 6px 10px; border-radius: 6px; outline: none;
+  }
+  .dm-filter:focus { border-color: var(--accent); }
+  .dm-list { overflow-y: auto; max-height: 50vh; display: flex; flex-direction: column; gap: 2px; }
+  .dm-row {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 5px 10px; border-radius: 4px;
+    font-family: var(--font-code); font-size: 12px;
+  }
+  .dm-row:hover { background: var(--bg); }
+  .dm-row.removing { opacity: 0.4; pointer-events: none; }
+  .dm-word { color: var(--text); }
+  .dm-row-del {
+    background: none; border: 1px solid transparent; color: var(--muted);
+    cursor: pointer; font-size: 14px; line-height: 1;
+    padding: 2px 7px; border-radius: 4px; transition: all .12s;
+  }
+  .dm-row:hover .dm-row-del { color: var(--text); }
+  .dm-row-del:hover { background: rgba(239,83,80,.15); color: #ef5350; border-color: rgba(239,83,80,.4); }
+  .dm-empty {
+    padding: 18px 12px; text-align: center; color: var(--muted);
+    font-size: 12px; line-height: 1.5; display: none;
+  }
+  .dm-empty.show { display: block; }
+  .dm-foot {
+    padding: 8px 14px; border-top: 1px solid var(--border);
+    color: var(--muted); font-size: 11px;
+    border-bottom-left-radius: 10px; border-bottom-right-radius: 10px;
+    flex-shrink: 0;
+  }
+  .dm-foot code { font-family: var(--font-code); font-size: 11px; color: var(--text); opacity: .85; }
+
+  /* ── MODAL ── */
+  .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.7); display: none; align-items: center; justify-content: center; z-index: 100; }
+  .modal-overlay.open { display: flex; }
+  .modal { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 28px; width: 400px; }
+  .modal h3 { font-size: 16px; margin-bottom: 16px; }
+  .modal input {
+    width: 100%; background: var(--bg); border: 1px solid var(--border); color: var(--text);
+    font-family: var(--font-ui); font-size: 14px; padding: 10px 14px; border-radius: 8px;
+    outline: none; margin-bottom: 16px;
+  }
+  .modal input:focus { border-color: var(--accent); }
+  .modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
+
+  /* ── PROJECT LIST MODAL ── */
+  .project-list { display: flex; flex-direction: column; gap: 6px; max-height: 340px; overflow-y: auto; margin-bottom: 16px; }
+  .project-row {
+    display: flex; align-items: center; gap: 10px;
+    background: var(--bg); border: 1px solid var(--border);
+    border-radius: 8px; padding: 10px 14px; cursor: pointer;
+    transition: border-color .15s;
+  }
+  .project-row:hover { border-color: var(--accent); }
+  .project-row.active-proj { border-color: var(--accent); background: rgba(91,156,246,.07); }
+  .project-row-name { flex: 1; font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .project-row-date { font-size: 11px; color: var(--muted); flex-shrink: 0; }
+  .project-row-del {
+    background: none; border: 1px solid transparent; border-radius: 5px;
+    color: var(--muted); cursor: pointer; font-size: 14px; padding: 2px 7px;
+    flex-shrink: 0; transition: all .15s;
+  }
+  .project-row-del:hover { color: var(--red); border-color: var(--red); background: rgba(248,113,113,.08); }
+  /* ── SCROLLBARS ── */
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+
+  /* ── AUTOCOMPLETE ── */
+  .CodeMirror-hints { background: var(--surface) !important; border: 1px solid var(--border) !important; border-radius: 6px !important; box-shadow: 0 4px 16px rgba(0,0,0,.4) !important; padding: 4px 0 !important; z-index: 999; }
+  .CodeMirror-hint { color: var(--text) !important; padding: 4px 12px !important; font-family: var(--font-code) !important; font-size: 12px !important; }
+  .CodeMirror-hint-active { background: var(--accent) !important; color: #fff !important; }
+  /* v3.2.2 — \cite{ and \ref{ autocomplete entries: bold key + dim metadata.
+     Inside the active row both spans turn white so they stay readable. */
+  .cite-hint-key  { font-weight: 600; color: var(--accent); font-family: var(--font-code); }
+  .cite-hint-meta { color: var(--muted); margin-left: 10px; font-size: 11px; font-family: var(--font-ui); }
+  /* v3.2.3 — Paper title row in \cite{ autocomplete. Sits on its own line
+     under the key+meta so long titles wrap nicely; truncated by max-width
+     of the hint popup. */
+  .cite-hint-row1 { display: flex; align-items: baseline; }
+  .cite-hint-title {
+    display: block; color: var(--text); font: 11px var(--font-ui);
+    margin-top: 2px; opacity: .75; line-height: 1.35;
+    max-width: 460px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .CodeMirror-hint-active .cite-hint-key,
+  .CodeMirror-hint-active .cite-hint-meta,
+  .CodeMirror-hint-active .cite-hint-title { color: #fff !important; opacity: 1; }
+  /* Two-line hint rows need a bit more padding so the title doesn't crash
+     into the next item. */
+  .CodeMirror-hint:has(.cite-hint-title) { padding-top: 5px !important; padding-bottom: 5px !important; }
+
+  /* v3.2.2 — TODO tracker panel. */
+  #todo-panel {
+    display: none; position: fixed; z-index: 200;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; box-shadow: 0 8px 32px rgba(0,0,0,.45);
+    width: 420px; max-height: 480px; flex-direction: column; overflow: hidden;
+  }
+  #todo-panel.open { display: flex; }
+  .td-header {
+    padding: 8px 12px; background: var(--panel); border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 8px; flex-shrink: 0;
+    font-size: 12px; font-weight: 600;
+  }
+  .td-count {
+    font: 11px var(--font-code); color: var(--muted); font-weight: 400;
+  }
+  .td-close { background: none; border: none; color: var(--muted); font-size: 14px; cursor: pointer; padding: 0 4px; }
+  .td-close:hover { color: var(--accent); }
+  #td-list {
+    flex: 1; overflow-y: auto; padding: 4px 0;
+  }
+  .td-item {
+    padding: 6px 12px; cursor: pointer;
+    display: flex; gap: 8px; align-items: baseline;
+    border-left: 3px solid transparent;
+  }
+  .td-item:hover { background: var(--panel); border-left-color: var(--accent); }
+  .td-tag {
+    font: 600 9px var(--font-ui); letter-spacing: 1px;
+    padding: 1px 6px; border-radius: 3px; flex-shrink: 0; min-width: 36px; text-align: center;
+  }
+  .td-tag.todo  { background: var(--accent); color: #fff; }
+  .td-tag.TODO  { background: var(--yellow); color: #0d0f14; }
+  .td-tag.FIXME { background: var(--red);    color: #fff; }
+  .td-tag.XXX   { background: var(--accent2);color: #fff; }
+  .td-text  { flex: 1; font-size: 12px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .td-loc   { font: 10px var(--font-code); color: var(--muted); flex-shrink: 0; }
+  .td-empty { padding: 24px; text-align: center; color: var(--muted); font-size: 12px; }
+
+  /* v3.2.3 — Recent compile log history panel. Lists last 10 runs, click
+     to expand and view the full log. Skin matches todo / goals panels. */
+  #history-panel {
+    display: none; position: fixed; z-index: 200;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; box-shadow: 0 8px 32px rgba(0,0,0,.45);
+    width: 540px; max-height: 540px; flex-direction: column; overflow: hidden;
+  }
+  #history-panel.open { display: flex; }
+  .hp-header {
+    padding: 8px 12px; background: var(--panel); border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 8px; flex-shrink: 0;
+    font-size: 12px; font-weight: 600;
+  }
+  .hp-sub { font: 11px var(--font-code); color: var(--muted); font-weight: 400; }
+  .hp-close { background: none; border: none; color: var(--muted); font-size: 14px; cursor: pointer; padding: 0 4px; }
+  .hp-close:hover { color: var(--accent); }
+  #hp-list { flex: 1; overflow-y: auto; padding: 4px 0; min-height: 0; }
+  .hp-row {
+    padding: 7px 12px; cursor: pointer;
+    display: grid; grid-template-columns: 18px 1fr auto auto; gap: 10px; align-items: center;
+    border-left: 3px solid transparent; border-bottom: 1px solid var(--border);
+  }
+  .hp-row:last-child { border-bottom: none; }
+  .hp-row:hover { background: var(--panel); border-left-color: var(--accent); }
+  .hp-row.active { background: rgba(91,156,246,.10); border-left-color: var(--accent); }
+  .hp-row.ok .hp-dot  { color: var(--green); }
+  .hp-row.err .hp-dot { color: var(--red); }
+  .hp-row .hp-dot     { font-size: 14px; line-height: 1; }
+  .hp-row .hp-when    { font: 11px var(--font-code); color: var(--text); }
+  .hp-row .hp-info    { font: 10px var(--font-code); color: var(--muted); }
+  .hp-row .hp-tags    { font: 10px var(--font-code); color: var(--accent2); }
+  .hp-empty { padding: 24px; text-align: center; color: var(--muted); font-size: 12px; }
+  #hp-detail {
+    flex: 1; min-height: 140px; max-height: 280px;
+    border-top: 1px solid var(--border);
+    overflow-y: auto; padding: 8px 12px;
+    font: 11px var(--font-code); color: var(--muted); white-space: pre-wrap; display: none;
+  }
+  #hp-detail.open { display: block; }
+  .hp-foot {
+    padding: 6px 12px; font: 11px var(--font-ui); color: var(--muted);
+    border-top: 1px solid var(--border); display: flex; gap: 14px; flex-shrink: 0;
+  }
+  .hp-foot button {
+    background: none; border: 1px solid var(--border); color: var(--text);
+    font: 11px var(--font-ui); padding: 2px 8px; border-radius: 4px; cursor: pointer;
+  }
+  .hp-foot button:hover { border-color: var(--accent); color: var(--accent); }
+
+  /* v3.2.3 — Word-count goals panel. Same skin as todo-panel — file rows
+     with progress bars and inline-editable goal numbers. */
+  #goals-panel {
+    display: none; position: fixed; z-index: 200;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; box-shadow: 0 8px 32px rgba(0,0,0,.45);
+    width: 460px; max-height: 520px; flex-direction: column; overflow: hidden;
+  }
+  #goals-panel.open { display: flex; }
+  .gp-header {
+    padding: 8px 12px; background: var(--panel); border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 8px; flex-shrink: 0;
+    font-size: 12px; font-weight: 600;
+  }
+  .gp-sub { font: 11px var(--font-code); color: var(--muted); font-weight: 400; }
+  .gp-close { background: none; border: none; color: var(--muted); font-size: 14px; cursor: pointer; padding: 0 4px; }
+  .gp-close:hover { color: var(--accent); }
+  #gp-list { flex: 1; overflow-y: auto; padding: 4px 0; }
+  .gp-row {
+    padding: 7px 12px; display: grid;
+    grid-template-columns: 1fr 70px 70px 90px; gap: 10px; align-items: center;
+    border-left: 3px solid transparent; cursor: default;
+  }
+  .gp-row:hover { background: var(--panel); border-left-color: var(--accent); }
+  .gp-row .gp-name {
+    font: 12px var(--font-code); color: var(--text);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    cursor: pointer;
+  }
+  .gp-row .gp-name:hover { color: var(--accent); }
+  .gp-row .gp-count {
+    font: 11px var(--font-code); color: var(--muted); text-align: right;
+  }
+  .gp-row .gp-target {
+    background: var(--bg); border: 1px solid var(--border); color: var(--text);
+    font: 11px var(--font-code); padding: 2px 5px; border-radius: 4px;
+    text-align: right; width: 64px; outline: none;
+  }
+  .gp-row .gp-target:focus { border-color: var(--accent); }
+  .gp-bar-wrap {
+    width: 100%; height: 6px; background: var(--panel);
+    border: 1px solid var(--border); border-radius: 4px; overflow: hidden;
+    position: relative;
+  }
+  .gp-bar {
+    height: 100%; background: var(--accent); transition: width .15s, background .15s;
+  }
+  .gp-bar.full { background: var(--green); }
+  .gp-bar.over { background: var(--yellow); }
+  .gp-empty { padding: 24px; text-align: center; color: var(--muted); font-size: 12px; }
+  .gp-foot {
+    padding: 6px 12px; font: 11px var(--font-ui); color: var(--muted);
+    border-top: 1px solid var(--border); display: flex; gap: 14px; flex-shrink: 0;
+  }
+  .gp-foot strong { color: var(--text); font-weight: 600; }
+
+  /* v3.2.2 — Environment template panel. Same skin as symbol-panel,
+     wider rows because items are full env names + previews, not glyphs. */
+  #env-panel, #snippet-panel {
+    display: none; position: fixed; z-index: 200;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; box-shadow: 0 8px 32px rgba(0,0,0,.45);
+    width: 380px; max-height: 460px; flex-direction: column; overflow: hidden;
+  }
+  #env-panel.open, #snippet-panel.open { display: flex; }
+  /* v3.3.0 — Snippet placeholder highlight inside CodeMirror.
+     Background tint + thin outline so the selectable range is visible
+     even when no text is selected; matches the existing search-match style.
+     Lives until the user Tabs out of the snippet session (then markers are
+     cleared from JS — no CSS lifecycle here). */
+  .cm-snippet-placeholder {
+    background: rgba(91,156,246,.18);
+    outline: 1px solid rgba(91,156,246,.45);
+    border-radius: 2px;
+  }
+  [data-editor-theme="dark"] .cm-snippet-placeholder {
+    background: rgba(126,182,255,.18);
+    outline-color: rgba(126,182,255,.5);
+  }
+  /* Snippet list row — trigger token + body preview */
+  .snip-row {
+    display: grid; grid-template-columns: 90px 1fr; gap: 10px;
+    padding: 7px 12px; cursor: pointer; align-items: start;
+    border-top: 1px solid transparent;   /* gap visualisation only on hover */
+    transition: background .12s;
+  }
+  .snip-row:hover { background: var(--panel); }
+  .snip-trigger {
+    font-family: var(--font-code); font-size: 12px; color: var(--accent);
+    font-weight: 600; word-break: break-all;
+  }
+  .snip-body {
+    font-family: var(--font-code); font-size: 10.5px; color: var(--muted);
+    white-space: pre-wrap; word-break: break-word;
+    max-height: 40px; overflow: hidden;
+    line-height: 1.4;
+  }
+  .snip-body .ph { color: var(--accent2); font-weight: 600; }
+  .env-header {
+    padding: 9px 14px; background: var(--panel); border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between; flex-shrink: 0;
+    font-size: 12px; font-weight: 600;
+  }
+  .env-close { background: none; border: none; color: var(--muted); font-size: 14px; cursor: pointer; padding: 0 4px; }
+  .env-close:hover { color: var(--accent); }
+  .env-cats {
+    display: flex; gap: 0; padding: 0 8px;
+    border-bottom: 1px solid var(--border); flex-shrink: 0;
+    overflow-x: auto;
+  }
+  .env-cat-btn {
+    background: none; border: none; color: var(--muted);
+    padding: 8px 12px; font-size: 11px; font-family: var(--font-ui);
+    cursor: pointer; border-bottom: 2px solid transparent;
+    white-space: nowrap;
+  }
+  .env-cat-btn:hover { color: var(--text); }
+  .env-cat-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .env-list {
+    flex: 1; overflow-y: auto; padding: 6px 0;
+  }
+  .env-row {
+    padding: 7px 14px; cursor: pointer;
+    border-left: 2px solid transparent;
+    display: flex; flex-direction: column; gap: 2px;
+  }
+  .env-row:hover { background: var(--panel); border-left-color: var(--accent); }
+  .env-row .env-name {
+    font: 600 12px var(--font-code); color: var(--text);
+  }
+  .env-row .env-preview {
+    font: 10px var(--font-code); color: var(--muted);
+    white-space: pre; overflow: hidden; text-overflow: ellipsis;
+  }
+
+  /* v3.2.2 — Image hover preview. Floating panel shown when the editor
+     cursor hovers over an \includegraphics{...} path. Positioned near
+     the mouse via inline style. */
+  #img-hover-preview {
+    display: none; position: fixed; z-index: 999;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 8px; box-shadow: 0 8px 32px rgba(0,0,0,.5);
+    padding: 6px; pointer-events: none;
+    max-width: 360px; max-height: 320px;
+  }
+  #img-hover-preview img {
+    display: block; max-width: 348px; max-height: 280px; border-radius: 4px;
+  }
+  #img-hover-preview .ihp-cap {
+    font: 10px var(--font-code); color: var(--muted);
+    padding: 4px 4px 0; word-break: break-all;
+  }
+  #img-hover-preview .ihp-err {
+    font: 11px var(--font-ui); color: var(--red);
+    padding: 8px 12px;
+  }
+  /* ── SEARCH DIALOG ── */
+  .CodeMirror-dialog {
+    position: absolute; top: 0; left: 0; right: 0; z-index: 50;
+    background: var(--surface) !important; border-bottom: 1px solid var(--border) !important;
+    padding: 6px 12px !important; font-family: var(--font-ui) !important;
+    font-size: 12px !important; color: var(--text) !important;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .CodeMirror-dialog input {
+    background: var(--bg) !important; border: 1px solid var(--border) !important;
+    color: var(--text) !important; border-radius: 4px !important; padding: 3px 8px !important;
+    font-family: var(--font-code) !important; font-size: 12px !important; outline: none !important;
+    width: 220px !important;
+  }
+  .CodeMirror-dialog input:focus { border-color: var(--accent) !important; }
+  .CodeMirror-search-hint { color: var(--muted) !important; font-size: 11px !important; }
+  /* ── WORD COUNT (now in editor toolbar via .etb-wc) ── */
+  /* upload drop zone */
+  .file-tree.upload-hover { background: rgba(91,156,246,.08); outline: 2px dashed var(--accent); outline-offset: -4px; }
+  /* import zip modal extras */
+  .zip-drop-zone {
+    border: 2px dashed var(--border); border-radius: 8px; padding: 24px 16px;
+    text-align: center; cursor: pointer; color: var(--muted); font-size: 12px;
+    transition: all .2s; margin-bottom: 12px;
+  }
+  .zip-drop-zone:hover, .zip-drop-zone.over { border-color: var(--accent); color: var(--accent); background: rgba(91,156,246,.06); }
+  .zip-drop-zone .zip-icon { font-size: 28px; display: block; margin-bottom: 6px; }
+  /* spinner */
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .6s linear infinite; }
+
+  /* ── EDITOR TOOLBAR ── */
+  /* v4.2.2 — TOOLBAR NOW SCROLLS HORIZONTALLY.
+     Earlier policy (v3.3.6) was overflow:hidden + min-width:0 on groups so
+     buttons would *clip* rather than overflow into the PDF pane. The cost
+     of that policy was that long-label buttons like \[…\] (display math)
+     visually got squeezed because etb-btn had flex-shrink:1 default — the
+     button shrank to its min-width:26px while content was wider.
+     New policy: overflow-x:auto + flex-shrink:0 on groups & buttons. The
+     editor pane width still contains the toolbar (no PDF-pane bleed), but
+     if total content exceeds the pane the user can scroll left/right
+     instead of losing access to the rightmost actions. Trackpad and
+     shift+wheel both work; scrollbar styled thin below. */
+  .editor-toolbar {
+    height: 34px; background: var(--surface); border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; padding: 0 8px; gap: 2px; flex-shrink: 0;
+    min-width: 0; overflow-x: auto; overflow-y: hidden;
+    /* Firefox thin scrollbar; webkit pseudo-elements below. */
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+  }
+  /* webkit (Chrome / WebView2) — thin horizontal scrollbar that lives inside
+     the 34px toolbar. Track is transparent so it disappears when content
+     fits; thumb fades in on hover so it's discoverable without being noisy. */
+  .editor-toolbar::-webkit-scrollbar { height: 4px; }
+  .editor-toolbar::-webkit-scrollbar-track { background: transparent; }
+  .editor-toolbar::-webkit-scrollbar-thumb { background: transparent; border-radius: 2px; }
+  .editor-toolbar:hover::-webkit-scrollbar-thumb { background: var(--border); }
+  /* v4.2.2 — Groups never shrink: the whole toolbar scrolls instead. This
+     keeps each button at its natural content width (no more squeezed \[…\]). */
+  .etb-group { display: flex; align-items: center; gap: 1px; flex-shrink: 0; }
+  .etb-spacer { flex: 1 1 auto; min-width: 12px; }
+  .etb-sep { width: 1px; height: 16px; background: var(--border); margin: 0 5px; flex-shrink: 0; }
+  .etb-btn {
+    height: 26px; min-width: 26px; padding: 0 6px;
+    background: none; border: none; border-radius: 5px;
+    color: var(--muted); cursor: pointer; font-family: var(--font-ui);
+    font-size: 12px; display: flex; align-items: center; justify-content: center;
+    transition: color .15s, background .15s;
+    flex-shrink: 0;        /* v4.2.2 — protect natural width of long-label buttons (\[…\], TT, env, …) */
+    white-space: nowrap;
+  }
+  .etb-btn:hover { color: var(--text); background: rgba(91,156,246,.1); }
+  .etb-btn.active { color: var(--accent) !important; background: rgba(91,156,246,.12) !important; }
+  .etb-wc { font-size: 11px; color: var(--muted); padding: 0 4px; white-space: nowrap; }
+  .etb-select {
+    background: var(--panel); border: 1px solid var(--border); color: var(--muted);
+    font-family: var(--font-ui); font-size: 11px; padding: 2px 4px;
+    border-radius: 5px; cursor: pointer; outline: none; height: 24px;
+  }
+  .etb-select:hover { border-color: var(--accent); color: var(--text); }
+  .etb-select:focus { border-color: var(--accent); color: var(--text); }
+
+  /* ── LIGHT THEME ── */
+  [data-theme="light"] {
+    --bg:      #f4f6fb;
+    --surface: #ffffff;
+    --panel:   #eef0f6;
+    --border:  #d6dae6;
+    --text:    #1e2330;
+    --muted:   #7a8499;
+  }
+  [data-theme="light"] .tab.active { background: var(--bg); }
+  [data-theme="light"] .CodeMirror-dialog { color: var(--text) !important; }
+
+  /* ── FOCUS MODE ── */
+  body.focus-mode aside,
+  body.focus-mode #rh-sidebar,
+  body.focus-mode .pdf-pane,
+  body.focus-mode #rh-pdf { display: none !important; }
+  body.focus-mode #focus-mode-btn { color: var(--accent) !important; background: rgba(91,156,246,.12) !important; }
+  /* ── Floating "Go to PDF" button ──────────────────────────────────
+     Sits at the seam between the editor pane and the PDF pane, vertically
+     centered. Half-overlaps the resize handle so it visually anchors the
+     boundary. The accent color + soft halo make it the brightest target on
+     screen so users always know how to send the cursor over to the PDF. */
+  #synctex-btn {
+    position: absolute;
+    top: 28%;                           /* upper-third — out of the way of body text */
+    right: -18px;                       /* poke past the resize handle */
+    transform: translateY(-50%);
+    width: 34px; height: 34px;
+    border-radius: 50%;
+    background: var(--accent);
+    color: #fff;
+    border: 2px solid var(--bg);        /* halo separates the button from the seam */
+    box-shadow: 0 4px 14px rgba(91,156,246,0.42),
+                0 1px 4px rgba(0,0,0,0.32);
+    font-size: 16px; font-weight: 600; line-height: 1;
+    cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    z-index: 30;
+    transition: transform .15s ease, box-shadow .15s ease, background .15s ease;
+    padding: 0;
+  }
+  #synctex-btn:hover {
+    background: #79b1f8;
+    box-shadow: 0 6px 20px rgba(91,156,246,0.6),
+                0 2px 6px rgba(0,0,0,0.42);
+    transform: translateY(-50%) scale(1.1);
+  }
+  #synctex-btn:active { transform: translateY(-50%) scale(0.94); }
+  #synctex-btn.syncing {
+    animation: stx-fab-pulse 0.9s ease-in-out infinite;
+  }
+  #synctex-btn.error {
+    background: var(--red);
+    box-shadow: 0 6px 18px rgba(248,113,113,0.55),
+                0 2px 6px rgba(0,0,0,0.35);
+  }
+  @keyframes stx-fab-pulse {
+    0%, 100% {
+      box-shadow: 0 6px 18px rgba(91,156,246,0.45),
+                  0 0 0 0 rgba(91,156,246,0.55);
+    }
+    50% {
+      box-shadow: 0 6px 18px rgba(91,156,246,0.45),
+                  0 0 0 8px rgba(91,156,246,0.0);
+    }
+  }
+  /* Light theme — keep contrast against the lighter background */
+  [data-theme="light"] #synctex-btn {
+    box-shadow: 0 6px 16px rgba(91,156,246,0.35),
+                0 2px 5px rgba(0,0,0,0.18);
+  }
+  /* Hide while focus-mode is on (the PDF pane is hidden anyway) */
+  body.focus-mode #synctex-btn { display: none; }
+
+  /* ── SYMBOL PANEL ── */
+  #symbol-panel {
+    display: none; position: fixed; z-index: 200;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; box-shadow: 0 8px 32px rgba(0,0,0,.45);
+    width: 370px; max-height: 400px; flex-direction: column; overflow: hidden;
+  }
+  #symbol-panel.open { display: flex; }
+
+  /* v3.2.2 — Chapter selector popup (\includeonly). Same pattern as
+     #symbol-panel but with a vertical list of checkboxes. */
+  #chapters-panel {
+    display: none; position: fixed; z-index: 200;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; box-shadow: 0 8px 32px rgba(0,0,0,.45);
+    width: 320px; max-height: 460px; flex-direction: column; overflow: hidden;
+  }
+  #chapters-panel.open { display: flex; }
+  .cp-header {
+    padding: 9px 14px; background: var(--panel); border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between; flex-shrink: 0;
+    font-size: 12px; font-weight: 600;
+  }
+  .cp-close {
+    background: none; border: none; color: var(--muted);
+    font-size: 16px; cursor: pointer; padding: 0 4px;
+  }
+  .cp-close:hover { color: var(--accent); }
+  .cp-actions {
+    padding: 8px 12px; display: flex; gap: 6px; align-items: center;
+    border-bottom: 1px solid var(--border); flex-shrink: 0;
+  }
+  .cp-btn-mini {
+    background: var(--panel); color: var(--text); border: 1px solid var(--border);
+    border-radius: 4px; padding: 3px 9px; font-size: 11px; cursor: pointer;
+    font-family: var(--font-ui);
+  }
+  .cp-btn-mini:hover { border-color: var(--accent); color: var(--accent); }
+  .cp-hint {
+    margin-left: auto; font-size: 11px; color: var(--muted);
+  }
+  .cp-list {
+    flex: 1; overflow-y: auto; padding: 6px 0;
+    font-family: var(--font-code); font-size: 12px;
+  }
+  .cp-row {
+    display: flex; align-items: center; gap: 9px;
+    padding: 5px 14px; cursor: pointer; user-select: none;
+  }
+  .cp-row:hover { background: var(--panel); }
+  .cp-row input[type=checkbox] { cursor: pointer; flex-shrink: 0; accent-color: var(--accent); }
+  .cp-row .cp-path { color: var(--text); flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .cp-row .cp-line { color: var(--muted); font-size: 10px; flex-shrink: 0; }
+  .cp-empty {
+    padding: 20px 14px; text-align: center; color: var(--muted);
+    font-size: 12px; font-family: var(--font-ui); line-height: 1.5;
+  }
+  .cp-foot {
+    padding: 8px 12px; border-top: 1px solid var(--border);
+    font-size: 10px; color: var(--muted); font-family: var(--font-ui);
+    flex-shrink: 0;
+  }
+  .cp-foot code {
+    background: var(--panel); padding: 1px 4px; border-radius: 3px;
+    font-family: var(--font-code);
+  }
+  .sym-header {
+    padding: 9px 14px; background: var(--panel); border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between; flex-shrink: 0;
+  }
+  .sym-header span { font-size: 12px; font-weight: 600; color: var(--text); letter-spacing: .3px; }
+  .sym-close { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 16px; line-height: 1; }
+  .sym-close:hover { color: var(--text); }
+  .sym-cats {
+    display: flex; overflow-x: auto; background: var(--panel);
+    border-bottom: 1px solid var(--border); flex-shrink: 0; padding: 0 8px;
+  }
+  .sym-cats::-webkit-scrollbar { height: 3px; }
+  .sym-cat-btn {
+    padding: 7px 10px; font-size: 11px; font-weight: 600; cursor: pointer;
+    white-space: nowrap; color: var(--muted); border-bottom: 2px solid transparent;
+    background: none; border-top: none; border-left: none; border-right: none;
+    font-family: var(--font-ui); transition: color .15s;
+  }
+  .sym-cat-btn:hover { color: var(--text); }
+  .sym-cat-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .sym-grid {
+    flex: 1; overflow-y: auto; padding: 10px;
+    display: flex; flex-wrap: wrap; gap: 4px; align-content: flex-start;
+  }
+  .sym-btn {
+    width: 40px; height: 40px; display: flex; align-items: center; justify-content: center;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
+    cursor: pointer; font-size: 17px; color: var(--text); transition: all .12s;
+    position: relative; flex-shrink: 0;
+  }
+  .sym-btn:hover { background: rgba(91,156,246,.15); border-color: var(--accent); transform: scale(1.1); }
+  .sym-btn::after {
+    content: attr(data-cmd); position: absolute; bottom: calc(100% + 5px); left: 50%;
+    transform: translateX(-50%); background: var(--surface); border: 1px solid var(--border);
+    border-radius: 4px; padding: 3px 7px; font-size: 10px; color: var(--muted);
+    white-space: nowrap; pointer-events: none; font-family: var(--font-code);
+    box-shadow: 0 2px 8px rgba(0,0,0,.3); opacity: 0; transition: opacity .1s;
+    z-index: 10;
+  }
+  .sym-btn:hover::after { opacity: 1; }
+
+  /* ── SEARCH PANEL ── */
+  #search-panel {
+    display: none; position: fixed; z-index: 150;
+    top: 48px; left: 50%; transform: translateX(-50%);
+    width: 620px; max-width: 90vw;
+    background: var(--surface); border: 1px solid var(--border);
+    border-top: none; border-radius: 0 0 10px 10px;
+    box-shadow: 0 8px 32px rgba(0,0,0,.4);
+    flex-direction: column; max-height: 58vh;
+  }
+  #search-panel.open { display: flex; }
+  .search-input-row {
+    display: flex; align-items: center; gap: 8px;
+    padding: 12px 14px; border-bottom: 1px solid var(--border); flex-shrink: 0;
+  }
+  .search-input-row input {
+    flex: 1; background: var(--bg); border: 1px solid var(--border);
+    color: var(--text); font-family: var(--font-code); font-size: 13px;
+    padding: 7px 12px; border-radius: 6px; outline: none;
+  }
+  .search-input-row input:focus { border-color: var(--accent); }
+  .search-close {
+    background: none; border: none; color: var(--muted);
+    cursor: pointer; font-size: 16px; flex-shrink: 0; padding: 4px 6px; line-height: 1;
+  }
+  .search-close:hover { color: var(--text); }
+  /* v3.2.2 — options row inside the search panel: regex / case toggles
+     plus a button that shows/hides the Replace input. */
+  .search-opts {
+    display: flex; align-items: center; gap: 14px;
+    padding: 6px 14px; border-bottom: 1px solid var(--border); flex-shrink: 0;
+    font: 11px var(--font-ui); color: var(--muted);
+  }
+  .search-opts label { display: flex; align-items: center; gap: 4px; cursor: pointer; }
+  .search-opts input[type=checkbox] { accent-color: var(--accent); }
+  .search-results { flex: 1; min-height: 0; overflow-y: auto; }
+  .search-result-item {
+    padding: 8px 16px; cursor: pointer; border-bottom: 1px solid var(--border);
+    transition: background .1s;
+  }
+  .search-result-item:hover { background: var(--panel); }
+  .search-result-item:last-child { border-bottom: none; }
+  .search-result-loc { font-size: 10.5px; color: var(--accent); font-family: var(--font-code); margin-bottom: 2px; font-weight: 600; }
+  .search-result-text { font-size: 12px; font-family: var(--font-code); color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .search-result-text mark { background: rgba(251,191,36,.3); color: var(--yellow); border-radius: 2px; padding: 0 2px; font-style: normal; }
+  .search-empty { padding: 28px 16px; text-align: center; color: var(--muted); font-size: 13px; }
+  .search-count { font-size: 10.5px; color: var(--muted); padding: 6px 16px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+
+  /* ── v3.2.3 — QUICK OPEN (Ctrl+P) ── */
+  /* Modal-style fuzzy file picker. Opens with Ctrl/Cmd+P or via the small "P"
+     hint that appears on the file sidebar header. Esc closes; arrows navigate
+     the list; Enter opens the highlighted file. Files are scored by an inline
+     fuzzy matcher (subsequence + basename boost). */
+  #quick-open-overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.55);
+    display: none; align-items: flex-start; justify-content: center;
+    padding-top: 80px; z-index: 220;
+  }
+  #quick-open-overlay.open { display: flex; }
+  .qo-modal {
+    width: 560px; max-width: 90vw; background: var(--surface);
+    border: 1px solid var(--border); border-radius: 10px;
+    box-shadow: 0 18px 64px rgba(0,0,0,0.55);
+    display: flex; flex-direction: column; overflow: hidden; max-height: 60vh;
+  }
+  .qo-input {
+    background: transparent; border: none; outline: none;
+    padding: 14px 16px; font: 13.5px var(--font-code);
+    color: var(--text); border-bottom: 1px solid var(--border);
+  }
+  .qo-input::placeholder { color: var(--muted); }
+  #qo-list { flex: 1; min-height: 0; overflow-y: auto; }
+  .qo-item {
+    padding: 7px 16px; font: 12px var(--font-code);
+    color: var(--text); cursor: pointer;
+    display: flex; gap: 10px; align-items: center;
+  }
+  .qo-item .qo-name { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .qo-item .qo-path { color: var(--muted); font-size: 11px; margin-left: auto; white-space: nowrap; }
+  .qo-item.active { background: rgba(91,156,246,.16); color: var(--accent); }
+  .qo-item.active .qo-path { color: var(--accent); opacity: .85; }
+  .qo-item:hover { background: var(--panel); }
+  .qo-hit { color: var(--accent); font-weight: 700; }
+  .qo-empty { padding: 24px; text-align: center; color: var(--muted); font-size: 12px; }
+  .qo-hint {
+    padding: 6px 14px; font: 10.5px var(--font-ui); color: var(--muted);
+    border-top: 1px solid var(--border); display: flex; gap: 14px; flex-shrink: 0;
+  }
+  .qo-hint kbd {
+    font-family: var(--font-code); background: var(--panel);
+    border: 1px solid var(--border); padding: 1px 5px; border-radius: 3px;
+    font-size: 10px; color: var(--text);
+  }
+
+  /* ── SETTINGS PANEL ── */
+  #settings-panel {
+    display: none; position: fixed; z-index: 200;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; box-shadow: 0 8px 32px rgba(0,0,0,.45);
+    width: 256px; flex-direction: column; overflow: hidden;
+  }
+  #settings-panel.open { display: flex; }
+  .settings-hdr {
+    padding: 10px 14px; background: var(--panel); border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between; flex-shrink: 0;
+  }
+  .settings-hdr span { font-size: 12px; font-weight: 600; color: var(--text); letter-spacing: .3px; }
+  .settings-close { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 16px; line-height: 1; }
+  .settings-close:hover { color: var(--text); }
+  .settings-body { padding: 14px; display: flex; flex-direction: column; gap: 16px; }
+  .setting-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .setting-label { font-size: 12px; color: var(--text); }
+  .theme-opt-group { display: flex; gap: 4px; }
+  .theme-opt {
+    padding: 4px 10px; font-size: 11px; font-weight: 600;
+    border-radius: 6px; border: 1px solid var(--border);
+    background: var(--panel); color: var(--muted); cursor: pointer;
+    font-family: var(--font-ui); transition: all .15s;
+  }
+  .theme-opt.active { background: rgba(91,156,246,.15); color: var(--accent); border-color: var(--accent); }
+  .settings-select {
+    background: var(--bg); border: 1px solid var(--border); color: var(--text);
+    font-family: var(--font-code); font-size: 12px; padding: 4px 8px;
+    border-radius: 6px; cursor: pointer; outline: none;
+  }
+  .settings-select:focus { border-color: var(--accent); }
+  /* toggle switch */
+  .toggle-sw { position: relative; width: 36px; height: 20px; cursor: pointer; flex-shrink: 0; display: inline-block; }
+  .toggle-sw input { opacity: 0; width: 0; height: 0; }
+  .toggle-track {
+    position: absolute; inset: 0; background: var(--border);
+    border-radius: 20px; transition: background .2s;
+  }
+  .toggle-track::before {
+    content: ''; position: absolute; width: 14px; height: 14px;
+    background: #fff; border-radius: 50%; top: 3px; left: 3px; transition: transform .2s;
+  }
+  .toggle-sw input:checked + .toggle-track { background: var(--green); }
+  .toggle-sw input:checked + .toggle-track::before { transform: translateX(16px); }
