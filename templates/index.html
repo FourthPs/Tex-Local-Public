@@ -6,11 +6,15 @@
 <title>TeX Local</title>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Sora:wght@300;400;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css">
+<!-- v4.4.0 — KaTeX for math hover preview -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/hint/show-hint.min.css">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/dialog/dialog.min.css">
 <!-- v3.2.3 — section folding addon. Custom rangeFinder for \chapter / \section
      / \subsection / \subsubsection / \paragraph is registered in JS below. -->
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/fold/foldgutter.min.css">
+<!-- v4.4.0 — CodeMirror lint gutter for pre-compile syntax checker -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/lint/lint.min.css">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%235b9cf6'/><text x='16' y='24' text-anchor='middle' font-size='22' font-weight='bold' fill='white' font-family='Georgia,serif'>T</text></svg>">
 <link rel="stylesheet" href="{{ url_for('static', filename='editor.css') }}">
 </head>
@@ -122,7 +126,14 @@
         <button class="etb-btn" id="todo-toggle-btn" onclick="toggleTodoPanel(event)" title="Show \todo / TODO / FIXME markers across the project" style="font-size:14px">✓</button>
         <!-- v3.2.3 — Word-count goals per chapter -->
         <button class="etb-btn" id="goals-toggle-btn" onclick="toggleGoalsPanel(event)" title="Word-count goals per chapter" style="font-size:14px">🎯</button>
+        <!-- v4.4.0 — Document outline: jump to section/chapter in editor -->
+        <button class="etb-btn" id="outline-toggle-btn" onclick="toggleOutlinePanel(event)" title="Document outline — jump to section" style="font-size:14px">§</button>
         <button class="etb-btn" id="focus-mode-btn" onclick="toggleFocusMode()" title="Focus mode — Esc to exit" style="font-size:14px">⛶</button>
+        <!-- v4.4.0 — Grammar mode. Opens the selection (or current paragraph) in
+             a plain <textarea> that browser grammar extensions (QuillBot,
+             Grammarly, LanguageTool) can attach to — CodeMirror's own surface
+             is not an editable field they recognise. Insert back when done. -->
+        <button class="etb-btn" id="grammar-btn" onclick="openGrammarMode()" title="Grammar mode — edit the selected text (or current paragraph) in a plain box where QuillBot / Grammarly work, then insert it back. Browser mode only." style="font-size:14px">✍</button>
       </div>
     </div>
 
@@ -219,6 +230,28 @@
     <div class="modal-actions">
       <button class="btn btn-ghost" onclick="closeModal('modal-projects')">Close</button>
       <button class="btn btn-primary" onclick="closeModal('modal-projects');showNewProject()">+ New Project</button>
+    </div>
+  </div>
+</div>
+
+<!-- v4.4.0 — Grammar mode modal. The <textarea> is a real editable field, so
+     QuillBot / Grammarly / LanguageTool browser extensions attach to it and
+     offer their grammar / paraphrase tools. Edit here, then "Insert back"
+     replaces the original range in the editor. (Extensions run in browser mode
+     only — not in the desktop WebView2 build.) -->
+<div class="modal-overlay" id="modal-grammar">
+  <div class="modal" style="width:min(780px,92vw)">
+    <h3 style="margin-bottom:6px">✍ Grammar mode</h3>
+    <p style="margin:0 0 12px;font-size:12.5px;color:var(--text-dim,#8a8f98);line-height:1.5">
+      Edit the text below — your grammar extension (QuillBot, Grammarly, …)
+      attaches to this box. Press <b>Insert back</b> to replace the original
+      text in the editor.
+    </p>
+    <textarea id="grammar-textarea" spellcheck="true" autocomplete="off"
+      style="width:100%;height:48vh;min-height:260px;box-sizing:border-box;background:var(--bg);border:1px solid var(--border);color:var(--text);font-family:var(--font-ui);font-size:15px;line-height:1.65;padding:14px;border-radius:8px;outline:none;resize:vertical"></textarea>
+    <div class="modal-actions" style="margin-top:14px">
+      <button class="btn btn-ghost" onclick="closeModal('modal-grammar')">Cancel</button>
+      <button class="btn btn-primary" onclick="applyGrammarText()">Insert back</button>
     </div>
   </div>
 </div>
@@ -332,6 +365,16 @@
         <div class="toggle-track"></div>
       </label>
     </div>
+    <!-- v4.4.0 — Inline spell suggestions. When on (and spell check is on), a
+         misspelled word you type pops a dropdown of corrections; Enter/Tab or
+         click to accept. The typing-time companion to the right-click menu. -->
+    <div class="setting-row">
+      <span class="setting-label" title="While typing, show a dropdown that autocompletes the word (from this document + the English dictionary) — press Tab or Enter to insert — and offers spelling fixes for a misspelled word. Also underlines wrong words. Works on its own; first use downloads the dictionary (~1.7MB, then cached).">Word suggestions (autocomplete + spelling)</span>
+      <label class="toggle-sw">
+        <input type="checkbox" id="spell-suggest-toggle" onchange="onSpellSuggestToggle()">
+        <div class="toggle-track"></div>
+      </label>
+    </div>
     <!-- v3.3.5 — Manage custom dictionary. Opens a modal listing every word
          in `.texlocal-dict.txt` with a × button per row to delete one. Hot-
          reloads the in-memory customDict + triggers a spell rescan after
@@ -401,6 +444,20 @@
 
 <!-- v3.2.2 — TODO tracker. Lists \todo{...}, % TODO, % FIXME, % XXX
      across all .tex files in the project. Click → jump to file:line. -->
+<!-- v4.4.0 — KaTeX hover preview popup -->
+<div id="katex-preview"></div>
+
+<!-- v4.4.0 — Document outline panel -->
+<div id="outline-panel">
+  <div class="td-header">
+    <span>Outline <span id="ol-count" class="td-count"></span></span>
+    <span style="flex:1"></span>
+    <button class="cp-btn-mini" onclick="renderOutlinePanel()" title="Re-scan">↻</button>
+    <button class="td-close" onclick="toggleOutlinePanel(event)">✕</button>
+  </div>
+  <div id="ol-list"></div>
+</div>
+
 <div id="todo-panel">
   <div class="td-header">
     <span>TODOs <span id="td-count" class="td-count"></span></span>
@@ -543,6 +600,8 @@
      ~1.7MB en_US dictionary is fetched lazily inside _ensureSpellDict() so
      users who never enable spell check don't pay the network cost. -->
 <script src="https://cdn.jsdelivr.net/npm/typo-js@1.2.4/typo.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/lint/lint.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
 <script defer src="{{ url_for('static', filename='editor.js') }}"></script>
 </body>
 </html>

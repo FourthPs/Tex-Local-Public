@@ -42,6 +42,14 @@ let spellEnabled         = false;
 let spellMarkers         = [];
 let customDict           = new Set();
 let spellScanTimer       = null;
+// v4.4.0 — Inline spell suggestions ("word suggestion"). When on, typing a
+// word the en_US dict rejects pops a CodeMirror dropdown of corrections — the
+// typing-time companion to the right-click "Replace with" menu. INDEPENDENT of
+// the red-underline spell check: it loads the same dictionary on demand, so it
+// works even with the underline toggle off. Mirrors localStorage
+// `texlocal_spellsuggest`; defaults OFF (opt-in, per documented intent).
+let spellSuggestEnabled  = false;
+let _spellHintTimer      = null;
 // v3.3.5 — Hot-reload state. customDictMtime is the file mtime returned by
 // the last successful /dict GET. On window focus we re-fetch and only swap
 // customDict if the mtime changed — keeps the disk read cheap and avoids
@@ -135,7 +143,7 @@ cmEditor.on("change", () => {
   // v3.3.2 — spell check, debounced. 600ms is long enough that mid-word edits
   // don't repeatedly flash the underline, but short enough to feel responsive
   // when the user pauses. Only runs if Pol has enabled it in Settings.
-  if (spellEnabled && typeof scheduleSpellCheck === "function") scheduleSpellCheck();
+  if ((spellEnabled || spellSuggestEnabled) && typeof scheduleSpellCheck === "function") scheduleSpellCheck();
 });
 cmEditor.on("cursorActivity", () => {
   const cur = cmEditor.getCursor();
@@ -242,7 +250,7 @@ async function init() {
     const sel = document.getElementById("project-select");
     if ([...sel.options].some(o => o.value === urlProject)) {
       sel.value = urlProject;
-      await switchProject(urlProject);
+      await switchProject(urlProject, { openMain: true });
     }
     history.replaceState(null, "", "/editor");
     return;
@@ -254,12 +262,9 @@ async function init() {
     const sel = document.getElementById("project-select");
     if ([...sel.options].some(o => o.value === lastProject)) {
       sel.value = lastProject;
-      await switchProject(lastProject);
-      // restore last file in this project
-      const lastFile = localStorage.getItem(`texlocal_last_file_${lastProject}`);
-      if (lastFile && openTabs.some(t => t.name === lastFile)) {
-        await openFile(lastFile);
-      }
+      // v4.5.0 — switchProject({openMain:true}) opens the detected main file
+      // as part of its parallel startup batch (was a serial openFile here).
+      await switchProject(lastProject, { openMain: true });
     }
   }
 }
@@ -458,7 +463,8 @@ async function loadIncludesUI() {
 // "already-closed close" being idempotent.
 const _TOOLBAR_PANEL_IDS = [
   "chapters-panel", "env-panel", "snippet-panel", "todo-panel",
-  "goals-panel", "history-panel", "symbol-panel", "settings-panel"
+  "goals-panel", "history-panel", "symbol-panel", "settings-panel",
+  "outline-panel"
 ];
 function _closeOtherToolbarPanels(exceptId) {
   for (const id of _TOOLBAR_PANEL_IDS) {
@@ -628,7 +634,7 @@ function updateDraftBadge() {
   badge.style.display = draftMode ? "inline-block" : "none";
 }
 
-async function switchProject(name) {
+async function switchProject(name, opts) {
   if (!name) return;
   // Cancel any pending auto-save from the previous project — otherwise it
   // could fire after `currentProject` flipped and write into the new project.
@@ -671,7 +677,33 @@ async function switchProject(name) {
       status.className = "compile-status";
     }
   } catch (_) { /* fallback to main.tex */ }
-  await loadFiles();
+  // ── Parallel startup (v4.5.0) ──────────────────────────────────────
+  // The file-tree, the main file's editor content, and the compiled PDF are
+  // all independent. Loading them concurrently — instead of awaiting
+  // loadFiles → HEAD → showPDF → openFile in series — markedly cuts the time
+  // from "open editor" to "PDF + source on screen". Combined with lazy PDF
+  // rasterisation (renderPdfFromUrl), the compiled main file now appears
+  // almost immediately even for a 150-page thesis.
+  const _startupTasks = [ loadFiles() ];
+
+  const pdfName = mainFile.replace(/\.tex$/, ".pdf");
+  _startupTasks.push((async () => {
+    try {
+      // HEAD avoids downloading the file just to learn if it exists;
+      // 404 = no PDF yet (first open) → leave the placeholder visible.
+      const chk = await fetch(
+        `/api/projects/${encodeURIComponent(name)}/pdf?file=${encodeURIComponent(pdfName)}`,
+        { method: "HEAD" }
+      );
+      if (chk.ok) await showPDF(pdfName);
+    } catch (_) { /* network error — leave placeholder */ }
+  })());
+
+  // v4.5.0 — open the detected main file's source as part of the same batch
+  // (callers that want it pass { openMain: true }).
+  if (opts && opts.openMain && mainFile) _startupTasks.push(openFile(mainFile));
+
+  await Promise.allSettled(_startupTasks);
 }
 
 function showNewProject() {
@@ -1994,6 +2026,185 @@ function _attachPdfPageObserver() {
   });
 }
 
+// v4.5.0 — Lazy page rasteriser (see renderPdfFromUrl). Renders ONE page's
+// canvas + text layer into its already-placed placeholder wrap, on demand.
+// Safe to call repeatedly: it no-ops if the page is already rendered or being
+// rendered, and aborts if a newer full render (compile / zoom) has started.
+async function _renderPdfPageContent(n) {
+  const wrap = document.getElementById(`pdf-page-${n}`);
+  if (!wrap || wrap.dataset.rendered !== "0") return;
+  if (!pdfJsDoc) return;
+  const tok = pdfRenderToken;            // newer full render → abandon this one
+  wrap.dataset.rendered = "rendering";
+  try {
+    const dpr  = window.devicePixelRatio || 1;
+    const page = await pdfJsDoc.getPage(n);
+    if (tok !== pdfRenderToken) { wrap.dataset.rendered = "0"; return; }
+
+    const vp1 = page.getViewport({ scale: 1 });
+    if (pdfJsPageHts[n] !== vp1.height) pdfJsPageHts[n] = vp1.height;   // fix estimate
+
+    const viewport = page.getViewport({ scale: pdfJsScale });
+    const cssW = Math.floor(viewport.width);
+    const cssH = Math.floor(viewport.height);
+    // Correct the placeholder size if this page isn't the uniform page-1 size.
+    if (wrap.style.width  !== cssW + "px") wrap.style.width  = cssW + "px";
+    if (wrap.style.height !== cssH + "px") wrap.style.height = cssH + "px";
+
+    const canvas = document.createElement("canvas");
+    canvas.width        = Math.floor(cssW * dpr);
+    canvas.height       = Math.floor(cssH * dpr);
+    canvas.style.width  = cssW + "px";
+    canvas.style.height = cssH + "px";
+    wrap.appendChild(canvas);
+
+    const renderTransform = dpr !== 1 ? [dpr, 0, 0, dpr, 0, 0] : null;
+    await page.render({
+      canvasContext: canvas.getContext("2d"),
+      viewport,
+      transform: renderTransform,
+    }).promise;
+    if (tok !== pdfRenderToken) return;
+
+    // Text layer — selection / I-beam. Same CSS-scale geometry as the canvas.
+    try {
+      const textViewport = page.getViewport({ scale: pdfJsScale });
+      let textContent = pdfTextCache[n];
+      if (!textContent) { textContent = await page.getTextContent(); pdfTextCache[n] = textContent; }
+      if (tok !== pdfRenderToken) return;
+
+      const textLayerDiv = document.createElement("div");
+      textLayerDiv.className    = "textLayer";
+      textLayerDiv.style.width  = cssW + "px";
+      textLayerDiv.style.height = cssH + "px";
+      wrap.appendChild(textLayerDiv);
+
+      const composeTransform = (m1, m2) => [
+        m1[0]*m2[0] + m1[2]*m2[1],
+        m1[1]*m2[0] + m1[3]*m2[1],
+        m1[0]*m2[2] + m1[2]*m2[3],
+        m1[1]*m2[2] + m1[3]*m2[3],
+        m1[0]*m2[4] + m1[2]*m2[5] + m1[4],
+        m1[1]*m2[4] + m1[3]*m2[5] + m1[5],
+      ];
+      const measureCtx = getMeasureCtx();
+      const frag       = document.createDocumentFragment();
+      for (const item of textContent.items || []) {
+        if (!item || !item.str) continue;
+        const tx       = composeTransform(textViewport.transform, item.transform);
+        const fontSize = Math.hypot(tx[2], tx[3]);
+        if (fontSize < 1) continue;
+        const angle = Math.atan2(tx[1], tx[0]);
+        const left  = tx[4];
+        const top   = tx[5] - fontSize;
+        const span  = document.createElement("span");
+        span.textContent      = item.str;
+        span.style.left       = left + "px";
+        span.style.top        = top  + "px";
+        span.style.fontSize   = fontSize + "px";
+        span.style.fontFamily = "sans-serif";
+        if (item.width && item.width > 0) {
+          const targetW  = item.width * textViewport.scale;
+          measureCtx.font = fontSize + "px sans-serif";
+          const naturalW = measureCtx.measureText(item.str).width || 1;
+          const ratio    = targetW / naturalW;
+          span.style.transform       = (angle !== 0 ? `rotate(${angle}rad) ` : "") + `scaleX(${ratio.toFixed(4)})`;
+          span.style.transformOrigin = "0% 0%";
+        } else if (angle !== 0) {
+          span.style.transform = `rotate(${angle}rad)`;
+        }
+        frag.appendChild(span);
+      }
+      textLayerDiv.appendChild(frag);
+    } catch (err) {
+      console.warn("[textLayer] render failed for page", n, err);
+    }
+
+    wrap.dataset.rendered = "1";
+  } catch (err) {
+    wrap.dataset.rendered = "0";   // allow a retry on the next intersection
+    console.warn("[pdf] page render failed", n, err);
+  }
+}
+
+// v4.5.0 — Triggers lazy rasterisation of pages as they approach the viewport.
+// Distinct from _pdfPageObserver (which only tracks the visible page NUMBER).
+// The generous rootMargin pre-renders ~1.5 screens ahead so scrolling feels
+// seamless rather than "blank, then pop".
+let _pdfLazyObserver = null;
+function _attachPdfLazyRenderObserver() {
+  if (_pdfLazyObserver) { try { _pdfLazyObserver.disconnect(); } catch (_) {} _pdfLazyObserver = null; }
+  const container = document.getElementById("pdf-canvas-container");
+  if (!container || !pdfJsDoc) return;
+  if (typeof IntersectionObserver === "undefined") {
+    // No observer support → render everything (old eager behaviour).
+    for (let n = 1; n <= pdfJsDoc.numPages; n++) _renderPdfPageContent(n);
+    return;
+  }
+  _pdfLazyObserver = new IntersectionObserver((entries) => {
+    for (const e of entries) {
+      if (!e.isIntersecting) continue;
+      const m = e.target.id && e.target.id.match(/^pdf-page-(\d+)$/);
+      if (m) _renderPdfPageContent(parseInt(m[1], 10));
+    }
+  }, { root: container, rootMargin: "1200px 0px" });
+  container.querySelectorAll(".pdf-page-wrap").forEach(el => _pdfLazyObserver.observe(el));
+}
+
+// v4.5.0 — Backward-search (double-click PDF → jump to editor line). Extracted
+// from the old per-page render loop so it can be attached to a placeholder
+// wrap before the page is rasterised.
+function _attachPdfBackwardSearch(wrap, pageNum) {
+  wrap.addEventListener("dblclick", async (e) => {
+    if (!currentProject) return;
+    const sel = window.getSelection && window.getSelection();
+    if (sel && sel.removeAllRanges) sel.removeAllRanges();
+    const rect   = wrap.getBoundingClientRect();
+    const clickX = e.clientX - rect.left;
+    const clickY = e.clientY - rect.top;
+    const pdf_x = clickX / pdfJsScale;
+    const pdf_y = clickY / pdfJsScale;
+    const pdfName = mainFile.replace(/\.tex$/, ".pdf");
+
+    const status = document.getElementById("compile-status");
+    status.textContent = "\u21a9 Searching\u2026";
+    status.className   = "compile-status";
+
+    try {
+      const res  = await fetch(
+        `/api/projects/${encodeURIComponent(currentProject)}/synctex/backward` +
+        `?page=${pageNum}&x=${Math.round(pdf_x)}&y=${Math.round(pdf_y)}&pdf=${encodeURIComponent(pdfName)}`
+      );
+      const data = await res.json();
+      if (!data.ok) {
+        status.textContent = data.error || "No match";
+        status.className   = "compile-status err";
+        setTimeout(() => { status.textContent = ""; status.className = "compile-status"; }, 2000);
+        return;
+      }
+      if (data.file && data.file !== currentFile) {
+        await openFile(data.file);
+      }
+      const targetLine = (data.line || 1) - 1;
+      setTimeout(() => {
+        cmEditor.setCursor(targetLine, 0);
+        cmEditor.scrollIntoView({ line: targetLine, ch: 0 }, 120);
+        cmEditor.focus();
+        cmEditor.addLineClass(targetLine, "background", "cm-synctex-jump");
+        setTimeout(() => cmEditor.removeLineClass(targetLine, "background", "cm-synctex-jump"), 1200);
+      }, data.file !== currentFile ? 200 : 0);
+
+      status.textContent = `\u21a9 Line ${data.line}`;
+      status.className   = "compile-status ok";
+      setTimeout(() => { status.textContent = ""; status.className = "compile-status"; }, 1500);
+    } catch (_) {
+      status.textContent = "Backward search failed";
+      status.className   = "compile-status err";
+      setTimeout(() => { status.textContent = ""; status.className = "compile-status"; }, 2000);
+    }
+  });
+}
+
 // v3.2.2 — PDF outline / TOC sidebar
 let pdfOutlineLoaded = false;   // last PDF load attempted to fetch outline
 let pdfOutlineData   = [];      // resolved tree: [{title, page, items: [...]}]
@@ -2132,200 +2343,46 @@ async function renderPdfFromUrl(url, forceReload) {
       if (_pin) _pin.max = pdfJsDoc.numPages;
     }
     pdfJsPageHts = [null];   // index 0 unused
-
-    const dpr = window.devicePixelRatio || 1;
     container.innerHTML = "";
-    for (let n = 1; n <= pdfJsDoc.numPages; n++) {
-      if (myToken !== pdfRenderToken) return;   // a newer render took over
-      const page = await pdfJsDoc.getPage(n);
-      const vp1  = page.getViewport({ scale: 1 });
-      pdfJsPageHts.push(vp1.height);   // pt height at scale=1
 
-      // ── HiDPI rendering ─────────────────────────────────────────────
-      // Use INTEGER css dimensions and an INTEGER device-pixel buffer so
-      // canvas.width and canvas.style.width agree exactly. Previously we
-      // passed fractional dims (e.g. A4 = 595.276pt) directly to canvas.width
-      // — the browser silently floored to 595, but CSS still asked for
-      // 595.276px, causing subpixel resampling that made the image look
-      // soft/blurry. We also use the `transform` argument to render at
-      // device-pixel resolution rather than baking dpr into the viewport
-      // scale, which keeps text-layer geometry simple (one scale = the CSS
-      // scale) and avoids accumulated rounding drift.
-      const viewport = page.getViewport({ scale: pdfJsScale });
-      const cssW = Math.floor(viewport.width);
-      const cssH = Math.floor(viewport.height);
+    // v4.5.0 — LAZY PDF rendering. Rasterising every page (canvas + text
+    // layer) up-front made opening a ~150-page thesis take several seconds
+    // before anything was usable. Instead we create correctly-SIZED page
+    // placeholders immediately — so total scroll height, page-jump offsets and
+    // synctex `pdf-page-N` targets are all valid right away — then rasterise
+    // each page only when it nears the viewport (see _renderPdfPageContent /
+    // _attachPdfLazyRenderObserver). First paint is now near-instant.
+    //
+    // Page size is read from page 1 and assumed uniform (true for A4/Letter
+    // theses). If a page differs when it actually renders, its wrap height and
+    // pdfJsPageHts entry are corrected then — a mixed-size doc just gets a
+    // small one-time scroll nudge on the odd page.
+    const _p1   = await pdfJsDoc.getPage(1);
+    if (myToken !== pdfRenderToken) return;
+    const _vp1  = _p1.getViewport({ scale: 1 });
+    const _vpS  = _p1.getViewport({ scale: pdfJsScale });
+    const cssW  = Math.floor(_vpS.width);
+    const cssH  = Math.floor(_vpS.height);
+    const uniH1 = _vp1.height;   // scale-1 height estimate used for jumps
+
+    for (let n = 1; n <= pdfJsDoc.numPages; n++) {
+      if (myToken !== pdfRenderToken) return;
+      pdfJsPageHts.push(uniH1);
 
       const wrap = document.createElement("div");
-      wrap.className    = "pdf-page-wrap";
-      wrap.id           = `pdf-page-${n}`;
-      wrap.style.width  = cssW + "px";
-      wrap.style.height = cssH + "px";
-
-      const canvas = document.createElement("canvas");
-      canvas.width        = Math.floor(cssW * dpr);   // integer device pixels
-      canvas.height       = Math.floor(cssH * dpr);
-      canvas.style.width  = cssW + "px";              // matches buffer 1:1 in CSS
-      canvas.style.height = cssH + "px";
-
-      wrap.appendChild(canvas);
+      wrap.className        = "pdf-page-wrap";
+      wrap.id               = `pdf-page-${n}`;
+      wrap.dataset.page     = String(n);
+      wrap.dataset.rendered = "0";          // "0" = not yet, "rendering", "1" = done
+      wrap.style.width      = cssW + "px";
+      wrap.style.height     = cssH + "px";
+      wrap.style.cursor     = "default";
+      _attachPdfBackwardSearch(wrap, n);    // dblclick → editor jump (no raster needed)
       container.appendChild(wrap);
-
-      const renderTransform = dpr !== 1 ? [dpr, 0, 0, dpr, 0, 0] : null;
-      await page.render({
-        canvasContext: canvas.getContext("2d"),
-        viewport,
-        transform: renderTransform,
-      }).promise;
-      if (myToken !== pdfRenderToken) return;
-
-      // ── Text layer: enables text selection & I-beam cursor over text ─────
-      // We build the text layer manually rather than calling
-      // `pdfjsLib.renderTextLayer` because some pdf.js CDN bundles don't
-      // export that helper. CSS-scale viewport (no DPR) — text spans are in
-      // CSS pixels, not physical canvas pixels.
-      try {
-        const textViewport = page.getViewport({ scale: pdfJsScale });
-        // ── Cache TextContent across zooms ────────────────────────────
-        // The text content of a page doesn't change when the user zooms,
-        // only the geometry does. Re-fetching it on every zoom click was a
-        // noticeable network/decoding hit on long documents. The cache is
-        // invalidated when a new PDF is loaded (forceReload branch above).
-        let textContent = pdfTextCache[n];
-        if (!textContent) {
-          textContent = await page.getTextContent();
-          pdfTextCache[n] = textContent;
-        }
-        if (myToken !== pdfRenderToken) return;
-        const textLayerDiv = document.createElement("div");
-        textLayerDiv.className    = "textLayer";
-        textLayerDiv.style.width  = cssW + "px";
-        textLayerDiv.style.height = cssH + "px";
-        wrap.appendChild(textLayerDiv);
-
-        // Combine the page transform (PDF→canvas) with each text item's own
-        // transform to get a final 2D matrix [a,b,c,d,e,f] in canvas pixels.
-        //   a = scaleX, d = scaleY (negative = y-flip), e = x(left), f = y(baseline)
-        // We compute this ourselves to avoid depending on `pdfjsLib.Util`,
-        // which is not exposed in every CDN build.
-        const composeTransform = (m1, m2) => [
-          m1[0]*m2[0] + m1[2]*m2[1],
-          m1[1]*m2[0] + m1[3]*m2[1],
-          m1[0]*m2[2] + m1[2]*m2[3],
-          m1[1]*m2[2] + m1[3]*m2[3],
-          m1[0]*m2[4] + m1[2]*m2[5] + m1[4],
-          m1[1]*m2[4] + m1[3]*m2[5] + m1[5],
-        ];
-
-        // ── Fast text-width measurement ──────────────────────────────
-        // Previously we appended a probe <span> and called
-        // getBoundingClientRect() per item — that forces a layout reflow
-        // for every glyph and was the dominant cost when zooming long docs.
-        // ctx.measureText() runs purely in the canvas measurement pipeline,
-        // never touches DOM layout, and is orders of magnitude faster.
-        // Build into a DocumentFragment so we only mutate the live tree once.
-        const measureCtx = getMeasureCtx();
-        const frag       = document.createDocumentFragment();
-
-        for (const item of textContent.items || []) {
-          if (!item || !item.str) continue;
-          const tx       = composeTransform(textViewport.transform, item.transform);
-          const fontSize = Math.hypot(tx[2], tx[3]);   // vertical scale magnitude
-          if (fontSize < 1) continue;
-          const angle    = Math.atan2(tx[1], tx[0]);
-          // Top of glyph = baseline (tx[5]) minus ascent (~fontSize for typical fonts)
-          const left = tx[4];
-          const top  = tx[5] - fontSize;
-
-          const span = document.createElement("span");
-          span.textContent       = item.str;
-          span.style.left        = left + "px";
-          span.style.top         = top  + "px";
-          span.style.fontSize    = fontSize + "px";
-          span.style.fontFamily  = "sans-serif";
-
-          // Stretch horizontally so the span covers the glyph rectangle the
-          // canvas drew; selection bounds then track real glyph boundaries.
-          if (item.width && item.width > 0) {
-            const targetW  = item.width * textViewport.scale;
-            measureCtx.font = fontSize + "px sans-serif";
-            const naturalW = measureCtx.measureText(item.str).width || 1;
-            const ratio    = targetW / naturalW;
-            span.style.transform       = (angle !== 0 ? `rotate(${angle}rad) ` : "")
-                                       + `scaleX(${ratio.toFixed(4)})`;
-            span.style.transformOrigin = "0% 0%";
-          } else if (angle !== 0) {
-            span.style.transform = `rotate(${angle}rad)`;
-          }
-          frag.appendChild(span);
-        }
-        textLayerDiv.appendChild(frag);
-      } catch (err) {
-        console.warn("[textLayer] render failed for page", n, err);
-      }
-
-      // ── Backward search: DOUBLE-click on PDF → jump to editor line ───────
-      // Single-click is reserved for normal cursor placement / text selection
-      // (matches typical document-viewer ergonomics). The wrap shows the
-      // default arrow cursor; the .textLayer spans switch to I-beam over text.
-      const pageNum = n;
-      wrap.style.cursor = "default";
-      wrap.addEventListener("dblclick", async (e) => {
-        if (!currentProject) return;
-        // Double-click selects a word by default — clear that so the highlight
-        // we're about to draw isn't competing with a text selection.
-        const sel = window.getSelection && window.getSelection();
-        if (sel && sel.removeAllRanges) sel.removeAllRanges();
-        const rect   = wrap.getBoundingClientRect();
-        const clickX = e.clientX - rect.left;   // CSS px from left of page
-        const clickY = e.clientY - rect.top;    // CSS px from top of page
-
-        // synctex edit expects x,y in PDF points, y from TOP (TeX origin)
-        // — do NOT flip y here (unlike synctex view which uses y from bottom)
-        const pdf_x = clickX / pdfJsScale;
-        const pdf_y = clickY / pdfJsScale;
-        const pdfName = mainFile.replace(/\.tex$/, ".pdf");
-
-        const status = document.getElementById("compile-status");
-        status.textContent = "↩ Searching…";
-        status.className   = "compile-status";
-
-        try {
-          const res  = await fetch(
-            `/api/projects/${encodeURIComponent(currentProject)}/synctex/backward` +
-            `?page=${pageNum}&x=${Math.round(pdf_x)}&y=${Math.round(pdf_y)}&pdf=${encodeURIComponent(pdfName)}`
-          );
-          const data = await res.json();
-          if (!data.ok) {
-            status.textContent = data.error || "No match";
-            status.className   = "compile-status err";
-            setTimeout(() => { status.textContent = ""; status.className = "compile-status"; }, 2000);
-            return;
-          }
-          // Open the file if needed, then jump to the line
-          if (data.file && data.file !== currentFile) {
-            await openFile(data.file);
-          }
-          const targetLine = (data.line || 1) - 1;   // CodeMirror is 0-indexed
-          setTimeout(() => {
-            cmEditor.setCursor(targetLine, 0);
-            cmEditor.scrollIntoView({ line: targetLine, ch: 0 }, 120);
-            cmEditor.focus();
-            // Flash the line
-            cmEditor.addLineClass(targetLine, "background", "cm-synctex-jump");
-            setTimeout(() => cmEditor.removeLineClass(targetLine, "background", "cm-synctex-jump"), 1200);
-          }, data.file !== currentFile ? 200 : 0);
-
-          status.textContent = `↩ Line ${data.line}`;
-          status.className   = "compile-status ok";
-          setTimeout(() => { status.textContent = ""; status.className = "compile-status"; }, 1500);
-
-        } catch (_) {
-          status.textContent = "Backward search failed";
-          status.className   = "compile-status err";
-          setTimeout(() => { status.textContent = ""; status.className = "compile-status"; }, 2000);
-        }
-      });
     }
+
+    // Rasterise on-screen (and soon-to-be-on-screen) pages lazily.
+    _attachPdfLazyRenderObserver();
   } catch (err) {
     container.innerHTML = `<div style="color:var(--red);padding:24px;font-size:12px">PDF load error: ${err.message}</div>`;
   } finally {
@@ -2505,6 +2562,9 @@ attachPdfWheelZoom();
 function pdfScrollToPosition(page, x, y, h, w, y2) {
   const wrap = document.getElementById(`pdf-page-${page}`);
   if (!wrap) return;
+  // v4.5.0 — with lazy rendering the synctex target page may not be rasterised
+  // yet; kick it off now so the highlight lands on real content, not a blank.
+  _renderPdfPageContent(page);
   document.querySelectorAll(".pdf-highlight").forEach(el => el.remove());
 
   const glyphH  = (h && h > 2) ? h : 10;
@@ -2850,6 +2910,181 @@ cmEditor.on("keyup", (cm, e) => {
   }
 });
 
+// ── PROSE WORD SUGGESTIONS (v4.4.0) ───────────────────────────
+// One typing-time dropdown over plain prose that does two jobs:
+//   1. AUTOCOMPLETE — as you type a word prefix, offer longer words that begin
+//      with it, drawn from (a) words already in this document (domain terms
+//      like "Rydberg", "polyglossia") and (b) the en_US dictionary. Tab OR
+//      Enter inserts the highlighted word.
+//   2. CORRECT — when there's nothing to complete AND the typed word is a
+//      complete misspelling (e.g. "recieve"), fall back to spelling fixes (the
+//      typing-time twin of the right-click "Replace with" menu).
+// Both reuse the same dictionary the wavy-underline pass loads, and the same
+// skip-mask, so the dropdown never fires inside \commands, math, comments, or
+// citation braces. Gated on the "Word suggestions" toggle (spellSuggestEnabled).
+
+// Walk back over letters/apostrophes to find the word ending at the cursor.
+function _proseWordAt(cm, cur) {
+  const line = cm.getLine(cur.line) || "";
+  let start = cur.ch;
+  while (start > 0 && /[A-Za-z']/.test(line[start - 1])) start--;
+  return { word: line.slice(start, cur.ch), start, end: cur.ch, line };
+}
+
+// Sorted, lower-cased, de-duped dictionary word list — built once (lazily) from
+// Typo's internal table so we can prefix-search by binary lower-bound. ~150k
+// entries incl. inflections; the one-time filter+sort (~150ms) happens on the
+// first completion, then it's cached for the session.
+let _dictWords = null;
+function _dictWordList() {
+  if (_dictWords) return _dictWords;
+  const table = spellChecker && spellChecker.dictionaryTable;
+  if (!table) return null;
+  const seen = new Set();
+  for (const w of Object.keys(table)) {
+    if (!/^[A-Za-z][A-Za-z']*$/.test(w)) continue;   // skip "0th", numbers, symbol-laced
+    seen.add(w.toLowerCase());
+  }
+  _dictWords = Array.from(seen).sort();
+  return _dictWords;
+}
+
+// Lower-bound binary search → contiguous run of words starting with `prefix`,
+// strictly longer than it (a completion must add something). Sorted input.
+function _dictPrefix(prefix, limit) {
+  const words = _dictWordList();
+  if (!words) return [];
+  let lo = 0, hi = words.length;
+  while (lo < hi) { const mid = (lo + hi) >> 1; if (words[mid] < prefix) lo = mid + 1; else hi = mid; }
+  const out = [];
+  for (let i = lo; i < words.length && out.length < limit; i++) {
+    if (!words[i].startsWith(prefix)) break;
+    if (words[i].length > prefix.length) out.push(words[i]);
+  }
+  return out;
+}
+
+// Document words, cached and rebuilt only when the buffer actually changes
+// (cm.changeGeneration() bumps on every edit). Preserves original casing so
+// "Rydberg" completes capitalised. Capped so a huge thesis file stays cheap.
+let _docWordCache = { gen: null, words: [] };
+function _docWords() {
+  const gen = cmEditor.changeGeneration();
+  if (gen !== _docWordCache.gen) {
+    const seen = new Map();   // lower → original (first-seen wins)
+    const re = /[A-Za-z][A-Za-z']{1,}/g;
+    const text = cmEditor.getValue();
+    let m;
+    while ((m = re.exec(text))) {
+      const lw = m[0].toLowerCase();
+      if (!seen.has(lw)) seen.set(lw, m[0]);
+      if (seen.size > 6000) break;
+    }
+    _docWordCache = { gen, words: Array.from(seen.values()) };
+  }
+  return _docWordCache.words;
+}
+
+CodeMirror.registerHelper("hint", "proseword", function(cm) {
+  if (!spellSuggestEnabled || !spellChecker) return;
+  const cur = cm.getCursor();
+  const { word, start, end, line } = _proseWordAt(cm, cur);
+  if (word.length < 2) return;                              // too short → noisy
+  if (/'(?:s|t|re|ve|ll|d|m)$/i.test(word)) return;         // contraction/possessive
+  // Don't fire inside math / comments / \command regions / citation braces.
+  const mask = _buildSkipMask(line);
+  for (let j = start; j < end; j++) if (mask[j]) return;
+
+  const lw = word.toLowerCase();
+  const upperFirst = /^[A-Z]/.test(word);
+  const seen = new Set([lw]);
+  const out = [];
+  const cap = 9;
+
+  // 1) AUTOCOMPLETE — document words first (most relevant), then dictionary.
+  for (const dw of _docWords()) {
+    if (out.length >= cap) break;
+    const dlw = dw.toLowerCase();
+    if (dlw.length > lw.length && dlw.startsWith(lw) && !seen.has(dlw)) {
+      seen.add(dlw); out.push(dw);
+    }
+  }
+  for (const m of _dictPrefix(lw, cap)) {
+    if (out.length >= cap) break;
+    if (!seen.has(m)) { seen.add(m); out.push(upperFirst ? m.charAt(0).toUpperCase() + m.slice(1) : m); }
+  }
+
+  // 2) CORRECT — only when there's nothing to complete AND the whole word is a
+  //    misspelling (e.g. "recieve"): offer spelling fixes instead.
+  if (!out.length) {
+    if (word.length < 3) return;
+    if (word.length <= 5 && word === word.toUpperCase()) return;   // acronym
+    if (customDict.has(lw)) return;
+    if (spellChecker.check(word)) return;                          // correct & complete → nothing to add
+    let suggestions;
+    if (_suggestCache.has(lw)) suggestions = _suggestCache.get(lw);
+    else {
+      try { suggestions = spellChecker.suggest(word, 7) || []; } catch (_) { suggestions = []; }
+      _suggestCache.set(lw, suggestions);
+    }
+    // Drop the input echo and Typo.js's occasional digit-laced junk ("vegab02nd").
+    suggestions = (suggestions || []).filter(s => s && s.toLowerCase() !== lw && !/\d/.test(s));
+    for (const s of suggestions) {
+      if (out.length >= cap) break;
+      if (!seen.has(s.toLowerCase())) { seen.add(s.toLowerCase()); out.push(s); }
+    }
+  }
+
+  if (!out.length) return;
+  return {
+    list: out.map(s => ({ text: s, displayText: s })),
+    from: { line: cur.line, ch: start },
+    to:   { line: cur.line, ch: end },
+  };
+});
+
+// Tab (and the default Enter) insert the highlighted word. extraKeys here bind
+// ONLY while the dropdown is open, so the editor's normal Tab (snippet expand /
+// indent) is untouched whenever the dropdown isn't showing.
+const _PROSE_HINT_OPTS = {
+  hint: CodeMirror.hint.proseword,
+  completeSingle: false,
+  extraKeys: { Tab: (cm, h) => h.pick() },
+};
+
+// Trigger. Separate keyup listener so it can't perturb the LaTeX-autocomplete
+// logic above. Lightly debounced.
+cmEditor.on("keyup", (cm, e) => {
+  if (!spellSuggestEnabled) return;
+  if (!e.key || cm.state.completionActive) return;   // a dropdown is already up
+  // React only to prose typing / corrective backspace — not arrows, modifiers,
+  // Enter, etc. (those would re-pop the menu the user just dismissed).
+  const typing = (e.key.length === 1 && /[A-Za-z']/.test(e.key)) || e.key === "Backspace";
+  if (!typing) return;
+  const cur = cm.getCursor();
+  const pre = cm.getLine(cur.line).slice(0, cur.ch);
+  // Never compete with the LaTeX/cite/ref dropdowns — those own these contexts.
+  if (_CITE_CTX.test(pre) || _REF_CTX.test(pre) || /\\[a-zA-Z]*$/.test(pre)) return;
+  // Lazy-load the dictionary on first prose typing — no upfront 1.7MB for users
+  // who only read or only write \commands. The load takes ~1-2s, by which time
+  // the user has usually stopped typing, so we must re-fire the hint when it
+  // resolves — otherwise the very FIRST word never gets a dropdown.
+  if (!spellChecker) {
+    _ensureSpellDict().then(d => {
+      if (!d || !spellSuggestEnabled) return;
+      _runSpellCheck();   // underline the wrong words now that the dict is here
+      if (!cm.state.completionActive) cm.showHint(_PROSE_HINT_OPTS);
+    });
+    return;
+  }
+  clearTimeout(_spellHintTimer);
+  _spellHintTimer = setTimeout(() => {
+    if (cm.state.completionActive) return;
+    // showHint quietly does nothing if the helper returns no list.
+    cm.showHint(_PROSE_HINT_OPTS);
+  }, 250);
+});
+
 // ── RESIZE PANELS ────────────────────────────────────────────
 ;(function() {
   // `active` is the data-resize value of the handle being dragged. Three
@@ -2944,6 +3179,57 @@ function wrapSel(before, after) {
     cmEditor.replaceSelection(before + after);
     cmEditor.setCursor({ line: cur.line, ch: cur.ch + before.length });
   }
+  cmEditor.focus();
+}
+
+// ── GRAMMAR MODE (v4.4.0) ─────────────────────────────────────
+// Browser grammar/paraphrase extensions (QuillBot, Grammarly, LanguageTool)
+// only attach to real editable fields — CodeMirror keeps the document in its
+// own model behind a hidden 1-line scratch textarea, so they can't see it.
+// This opens the current selection (or, if nothing is selected, the paragraph
+// around the cursor) in a genuine full <textarea> the extension CAN hook. The
+// edited text is written back to the exact source range on "Insert back".
+// NB: extensions run in browser mode (localhost:5000) only — the desktop
+// WebView2 build doesn't load browser extensions at all.
+let _grammarRange = null;
+
+function _currentParagraphRange() {
+  // Block bounded by blank lines (or document edges) around the cursor.
+  const cur  = cmEditor.getCursor();
+  const last = cmEditor.lastLine();
+  const blank = (ln) => !(cmEditor.getLine(ln) || "").trim();
+  if (blank(cur.line)) {
+    const len = (cmEditor.getLine(cur.line) || "").length;
+    return { from: { line: cur.line, ch: 0 }, to: { line: cur.line, ch: len } };
+  }
+  let top = cur.line, bot = cur.line;
+  while (top > 0    && !blank(top - 1)) top--;
+  while (bot < last && !blank(bot + 1)) bot++;
+  return { from: { line: top, ch: 0 }, to: { line: bot, ch: (cmEditor.getLine(bot) || "").length } };
+}
+
+function openGrammarMode() {
+  if (!cmEditor) return;
+  const range = cmEditor.somethingSelected()
+    ? { from: cmEditor.getCursor("from"), to: cmEditor.getCursor("to") }
+    : _currentParagraphRange();
+  _grammarRange = range;
+  const ta = document.getElementById("grammar-textarea");
+  if (!ta) return;
+  ta.value = cmEditor.getRange(range.from, range.to);
+  openModal("modal-grammar");
+  // Focus + caret at end so the extension activates and typing starts cleanly.
+  setTimeout(() => { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }, 30);
+}
+
+function applyGrammarText() {
+  const ta = document.getElementById("grammar-textarea");
+  if (ta && _grammarRange) {
+    // Modal blocks editing while open, so the stored range is still valid.
+    cmEditor.replaceRange(ta.value, _grammarRange.from, _grammarRange.to);
+  }
+  _grammarRange = null;
+  closeModal("modal-grammar");
   cmEditor.focus();
 }
 
@@ -3941,6 +4227,70 @@ async function jumpToTodo(file, line) {
   }, file !== currentFile ? 200 : 0);
   document.getElementById("todo-panel").classList.remove("open");
 }
+// v4.4.0 — DOCUMENT OUTLINE ─────────────────────────────────────────
+function toggleOutlinePanel(e) {
+  const panel = document.getElementById("outline-panel");
+  if (panel.classList.contains("open")) { panel.classList.remove("open"); return; }
+  _closeOtherToolbarPanels("outline-panel");
+  const btn  = document.getElementById("outline-toggle-btn");
+  const rect = btn.getBoundingClientRect();
+  const pw   = 360;
+  let left   = rect.right - pw;
+  if (left < 4) left = 4;
+  panel.style.top  = (rect.bottom + 4) + "px";
+  panel.style.left = left + "px";
+  renderOutlinePanel();
+  panel.classList.add("open");
+  if (e) e.stopPropagation();
+}
+document.addEventListener("click", e => {
+  const panel = document.getElementById("outline-panel");
+  if (!panel || !panel.classList.contains("open")) return;
+  if (panel.contains(e.target)) return;
+  if (e.target.closest("#outline-toggle-btn")) return;
+  panel.classList.remove("open");
+});
+
+const _OL_LEVEL_LABEL = { chapter: "chapter", section: "section", subsection: "subsection", subsubsection: "subsub" };
+const _OL_INDENT      = { chapter: 0, section: 1, subsection: 2, subsubsection: 3 };
+
+async function renderOutlinePanel() {
+  const list = document.getElementById("ol-list");
+  const cnt  = document.getElementById("ol-count");
+  if (!currentProject) { list.innerHTML = '<div style="padding:12px;color:var(--muted);font-size:12px">No project open.</div>'; return; }
+  list.innerHTML = '<div style="padding:12px;color:var(--muted);font-size:12px">Scanning…</div>';
+  try {
+    const res  = await fetch(`/api/projects/${encodeURIComponent(currentProject)}/outline`);
+    const data = await res.json();
+    if (!data.length) {
+      list.innerHTML = '<div style="padding:12px;color:var(--muted);font-size:12px">No sections found.</div>';
+      cnt.textContent = ""; return;
+    }
+    cnt.textContent = data.length + " entries";
+    const frag = document.createDocumentFragment();
+    data.forEach(item => {
+      const div = document.createElement("div");
+      div.className = `ol-row ol-indent-${_OL_INDENT[item.level] || 0}`;
+      div.innerHTML =
+        `<span class="ol-level">${_OL_LEVEL_LABEL[item.level] || item.level}</span>` +
+        `<span class="ol-title" title="${item.title.replace(/"/g,'&quot;')}">${item.title || '(untitled)'}</span>` +
+        `<span class="ol-file" title="${item.file}">${item.file.split('/').pop()}</span>`;
+      div.addEventListener("click", async () => {
+        await openFile(item.file);
+        cmEditor.setCursor(item.line, 0);
+        cmEditor.scrollIntoView({ line: item.line, ch: 0 }, 80);
+        cmEditor.focus();
+      });
+      frag.appendChild(div);
+    });
+    list.innerHTML = "";
+    list.appendChild(frag);
+  } catch (err) {
+    list.innerHTML = `<div style="padding:12px;color:var(--error);font-size:12px">Error: ${err.message}</div>`;
+  }
+}
+
+
 function toggleTodoPanel(e) {
   const panel = document.getElementById("todo-panel");
   if (panel.classList.contains("open")) {
@@ -4271,7 +4621,7 @@ async function loadCustomDict(projectName) {
     customDictMtime = Number(data.mtime) || 0;
   } catch (_) { /* dict file is optional; absence is fine */ }
   // If spell check is already active, rescan so newly-added words clear.
-  if (spellEnabled && spellChecker) scheduleSpellCheck(50);
+  if (_spellHighlightOn()) scheduleSpellCheck(50);
 }
 
 // v3.3.5 — Hot-reload on window focus. Fires when Pol alt-tabs back to the
@@ -4280,7 +4630,7 @@ async function loadCustomDict(projectName) {
 // and trigger a rescan so wavy underlines update without a page reload.
 // No-ops when spell check is off (no point fetching) or no project loaded.
 async function _maybeReloadDictOnFocus() {
-  if (!spellEnabled) return;
+  if (!spellEnabled && !spellSuggestEnabled) return;
   if (!currentProject) return;
   try {
     const res = await fetch(`/api/projects/${encodeURIComponent(currentProject)}/dict`);
@@ -4416,8 +4766,17 @@ function cm_get_line_safe(line) {
   try { return cmEditor.getLine(line) || ""; } catch (_) { return ""; }
 }
 
+// v4.4.0 — The red wavy underline now shows whenever EITHER spell check OR
+// "Suggest corrections while typing" is on. Both use the same dictionary and
+// the same _spellCheckLine pass, so seeing which word is wrong (underline) and
+// getting corrections for it (dropdown / right-click) are two halves of one
+// feature. False until the dict has actually loaded.
+function _spellHighlightOn() {
+  return (spellEnabled || spellSuggestEnabled) && !!spellChecker;
+}
+
 function _runSpellCheck() {
-  if (!spellEnabled || !spellChecker) return;
+  if (!_spellHighlightOn()) return;
   _clearSpellMarkers();
   // Scope: only the visible viewport ± a 50-line buffer. For a 2000-line
   // chapter this is ~100 lines of work — fast, and the user can't see beyond
@@ -4446,9 +4805,28 @@ function onSpellCheckToggle() {
       if (d) _runSpellCheck();
     });
   } else {
-    _clearSpellMarkers();
+    // Keep the underlines if suggestions still want them; only clear when
+    // BOTH features are off.
+    if (!spellSuggestEnabled) _clearSpellMarkers();
     const status = document.getElementById("spell-status");
     if (status) status.classList.remove("visible");
+  }
+}
+
+// v4.4.0 — Inline-suggestion toggle. Independent of the underline toggle so a
+// user can keep red squiggles without the typing-time dropdown (or vice versa).
+// No dict work here — the dropdown is gated at trigger time on spellChecker.
+function onSpellSuggestToggle() {
+  const cb = document.getElementById("spell-suggest-toggle");
+  spellSuggestEnabled = cb ? cb.checked : true;
+  localStorage.setItem("texlocal_spellsuggest", spellSuggestEnabled ? "1" : "0");
+  if (spellSuggestEnabled) {
+    // Warm the dictionary, then underline misspellings (same pass spell check
+    // uses) so wrong words are flagged even with the red-underline toggle off.
+    _ensureSpellDict().then(d => { if (d) _runSpellCheck(); });
+  } else if (!spellEnabled) {
+    // Neither feature wants the underlines now.
+    _clearSpellMarkers();
   }
 }
 
@@ -4458,11 +4836,18 @@ function onSpellCheckToggle() {
 (function _initSpellCheck() {
   const saved = localStorage.getItem("texlocal_spellcheck") === "1";
   spellEnabled = saved;
+  // v4.6.0 — inline suggestions default OFF (absent key → off); explicit "1" on.
+  spellSuggestEnabled = localStorage.getItem("texlocal_spellsuggest") === "1";
+  const sc = document.getElementById("spell-suggest-toggle");
+  if (sc) sc.checked = spellSuggestEnabled;
   // Sync the checkbox once Settings popup is built — the input is in the
   // markup already, so we can set it right away.
   const cb = document.getElementById("spellcheck-toggle");
   if (cb) cb.checked = saved;
-  if (saved) {
+  // Load the dict on settle if EITHER feature is on, so misspellings already
+  // in the opened document get underlined without waiting for the user to type.
+  // (Suggestions default on, so this is the common path.)
+  if (saved || spellSuggestEnabled) {
     setTimeout(() => {
       _ensureSpellDict().then(d => { if (d) _runSpellCheck(); });
     }, 1000);
@@ -4470,7 +4855,7 @@ function onSpellCheckToggle() {
   // Re-scan when the viewport changes (scroll, fold/unfold, resize).
   // Light debounce — scrolling fires many viewportChange events.
   cmEditor.on("viewportChange", () => {
-    if (!spellEnabled || !spellChecker) return;
+    if (!_spellHighlightOn()) return;
     clearTimeout(_spellViewportTimer);
     _spellViewportTimer = setTimeout(_runSpellCheck, 200);
   });
@@ -4483,7 +4868,7 @@ function onSpellCheckToggle() {
   // v3.3.4 — Now also passes the resolved range so the menu can offer
   // "Replace with X" via cmEditor.replaceRange().
   cmEditor.getWrapperElement().addEventListener("contextmenu", (evt) => {
-    if (!spellEnabled || !spellMarkers.length) return;
+    if ((!spellEnabled && !spellSuggestEnabled) || !spellMarkers.length) return;
     const pos = cmEditor.coordsChar({ left: evt.clientX, top: evt.clientY });
     if (!pos) return;
     for (const m of spellMarkers) {
@@ -4524,6 +4909,68 @@ let _menuDismissHandler = null;
 // suggest output depends only on the loaded Hunspell .aff/.dic — neither
 // changes once spell-check is enabled.
 const _suggestCache = new Map();
+
+// v4.4.0 — Spell suggest Web Worker (Blob URL).
+// Runs Typo.suggest() off the main thread so right-click never freezes UI.
+// Worker loads its own copy of Typo.js + en_US dict (~1.7MB extra memory,
+// acceptable for a single-user local app).
+const _SUGGEST_WORKER_SRC = `
+importScripts('https://cdn.jsdelivr.net/npm/typo-js@1.2.4/typo.js');
+let _wTypo = null;
+let _wLoading = null;
+function _wLoadDict() {
+  if (_wTypo) return Promise.resolve(_wTypo);
+  if (_wLoading) return _wLoading;
+  const base = 'https://cdn.jsdelivr.net/npm/typo-js@1.2.4/dictionaries/en_US';
+  _wLoading = Promise.all([
+    fetch(base + '/en_US.aff').then(r => r.text()),
+    fetch(base + '/en_US.dic').then(r => r.text()),
+  ]).then(([aff, dic]) => {
+    _wTypo = new Typo('en_US', aff, dic, { platform: 'any' });
+    _wLoading = null;
+    return _wTypo;
+  });
+  return _wLoading;
+}
+self.onmessage = function(e) {
+  const { id, word } = e.data;
+  _wLoadDict().then(t => {
+    let s = [];
+    try { s = t.suggest(word, 5) || []; } catch(_) {}
+    self.postMessage({ id, word, suggestions: s });
+  }).catch(() => self.postMessage({ id, word, suggestions: [] }));
+};
+`;
+let _suggestWorker = null;
+let _suggestWorkerPending = new Map();
+let _suggestWorkerIdSeq  = 0;
+
+function _ensureSuggestWorker() {
+  if (_suggestWorker) return _suggestWorker;
+  try {
+    const blob = new Blob([_SUGGEST_WORKER_SRC], { type: 'application/javascript' });
+    _suggestWorker = new Worker(URL.createObjectURL(blob));
+    _suggestWorker.onmessage = (e) => {
+      const { id, suggestions } = e.data;
+      const cb = _suggestWorkerPending.get(id);
+      if (cb) { _suggestWorkerPending.delete(id); cb(suggestions); }
+    };
+    _suggestWorker.onerror = () => { _suggestWorker = null; };  // reset on crash
+  } catch (_) { _suggestWorker = null; }
+  return _suggestWorker;
+}
+
+function _suggestAsync(word) {
+  return new Promise(resolve => {
+    const worker = _ensureSuggestWorker();
+    if (!worker) { resolve([]); return; }
+    const id = ++_suggestWorkerIdSeq;
+    _suggestWorkerPending.set(id, resolve);
+    try { worker.postMessage({ id, word }); }
+    catch (_) { _suggestWorkerPending.delete(id); resolve([]); }
+  });
+}
+
 
 function _showSpellContextMenu(word, range, x, y) {
   _currentMenuWord  = word;
@@ -4848,7 +5295,7 @@ async function onDictMgrDelete(word, rowEl) {
     _renderDictMgrList(filter ? filter.value : "");
     // Trigger a rescan — the deleted word's instances in the buffer should
     // light back up if they're indeed misspellings per Typo's en_US dict.
-    if (spellEnabled && spellChecker) scheduleSpellCheck(30);
+    if (_spellHighlightOn()) scheduleSpellCheck(30);
   } catch (e) {
     if (rowEl) rowEl.classList.remove("removing");
   }
@@ -5112,5 +5559,256 @@ async function doSearch() {
     resultsEl.appendChild(div);
   });
 }
+
+// v4.4.0 — KaTeX MATH HOVER PREVIEW ────────────────────────────────
+// Shows a rendered popup when hovering over $...$ / $$...$$ / \[...\] / \(...\).
+// Single-line detection only — covers the vast majority of thesis inline math.
+// Lookbehind not used for browser compat; $$ vs $ disambiguated by checking
+// adjacent chars manually.
+(function _attachKatexHover() {
+  if (typeof katex === "undefined") return;   // CDN failed — degrade silently
+  const popup = document.getElementById("katex-preview");
+  if (!popup) return;
+  let _hoverTimer = null;
+  let _lastSrc    = null;
+
+  function _findMathAt(line, ch) {
+    // Walk the line with a small state machine to find the math span under ch.
+    const len = line.length;
+    let i = 0;
+    while (i < len) {
+      // $$ display math
+      if (line[i] === '$' && line[i+1] === '$') {
+        const start = i + 2;
+        const end   = line.indexOf('$$', start);
+        if (end < 0) break;
+        if (i <= ch && ch <= end + 2) return { src: line.slice(start, end), display: true };
+        i = end + 2; continue;
+      }
+      // $ inline math (not adjacent to another $)
+      if (line[i] === '$' && line[i-1] !== '$' && line[i+1] !== '$') {
+        const start = i + 1;
+        const end   = line.indexOf('$', start);
+        if (end < 0) break;
+        if (line[end+1] === '$') { i = end + 2; continue; }  // skip $$
+        if (i <= ch && ch <= end + 1) return { src: line.slice(start, end), display: false };
+        i = end + 1; continue;
+      }
+      // \[ display math
+      if (line[i] === '\\' && line[i+1] === '[') {
+        const start = i + 2;
+        const end   = line.indexOf('\\]', start);
+        if (end < 0) break;
+        if (i <= ch && ch <= end + 2) return { src: line.slice(start, end), display: true };
+        i = end + 2; continue;
+      }
+      // \( inline math
+      if (line[i] === '\\' && line[i+1] === '(') {
+        const start = i + 2;
+        const end   = line.indexOf('\\)', start);
+        if (end < 0) break;
+        if (i <= ch && ch <= end + 2) return { src: line.slice(start, end), display: false };
+        i = end + 2; continue;
+      }
+      i++;
+    }
+    return null;
+  }
+
+
+  // v4.4.0 — Detect cursor inside a multi-line math environment.
+  // Scans up to 50 lines back for \begin{env}, then forward for \end{env}.
+  // Returns { src: full environment including \begin/\end, display: true } or null.
+  const _MATH_ENVS = new Set([
+    'equation','equation*','align','align*','gather','gather*',
+    'multline','multline*','math','displaymath','eqnarray','eqnarray*',
+    'alignat','alignat*','flalign','flalign*','split','cases',
+    'pmatrix','bmatrix','vmatrix','Bmatrix','matrix','array',
+  ]);
+  function _findMathEnvAt(pos) {
+    const total = cmEditor.lineCount();
+    const cur   = pos.line;
+    const endRe   = /\\end\{([^}]+)\}/;
+    const beginRe = /\\begin\{([^}]+)\}/;
+    // Scan backwards to find \begin{mathenv} — stop if \end found first
+    let beginLine = -1, env = null;
+    for (let i = cur; i >= Math.max(0, cur - 60); i--) {
+      const ln = cmEditor.getLine(i) || '';
+      const bm = ln.match(beginRe);
+      if (bm && _MATH_ENVS.has(bm[1])) { beginLine = i; env = bm[1]; break; }
+      if (i < cur && endRe.test(ln)) break;  // hit \end before \begin — not inside
+    }
+    if (beginLine < 0) return null;
+    // Scan forward to find matching \end{env}
+    let endLine = -1;
+    for (let i = beginLine + 1; i <= Math.min(total - 1, cur + 60); i++) {
+      if ((cmEditor.getLine(i) || '').includes('\\end{' + env + '}')) { endLine = i; break; }
+    }
+    if (endLine < 0 || cur > endLine) return null;
+    // Collect lines and render as display math
+    const lines = [];
+    for (let i = beginLine; i <= endLine; i++) lines.push(cmEditor.getLine(i) || '');
+    return { src: lines.join('\n'), display: true };
+  }
+
+  cmEditor.getWrapperElement().addEventListener("mousemove", e => {
+    clearTimeout(_hoverTimer);
+    _hoverTimer = setTimeout(() => {
+      const pos  = cmEditor.coordsChar({ left: e.clientX, top: e.clientY });
+      const line = cmEditor.getLine(pos.line);
+      if (!line) { popup.classList.remove("visible"); return; }
+      const math = _findMathAt(line, pos.ch) || _findMathEnvAt(pos);
+      if (!math) { popup.classList.remove("visible"); _lastSrc = null; return; }
+      if (math.src === _lastSrc) return;   // same formula still hovered — skip re-render
+      _lastSrc = math.src;
+      popup.innerHTML = "";
+      try {
+        katex.render(math.src.trim(), popup, { displayMode: math.display, throwOnError: false });
+      } catch (err) {
+        popup.innerHTML = `<span class="katex-error">${err.message}</span>`;
+      }
+      // Position: prefer above cursor, fall back to below if near top.
+      const pw = Math.min(popup.scrollWidth + 28, 480);
+      const ph = popup.scrollHeight || 60;
+      let left = e.clientX + 12;
+      let top  = e.clientY - ph - 14;
+      if (left + pw > window.innerWidth - 8) left = Math.max(4, e.clientX - pw);
+      if (top < 8) top = e.clientY + 20;
+      popup.style.left = left + "px";
+      popup.style.top  = top  + "px";
+      popup.classList.add("visible");
+    }, 280);  // 280ms debounce — fast enough for hover, avoids flicker on cursor movement
+  });
+
+  cmEditor.getWrapperElement().addEventListener("mouseleave", () => {
+    clearTimeout(_hoverTimer);
+    popup.classList.remove("visible");
+    _lastSrc = null;
+  });
+})();
+
+// v4.4.0 — PRE-COMPILE SYNTAX LINTER ───────────────────────────────
+// Checks for: unmatched {}, \begin/\end mismatches, unclosed $ (inline math).
+// Registered as CodeMirror "stex" lint helper; wavy underlines appear without
+// running pdflatex. Conservative by design — skips \verb|..| and verbatim envs.
+// False-positive risk noted in HANDOFF: \verb|{| is explicitly skipped here.
+
+function _buildLatexSkipRanges(text) {
+  const ranges = [];
+  // \verb*?X...X  (any delimiter char)
+  const verbRe = /\\verb\*?(.)/g;
+  let m;
+  while ((m = verbRe.exec(text)) !== null) {
+    const delim = m[1];
+    const start = m.index;
+    const end   = text.indexOf(delim, m.index + m[0].length);
+    if (end >= 0) ranges.push([start, end + 1]);
+  }
+  // \begin{verbatim}...\end{verbatim}
+  const venvRe = /\\begin\{verbatim\*?\}[\s\S]*?\\end\{verbatim\*?\}/g;
+  while ((m = venvRe.exec(text)) !== null) ranges.push([m.index, m.index + m[0].length]);
+  // % line comments — skip from % to end of line (but not \%)
+  const commentRe = /(?<!\\)%[^\n]*/g;
+  while ((m = commentRe.exec(text)) !== null) ranges.push([m.index, m.index + m[0].length]);
+  return ranges;
+}
+
+function _latexInSkip(ranges, pos) {
+  for (const [a, b] of ranges) { if (pos >= a && pos < b) return true; }
+  return false;
+}
+
+function _latexOffsetToPos(text, offset) {
+  const before = text.slice(0, offset);
+  const lines  = before.split('\n');
+  return { line: lines.length - 1, ch: lines[lines.length - 1].length };
+}
+
+CodeMirror.registerHelper('lint', 'stex', function(text) {
+  const errors = [];
+  const skip   = _buildLatexSkipRanges(text);
+
+  // ── 1. Brace balance ────────────────────────────────────────
+  const braceStack = [];
+  for (let i = 0; i < text.length; i++) {
+    if (_latexInSkip(skip, i)) continue;
+    if (text[i] === '\\') { i++; continue; }   // skip escaped char
+    if (text[i] === '{') {
+      braceStack.push(i);
+    } else if (text[i] === '}') {
+      if (braceStack.length === 0) {
+        const p = _latexOffsetToPos(text, i);
+        errors.push({ from: p, to: { line: p.line, ch: p.ch + 1 },
+          message: 'Unmatched }', severity: 'error' });
+      } else { braceStack.pop(); }
+    }
+  }
+  // Report only the last 3 unmatched opens to avoid flooding
+  braceStack.slice(-3).forEach(idx => {
+    const p = _latexOffsetToPos(text, idx);
+    errors.push({ from: p, to: { line: p.line, ch: p.ch + 1 },
+      message: 'Unmatched {', severity: 'error' });
+  });
+
+  // ── 2. \begin / \end environment matching ───────────────────
+  const envStack = [];
+  const envRe = /\\(begin|end)\{([^}]*)\}/g;
+  let em;
+  while ((em = envRe.exec(text)) !== null) {
+    if (_latexInSkip(skip, em.index)) continue;
+    const kind = em[1], env = em[2].trim();
+    if (kind === 'begin') {
+      envStack.push({ env, index: em.index, len: em[0].length });
+    } else {
+      if (envStack.length === 0) {
+        const p = _latexOffsetToPos(text, em.index);
+        errors.push({ from: p, to: { line: p.line, ch: p.ch + em[0].length },
+          message: `\\end{${env}} without matching \\begin`, severity: 'error' });
+      } else {
+        const last = envStack[envStack.length - 1];
+        if (last.env === env) { envStack.pop(); }
+        else {
+          const p = _latexOffsetToPos(text, em.index);
+          errors.push({ from: p, to: { line: p.line, ch: p.ch + em[0].length },
+            message: `\\end{${env}} but expected \\end{${last.env}}`, severity: 'warning' });
+        }
+      }
+    }
+  }
+  envStack.slice(-3).forEach(({ env, index, len }) => {
+    const p = _latexOffsetToPos(text, index);
+    errors.push({ from: p, to: { line: p.line, ch: p.ch + len },
+      message: `\\begin{${env}} never closed`, severity: 'warning' });
+  });
+
+  // ── 3. Unclosed $ (inline math) ─────────────────────────────
+  // Walk the document, count unescaped single $ (not $$).
+  // An odd total means one $ is unpaired; report at its position.
+  let dollarCount = 0, lastDollarIdx = -1;
+  for (let i = 0; i < text.length; i++) {
+    if (_latexInSkip(skip, i)) continue;
+    if (text[i] === '\\') { i++; continue; }
+    if (text[i] === '$') {
+      if (text[i + 1] === '$') { i++; continue; }  // skip $$
+      dollarCount++;
+      lastDollarIdx = i;
+    }
+  }
+  if (dollarCount % 2 !== 0 && lastDollarIdx >= 0) {
+    const p = _latexOffsetToPos(text, lastDollarIdx);
+    errors.push({ from: p, to: { line: p.line, ch: p.ch + 1 },
+      message: 'Unclosed $ — odd number of inline math delimiters in file', severity: 'warning' });
+  }
+
+  return errors;
+});
+
+// Enable lint gutter and linting on the editor.
+// setOption after init avoids re-specifying the whole gutters array.
+cmEditor.setOption('gutters', [
+  'CodeMirror-linenumbers', 'CodeMirror-foldgutter',
+  'CodeMirror-lint-markers', 'cm-errors-gutter'
+]);
+cmEditor.setOption('lint', { delay: 600 });   // 600ms after last keystroke
 
 init();

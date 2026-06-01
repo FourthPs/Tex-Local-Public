@@ -4,6 +4,37 @@ All notable changes to TexLocal are documented here.
 
 ---
 
+## v4.6.0 — 2026-06-02
+
+### Editor
+- **Word suggestions** (optional, off by default): while typing prose, a dropdown can autocomplete words — both terms already used in your document (so names like "Rydberg" complete after a few letters) and ordinary English words — and offer spelling fixes for a mistyped word. Press Tab or Enter to accept. Turn it on in Settings → "Word suggestions". It never triggers inside LaTeX commands, math, comments, or citations.
+- **Grammar mode** (✍ toolbar button): opens your selected text — or the paragraph at the cursor — in a plain text box where browser grammar extensions such as Grammarly, QuillBot, or LanguageTool can attach. Edit there and press "Insert back" to drop it into your document. (Browser mode only.)
+
+_Thanks to **PolarZ5** for contributing both features — the first external contribution to TexLocal._
+
+---
+
+## v4.5.0 — 2026-06-01
+
+### Editor
+- Much faster editor open: the compiled PDF now appears almost immediately, even for long (100+ page) documents. Pages render as you scroll instead of all at once, and the file tree, your main file, and the PDF now load in parallel.
+
+---
+
+## v4.4.2 — 2026-06-01
+
+### Editor
+- Fixed: jumping from the editor to the PDF (forward sync) now highlights the **full paragraph** — previously the first line of a multi-line paragraph was left out of the highlight box.
+
+---
+
+## v4.4.1 — 2026-06-01
+
+### Editor
+- Fixed: "go to PDF location" (the ⇢ button / Ctrl+Alt+→) now works from chapter and appendix files, not just the main file. It previously failed with a "not found" error for any `\input`-ed file.
+
+---
+
 ## v4.3.1 — 2026-06-01
 
 ### Desktop app

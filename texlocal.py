@@ -9,11 +9,11 @@ import threading, urllib.request, urllib.error, tempfile
 # The Inno installer keeps its own MyAppVersion in texlocal.iss; the two
 # MUST be bumped together when cutting a release. Discipline reminder in
 # HANDOFF section 1.
-TEXLOCAL_VERSION = "4.3.0"
+TEXLOCAL_VERSION = "4.6.0"
 
-# GitHub release-check endpoint. Repo is FourthPs/Tex-Local (note hyphen).
+# GitHub release-check endpoint. Points to the public repo for update checks and About modal link.
 TEXLOCAL_GITHUB_OWNER = "FourthPs"
-TEXLOCAL_GITHUB_REPO  = "Tex-Local"
+TEXLOCAL_GITHUB_REPO  = "Tex-Local-Public"
 TEXLOCAL_GITHUB_API   = f"https://api.github.com/repos/{TEXLOCAL_GITHUB_OWNER}/{TEXLOCAL_GITHUB_REPO}/releases/latest"
 TEXLOCAL_GITHUB_RELEASES_PAGE = f"https://github.com/{TEXLOCAL_GITHUB_OWNER}/{TEXLOCAL_GITHUB_REPO}/releases/latest"
 
@@ -96,6 +96,39 @@ def _safe_join(base_abs, *parts):
 
 def _err(msg, code=400):
     return jsonify({"error": msg}), code
+
+
+# v4.3.1 — Atomic file writes. WHY: direct open(path,"w") truncates the
+# target the instant it opens; a crash / power-loss / disk-full mid-write
+# leaves a half-written (corrupted) source file with no recovery. Writing
+# to a sibling .tmp then os.replace() makes the swap atomic on the same
+# filesystem — the target is either the old bytes or the full new bytes,
+# never a truncated middle. Same pattern already used for snippets/dict;
+# this generalises it for the .tex source path (the file that matters most).
+def _atomic_write_text(full, content, encoding="utf-8"):
+    d = os.path.dirname(full) or "."
+    os.makedirs(d, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=".twr_", dir=d)
+    try:
+        with os.fdopen(fd, "w", encoding=encoding, newline="") as fh:
+            fh.write(content)
+        os.replace(tmp, full)
+    except BaseException:
+        try: os.remove(tmp)
+        except OSError: pass
+        raise
+
+def _atomic_write_bytes(full, data):
+    d = os.path.dirname(full) or "."
+    fd, tmp = tempfile.mkstemp(prefix=".twr_", dir=d)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+        os.replace(tmp, full)
+    except BaseException:
+        try: os.remove(tmp)
+        except OSError: pass
+        raise
 
 
 # ── SyncTeX direct parser ─────────────────────────────────────────────
@@ -188,6 +221,22 @@ def _synctex_parse_per_line(synctex_path):
                 in_content = True
             continue
         if not ln:
+            continue
+        # v4.4.1 — SyncTeX emits Input: declarations BOTH in the preamble AND
+        # interleaved through the Content section: a file's Input record is
+        # written when TeX first OPENS it, and \input-ed chapter files
+        # (Content/01.tex, Appendix/A01.tex, ...) are opened mid-document.
+        # The old parser stopped collecting Input lines at the "Content:"
+        # marker, so every chapter file declared mid-content was missing from
+        # input_map -> forward sync returned "not found in synctex Input map".
+        # (MainPage.tex worked only because it's opened first, in the preamble.)
+        # Keep harvesting Input lines here so all source files resolve.
+        if ln.startswith("Input:"):
+            try:
+                _, tag_s, fpath = ln.split(":", 2)
+                input_map[int(tag_s)] = fpath
+            except (ValueError, IndexError):
+                pass
             continue
         c0 = ln[0]
         # Page (sheet) tracking
@@ -453,9 +502,11 @@ def write_file(project):
         full = _safe_join(_safe_project(project), filepath)
     except _PathError as e:
         return _err(str(e))
-    os.makedirs(os.path.dirname(full), exist_ok=True)
-    with open(full, "w", encoding="utf-8") as f:
-        f.write(content)
+    # v4.3.1 — atomic write so a crash mid-save can't truncate the .tex source
+    try:
+        _atomic_write_text(full, content)
+    except OSError as e:
+        return _err(f"Could not save file: {e}", 500)
     return jsonify({"ok": True})
 
 @app.route("/api/projects/<project>/file", methods=["DELETE"])
@@ -484,6 +535,9 @@ def move_file(project):
         return _err(str(e))
     if not os.path.exists(src_full):
         return _err("Source not found", 404)
+    # v4.3.1 — refuse to clobber an existing destination silently (was data loss)
+    if os.path.exists(dst_full):
+        return _err("Destination already exists", 409)
     dst_dir = os.path.dirname(dst_full)
     if dst_dir:
         os.makedirs(dst_dir, exist_ok=True)
@@ -500,6 +554,7 @@ def upload_files(project):
         return _err(str(e))
     os.makedirs(upload_dir, exist_ok=True)
     saved = []
+    skipped = []  # v4.3.1 — names that already existed and were not overwritten
     for f in request.files.getlist("files"):
         if not f.filename:
             continue
@@ -511,10 +566,15 @@ def upload_files(project):
             dest = _safe_join(upload_dir, filename)
         except _PathError:
             continue
+        # v4.3.1 — skip existing files instead of silently overwriting
+        # (was data loss: re-uploading a same-named figure clobbered it).
+        if os.path.exists(dest):
+            skipped.append(os.path.relpath(dest, project_path).replace("\\", "/"))
+            continue
         f.save(dest)
         rel = os.path.relpath(dest, project_path).replace("\\", "/")
         saved.append(rel)
-    return jsonify({"ok": True, "files": saved})
+    return jsonify({"ok": True, "files": saved, "skipped": skipped})
 
 @app.route("/api/import-zip", methods=["POST"])
 def import_zip():
@@ -699,8 +759,9 @@ def compile_project(project):
                 with open(fpath, "rb") as fh:
                     raw = fh.read()
                 if raw.startswith(b"\xef\xbb\xbf"):
-                    with open(fpath, "wb") as fh:
-                        fh.write(raw[3:])
+                    # v4.3.1 — atomic rewrite; compiling must never be able to
+                    # truncate a source file as a side effect of BOM-stripping
+                    _atomic_write_bytes(fpath, raw[3:])
             except Exception:
                 pass
 
@@ -950,30 +1011,40 @@ def synctex_forward(project):
     # line of \item N+1, which leaks the previous item's vertical extent
     # into our bounding box (item 2 ends up highlighting items 1+2, etc.).
     #
-    # Heuristic: if the y values of the records have a gap LARGER than a
-    # normal wrap-line spacing (~12pt), the records form two visual
-    # clusters — keep the denser one. (For wrapping paragraphs the gap is
-    # ≤ 12pt so this is a no-op.)
+    # v4.4.2 — paragraph-safe rewrite. The previous heuristic split on ANY
+    # inter-record gap > 14pt and kept the denser cluster. But normal
+    # body-text leading in this thesis is ~20pt, so EVERY wrapped paragraph
+    # tripped the split and its FIRST visual line (the smaller "top" cluster)
+    # was discarded — the highlight started on line 2. Fix: cluster records
+    # into visual lines, measure the document's OWN typical line spacing, and
+    # split only when a gap is clearly larger than one line of leading (a real
+    # blank gap from an \item's closing glue), not merely > a fixed constant.
+    # A uniform wrapped paragraph has max_gap ≈ median leading → no split.
     GAP_PT = 14.0
     bbox_split_kept = None
     if len(bbox_recs) >= 4:
-        ys_sorted_full = sorted(bbox_recs, key=lambda r: r["y"])
-        gaps = []
-        for i in range(len(ys_sorted_full) - 1):
-            g = ys_sorted_full[i + 1]["y"] - ys_sorted_full[i]["y"]
-            gaps.append((g, i))
-        max_gap, gap_idx = max(gaps, key=lambda p: p[0])
-        if max_gap > GAP_PT:
-            top    = ys_sorted_full[: gap_idx + 1]
-            bottom = ys_sorted_full[gap_idx + 1 :]
-            # Keep whichever cluster is denser; on ties, keep the BOTTOM
-            # cluster (current item is below the previous item's closing).
-            if len(top) > len(bottom):
-                bbox_recs = top
-                bbox_split_kept = "top"
-            else:
-                bbox_recs = bottom
-                bbox_split_kept = "bottom"
+        # distinct visual-line baselines (round to 1pt to coalesce a line)
+        line_ys = sorted({round(r["y"], 0) for r in bbox_recs})
+        if len(line_ys) >= 3:
+            line_gaps = [line_ys[i + 1] - line_ys[i]
+                         for i in range(len(line_ys) - 1)]
+            median_leading = sorted(line_gaps)[len(line_gaps) // 2]
+            # "real" separation must clearly exceed one line of leading
+            split_threshold = max(GAP_PT, median_leading * 1.8)
+            max_gap = max(line_gaps)
+            if max_gap > split_threshold:
+                gi = line_gaps.index(max_gap)
+                split_y = (line_ys[gi] + line_ys[gi + 1]) / 2.0
+                top    = [r for r in bbox_recs if r["y"] <= split_y]
+                bottom = [r for r in bbox_recs if r["y"] >  split_y]
+                # Keep whichever cluster is denser; on ties, keep the BOTTOM
+                # cluster (current item is below the previous item's closing).
+                if len(top) > len(bottom):
+                    bbox_recs = top
+                    bbox_split_kept = "top"
+                else:
+                    bbox_recs = bottom
+                    bbox_split_kept = "bottom"
 
     xs = [r["x"] for r in bbox_recs if "x" in r]
     ys = [r["y"] for r in bbox_recs if "y" in r]
@@ -1370,6 +1441,39 @@ _COMMENT_TODO_RE = re.compile(
     r'%+\s*(TODO|FIXME|XXX)\b[:\s]*(.*)$',
     re.IGNORECASE,
 )
+
+# v4.4.0 — Document outline: scan all .tex files for section headings.
+_SECTION_RE = re.compile(
+    r'\\(chapter|section|subsection|subsubsection)\*?\s*\{([^}]*)\}'
+)
+
+@app.route("/api/projects/<project>/outline", methods=["GET"])
+def project_outline(project):
+    try:
+        root = _safe_project(project)
+    except _PathError as e:
+        return _err(str(e))
+    results = []
+    for dirpath, _, filenames in os.walk(root):
+        for fname in sorted(filenames):
+            if not fname.endswith(".tex"):
+                continue
+            fpath = os.path.join(dirpath, fname)
+            rel   = os.path.relpath(fpath, root).replace("\\", "/")
+            try:
+                with open(fpath, encoding="utf-8", errors="replace") as f:
+                    for lineno, line in enumerate(f):
+                        m = _SECTION_RE.search(line)
+                        if m:
+                            results.append({
+                                "file": rel,
+                                "line": lineno,
+                                "level": m.group(1),
+                                "title": m.group(2).strip(),
+                            })
+            except Exception:
+                pass
+    return jsonify(results)
 
 @app.route("/api/projects/<project>/todos", methods=["GET"])
 def list_todos(project):
@@ -1795,6 +1899,13 @@ def replace_all(project):
                 rel  = os.path.relpath(full, path).replace("\\", "/")
                 candidates.append((rel, full))
 
+    # v4.3.1 — two-phase: compute ALL replacements in memory first, then
+    # write. WHY: the old loop wrote files one-by-one, so a failure on file
+    # N left files 1..N-1 already modified and N..end untouched — a project
+    # stuck half-replaced with no rollback. Now nothing is touched until
+    # every new content is built; writes are atomic; and if any write fails
+    # we report it without having partially-applied a confusing subset.
+    pending = []  # (rel, full, new_src, n, first_line)
     for rel, full in candidates:
         try:
             with open(full, "r", encoding="utf-8", errors="replace") as fh:
@@ -1804,17 +1915,25 @@ def replace_all(project):
         new_src, n = pattern.subn(repl, src)
         if n == 0:
             continue
-        # Build a small preview: first matching line in original + replaced
         first_line = ""
         for ln in src.splitlines():
             if pattern.search(ln):
                 first_line = ln.strip()[:160]
                 break
+        pending.append((rel, full, new_src, n, first_line))
+
+    written = []
+    for rel, full, new_src, n, first_line in pending:
         try:
-            with open(full, "w", encoding="utf-8") as fh:
-                fh.write(new_src)
+            _atomic_write_text(full, new_src)
         except Exception as e:
-            return _err(f"Write failed for {rel}: {e}", 500)
+            # Atomic writes mean already-written files are intact whole files
+            # (not corrupted); we just stop and report which ones did apply.
+            return _err(
+                f"Write failed for {rel}: {e}. "
+                f"Applied to {len(written)} of {len(pending)} file(s) before stopping.",
+                500)
+        written.append(rel)
         affected.append({"path": rel, "count": n, "preview": first_line})
         total += n
     return jsonify({"ok": True, "total_replacements": total, "files": affected})
@@ -2061,4 +2180,7 @@ def update_apply():
 
 if __name__ == "__main__":
     print(f"\n  TeX Local v{TEXLOCAL_VERSION} (browser mode) running at http://localhost:5000\n")
-    app.run(debug=True, port=5000)
+    # v4.3.1 — debug=False: Werkzeug's debug=True exposes an interactive
+    # code-execution console and an auto-reloader that can restart the server
+    # mid-write. Neither is wanted in normal use. Bind explicitly to loopback.
+    app.run(debug=False, host="127.0.0.1", port=5000)
