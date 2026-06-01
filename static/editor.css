@@ -778,6 +778,39 @@
   .CodeMirror-hint:has(.cite-hint-title) { padding-top: 5px !important; padding-bottom: 5px !important; }
 
   /* v3.2.2 — TODO tracker panel. */
+  /* v4.4.0 — KaTeX hover preview popup */
+  #katex-preview {
+    display: none; position: fixed; z-index: 300;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,.4);
+    padding: 10px 14px; max-width: 480px; pointer-events: none;
+    font-size: 13px;
+  }
+  #katex-preview.visible { display: block; }
+  #katex-preview .katex-error { color: var(--error); font-size: 11px; font-family: var(--font-code); }
+
+  /* v4.4.0 — Outline panel */
+  #outline-panel {
+    display: none; position: fixed; z-index: 200;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; box-shadow: 0 8px 32px rgba(0,0,0,.45);
+    width: 360px; max-height: 520px; flex-direction: column; overflow: hidden;
+  }
+  #outline-panel.open { display: flex; }
+  #ol-list { flex: 1; overflow-y: auto; padding: 4px 0; }
+  .ol-row {
+    display: flex; align-items: baseline; gap: 6px;
+    padding: 5px 14px; cursor: pointer; font-size: 12px; line-height: 1.4;
+    border-left: 3px solid transparent;
+  }
+  .ol-row:hover { background: var(--hover); border-left-color: var(--accent); }
+  .ol-level { font: 10px var(--font-code); color: var(--muted); min-width: 70px; flex-shrink: 0; }
+  .ol-title { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ol-file  { font: 10px var(--font-code); color: var(--muted); max-width: 100px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ol-indent-1 { padding-left: 14px; }
+  .ol-indent-2 { padding-left: 26px; }
+  .ol-indent-3 { padding-left: 38px; }
+
   #todo-panel {
     display: none; position: fixed; z-index: 200;
     background: var(--surface); border: 1px solid var(--border);
