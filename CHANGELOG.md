@@ -4,6 +4,13 @@ All notable changes to TexLocal are documented here.
 
 ---
 
+## v4.7.1 — 2026-06-02
+
+### Desktop
+- **Your settings now stick between sessions.** The desktop app remembers the compiler you pick per project (pdflatex / xelatex / lualatex), your theme, font size, last open file, and other preferences after you close and reopen it. (Previously the desktop app reset these to defaults on every launch — most noticeably switching the compiler back to pdflatex.)
+
+---
+
 ## v4.7.0 — 2026-06-02
 
 ### GitHub (browser/source mode)

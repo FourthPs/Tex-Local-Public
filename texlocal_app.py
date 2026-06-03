@@ -180,9 +180,22 @@ def main() -> None:
         min_size=(900, 600),
         confirm_close=False,  # PoL has Ctrl+S autosave habit; no nag needed
     )
+    # Persist localStorage + cookies across app restarts. pywebview defaults to
+    # private_mode=True (incognito), so every setting saved to localStorage —
+    # per-project compiler choice (texlocal_compiler_<name>), theme, font size,
+    # last file, \includeonly selection, compile history — is wiped on close.
+    # Browser mode never hit this because the real browser persists localStorage.
+    # A fixed storage_path + private_mode=False makes the WebView2 profile durable.
+    _base = (os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
+             or os.path.expanduser("~"))
+    _storage = os.path.join(_base, "TexLocal", "webview")
+    try:
+        os.makedirs(_storage, exist_ok=True)
+    except OSError:
+        _storage = None
     # webview.start() blocks until the last window closes. The daemon
     # Flask thread is then garbage-collected with the process.
-    webview.start()
+    webview.start(private_mode=False, storage_path=_storage)
 
 
 if __name__ == "__main__":
