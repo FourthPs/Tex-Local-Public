@@ -346,6 +346,8 @@
   <div class="logo">Tex<span>Local</span></div>
   <div class="header-sep"></div>
   <button class="btn btn-ghost" onclick="openModal('modal-import-zip')" title="Import a ZIP from Overleaf">⬆ Import ZIP</button>
+  <!-- v4.4.0 — Clone a GitHub repo as a new project. -->
+  <button class="btn btn-ghost" onclick="openGitHubImport()" title="Clone a GitHub repository as a new project">⬇ Import from GitHub</button>
   <button class="btn btn-primary" onclick="openModal('modal-new-project')">+ New Project</button>
   <!-- v4.2.3 - About / version info -->
   <button class="btn btn-ghost about-btn" onclick="openAboutModal()" title="About TexLocal" aria-label="About">
@@ -513,6 +515,35 @@
     </div>
     <div class="modal-actions">
       <button class="btn btn-primary" onclick="closeModal('modal-about')">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- v4.4.0 — MODAL: Import from GitHub -->
+<div class="modal-overlay" id="modal-import-github">
+  <div class="modal" style="width:460px">
+    <h3>Import from GitHub</h3>
+    <!-- sign-in row (OAuth device flow, falls back to gh CLI). -->
+    <div id="ghi-auth-row" style="display:flex;align-items:center;gap:10px;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:9px 12px;margin-bottom:14px;font-size:12.5px">
+      <span id="ghi-auth-text" style="flex:1">Checking GitHub sign-in…</span>
+      <button class="btn btn-ghost btn-sm" id="ghi-login-btn" onclick="ghImportLogin()" style="display:none">Sign in with GitHub</button>
+      <button class="btn btn-ghost btn-sm" id="ghi-logout-btn" onclick="ghImportLogout()" style="display:none">Log out</button>
+    </div>
+    <label style="display:block;font-size:11px;color:var(--muted);margin-bottom:6px;font-weight:600;letter-spacing:.5px;text-transform:uppercase">Your repositories</label>
+    <select id="gh-repo-select" onchange="onGhRepoPicked()"
+            style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);font-family:var(--font-ui);font-size:14px;padding:10px 14px;border-radius:8px;outline:none;margin-bottom:14px;cursor:pointer">
+      <option value="">Loading your repositories…</option>
+    </select>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:10px;text-align:center">— or paste a URL —</div>
+    <input id="input-gh-url" placeholder="https://github.com/owner/repo  (or owner/repo)"
+           onkeydown="if(event.key==='Enter')importFromGitHub()">
+    <input id="input-gh-proj-name" placeholder="Project name (optional — defaults to repo name)">
+    <div style="font-size:11.5px;color:var(--muted);margin:-6px 0 16px;line-height:1.5">
+      Public repos work out of the box. For private repos, sign in above first.
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="closeModal('modal-import-github')">Cancel</button>
+      <button class="btn btn-primary" id="gh-import-btn" onclick="importFromGitHub()">Import</button>
     </div>
   </div>
 </div>
@@ -788,6 +819,134 @@ async function importZip() {
     window.location.href = `/editor?project=${encodeURIComponent(data.name)}`;
   } else {
     alert("Import failed: " + data.error);
+  }
+}
+
+// ── IMPORT FROM GITHUB ────────────────────────────────────────
+function openGitHubImport() {
+  openModal("modal-import-github");
+  _ghiRefreshStatus();
+}
+
+async function _ghiRefreshStatus() {
+  const t   = document.getElementById("ghi-auth-text");
+  const bi  = document.getElementById("ghi-login-btn");
+  const bo  = document.getElementById("ghi-logout-btn");
+  const sel = document.getElementById("gh-repo-select");
+  try {
+    const st = await (await fetch("/api/github/status")).json();
+    if (st.logged_in) {
+      const viaGh = st.mode === "gh";
+      t.textContent = "Signed in as " + (st.account || "GitHub") + (viaGh ? " (gh CLI) ✓" : " ✓");
+      bi.style.display = "none";
+      bo.style.display = viaGh ? "none" : "";
+      loadGitHubRepos();
+    } else {
+      t.textContent = "Not signed in to GitHub.";
+      bi.style.display = ""; bo.style.display = "none";
+      sel.innerHTML = '<option value="">Sign in to list your repositories — or paste a URL below</option>';
+      sel.disabled = true;
+    }
+  } catch (_) {
+    t.textContent = "Could not reach the server.";
+    bi.style.display = "none"; bo.style.display = "none";
+  }
+}
+
+let _ghiPollTimer = null;
+async function ghImportLogin() {
+  const t  = document.getElementById("ghi-auth-text");
+  const bi = document.getElementById("ghi-login-btn");
+  t.textContent = "Starting GitHub sign-in…"; bi.style.display = "none";
+  try {
+    const r = await fetch("/api/github/login", { method: "POST" });
+    const d = await r.json();
+    if (!r.ok) { t.textContent = d.error || "Sign-in failed."; bi.style.display = ""; return; }
+    if (d.already) { _ghiRefreshStatus(); return; }
+    const uri  = d.verification_uri || "https://github.com/login/device";
+    const code = d.user_code || "";
+    try { window.open(uri, "_blank", "noopener"); } catch (_) {}
+    t.textContent = "Enter code " + code + " at " + uri + " — waiting for you to authorise…";
+    clearInterval(_ghiPollTimer);
+    const interval = Math.max(2, (d.interval || 5)) * 1000;
+    _ghiPollTimer = setInterval(async () => {
+      let p;
+      try { p = await (await fetch("/api/github/login/poll", { method: "POST" })).json(); }
+      catch (_) { return; }
+      if (p.status === "authorized")  { clearInterval(_ghiPollTimer); _ghiRefreshStatus(); }
+      else if (p.status === "error")  { clearInterval(_ghiPollTimer); t.textContent = p.error || "Sign-in failed."; bi.style.display = ""; }
+    }, interval);
+  } catch (_) {
+    t.textContent = "Sign-in request failed."; bi.style.display = "";
+  }
+}
+
+async function ghImportLogout() {
+  clearInterval(_ghiPollTimer);
+  try { await fetch("/api/github/logout", { method: "POST" }); } catch (_) {}
+  _ghiRefreshStatus();
+}
+
+async function loadGitHubRepos() {
+  const sel = document.getElementById("gh-repo-select");
+  sel.innerHTML = '<option value="">Loading your repositories…</option>';
+  sel.disabled = true;
+  try {
+    const r = await fetch("/api/github/repos");
+    const d = await r.json();
+    if (!r.ok) {
+      sel.innerHTML = `<option value="">${esc(d.error || "Could not load repositories")} — paste a URL below</option>`;
+      return;
+    }
+    const repos = d.repos || [];
+    if (!repos.length) {
+      sel.innerHTML = '<option value="">No repositories found — paste a URL below</option>';
+      return;
+    }
+    sel.innerHTML =
+      '<option value="">— Select one of your repositories —</option>' +
+      repos.map(rp => {
+        const isPriv = (rp.visibility || "").toLowerCase() === "private";
+        const label  = rp.nameWithOwner + (isPriv ? "  (private)" : "");
+        const repoNm = rp.nameWithOwner.split("/").pop();
+        return `<option value="${esc(rp.url)}" data-name="${esc(repoNm)}">${esc(label)}</option>`;
+      }).join("");
+    sel.disabled = false;
+  } catch (e) {
+    sel.innerHTML = '<option value="">Could not reach the server — paste a URL below</option>';
+  }
+}
+
+function onGhRepoPicked() {
+  const opt = document.getElementById("gh-repo-select").selectedOptions[0];
+  if (!opt || !opt.value) return;
+  document.getElementById("input-gh-url").value = opt.value;
+  const nameField = document.getElementById("input-gh-proj-name");
+  if (nameField && !nameField.value.trim()) nameField.value = opt.dataset.name || "";
+}
+
+async function importFromGitHub() {
+  const url  = document.getElementById("input-gh-url").value.trim();
+  const name = document.getElementById("input-gh-proj-name").value.trim();
+  if (!url) return alert("Enter a GitHub repository URL.");
+  const btn = document.getElementById("gh-import-btn");
+  btn.innerHTML = '<span class="spinner"></span> Cloning…'; btn.disabled = true;
+  try {
+    const res  = await fetch("/api/github/import", {
+      method: "POST", headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({ url, name })
+    });
+    const data = await res.json();
+    if (data.ok) {
+      closeModal("modal-import-github");
+      window.location.href = `/editor?project=${encodeURIComponent(data.name)}`;
+    } else {
+      alert("Import failed: " + (data.error || "unknown error"));
+    }
+  } catch (e) {
+    alert("Import failed: " + e);
+  } finally {
+    btn.innerHTML = "Import"; btn.disabled = false;
   }
 }
 

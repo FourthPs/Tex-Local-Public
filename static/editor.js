@@ -19,6 +19,10 @@ let draftMode         = false;   // v3.2.2 — skip figures during compile (per-
 // every compile. The hint helper below filters on the typed prefix.
 let bibkeysCache      = [];   // [{key, type, author, year, title}]
 let labelsCache       = [];   // [{name, file, line}]
+// v4.4.0 — user-defined commands/environments (project-wide) for \cmd and
+// \begin{} autocomplete, populated by loadCiteData.
+let userCmdCache      = [];   // ["\\foo", ...]
+let userEnvCache      = [];   // ["mytheorem", ...]
 
 // v3.2.2 — \includeonly chapter switcher
 let availableIncludes = [];   // [{path, line}] from the project's main file
@@ -120,7 +124,9 @@ const cmEditor = CodeMirror(document.getElementById("editor-host"), {
     "Ctrl-F":     "findPersistent",
     "Ctrl-H":     "replace",
     "Ctrl-G":     "findNext",
-    "Shift-Ctrl-G": "findPrev",
+    // v4.4.0 — Ctrl+Shift+G toggles Grammar mode (was findPrev; find-previous
+    // is still reachable from the search panel).
+    "Shift-Ctrl-G": ()  => toggleGrammarMode(),
     // v3.2.3 — fold/unfold at cursor (mirror VSCode's Ctrl+Shift+[ / ])
     "Ctrl-Shift-[": cm => cm.foldCode(cm.getCursor(), { rangeFinder: CodeMirror.helpers.fold["latex-section"] }),
     "Ctrl-Shift-]": cm => cm.foldCode(cm.getCursor(), { rangeFinder: CodeMirror.helpers.fold["latex-section"] }),
@@ -464,7 +470,7 @@ async function loadIncludesUI() {
 const _TOOLBAR_PANEL_IDS = [
   "chapters-panel", "env-panel", "snippet-panel", "todo-panel",
   "goals-panel", "history-panel", "symbol-panel", "settings-panel",
-  "outline-panel"
+  "outline-panel", "package-panel"
 ];
 function _closeOtherToolbarPanels(exceptId) {
   for (const id of _TOOLBAR_PANEL_IDS) {
@@ -508,7 +514,7 @@ document.addEventListener("click", e => {
 // the server side, so frequent calls are cheap when nothing has changed.
 async function loadCiteData() {
   if (!currentProject) {
-    bibkeysCache = []; labelsCache = [];
+    bibkeysCache = []; labelsCache = []; userCmdCache = []; userEnvCache = [];
     lintCrossRefs();   // clear any stale marks
     return;
   }
@@ -518,8 +524,10 @@ async function loadCiteData() {
     const d = await r.json();
     bibkeysCache = d.bibkeys || [];
     labelsCache  = d.labels  || [];
+    userCmdCache = d.commands || [];
+    userEnvCache = d.environments || [];
   } catch (_) {
-    bibkeysCache = []; labelsCache = [];
+    bibkeysCache = []; labelsCache = []; userCmdCache = []; userEnvCache = [];
   }
   // v3.2.3 — refresh the cross-ref linter once the cache lands.
   lintCrossRefs();
@@ -699,9 +707,11 @@ async function switchProject(name, opts) {
     } catch (_) { /* network error — leave placeholder */ }
   })());
 
-  // v4.5.0 — open the detected main file's source as part of the same batch
-  // (callers that want it pass { openMain: true }).
-  if (opts && opts.openMain && mainFile) _startupTasks.push(openFile(mainFile));
+  // v4.5.0 — open the source as part of the same batch (callers that want it
+  // pass { openMain: true }). v4.7.0beta (PR#2): reopen the LAST-visited file
+  // (with its saved cursor) instead of always main; _restoreLastFile falls back
+  // to mainFile when there's no valid last file.
+  if (opts && opts.openMain) _startupTasks.push(_restoreLastFile(name));
 
   await Promise.allSettled(_startupTasks);
 }
@@ -914,10 +924,49 @@ async function openFile(name) {
   clearErrorMarkers();
   const ext = name.split(".").pop();
   cmEditor.setOption("mode", ext === "bib" ? "bibtex" : "stex");
+  // v4.7.0beta (PR#2) — restore the last cursor line for this file so you reopen
+  // where you left off. Clamp to the current length in case the file shrank.
+  try {
+    const pos = JSON.parse(localStorage.getItem(`texlocal_pos_${currentProject}::${name}`) || "null");
+    if (pos && typeof pos.line === "number") {
+      const line = Math.min(Math.max(0, pos.line), cmEditor.lastLine());
+      cmEditor.setCursor({ line, ch: pos.ch || 0 });
+      cmEditor.scrollIntoView({ line, ch: pos.ch || 0 }, 140);
+    }
+  } catch (_) {}
   renderTabs();
   loadFiles();
   updateOutline();
   updateWordCount();
+}
+
+// v4.7.0beta (PR#2) — Persist the cursor line per (project, file), debounced,
+// so openFile can restore it. Keyed the same way openFile reads it.
+let _posSaveTimer = null;
+cmEditor.on("cursorActivity", () => {
+  if (!currentProject || !currentFile) return;
+  clearTimeout(_posSaveTimer);
+  _posSaveTimer = setTimeout(() => {
+    try {
+      const c = cmEditor.getCursor();
+      localStorage.setItem(`texlocal_pos_${currentProject}::${currentFile}`,
+                           JSON.stringify({ line: c.line, ch: c.ch }));
+    } catch (_) {}
+  }, 400);
+});
+
+// v4.7.0beta (PR#2) — reopen the last-visited file on project open (cursor
+// restored inside openFile); falls back to the detected main file. Used by
+// switchProject's parallel-startup batch.
+async function _restoreLastFile(project) {
+  const last = localStorage.getItem(`texlocal_last_file_${project}`);
+  if (last) {
+    try {
+      const files = await (await fetch(`/api/projects/${encodeURIComponent(project)}/files`)).json();
+      if (Array.isArray(files) && files.includes(last)) { await openFile(last); return; }
+    } catch (_) {}
+  }
+  if (mainFile) await openFile(mainFile);
 }
 
 function renderTabs() {
@@ -926,10 +975,44 @@ function renderTabs() {
   openTabs.forEach(t => {
     const div = document.createElement("div");
     div.className = "tab" + (t.name === currentFile ? " active" : "");
-    div.textContent = t.name.split("/").pop();
+    div.title = t.name;
+    const label = document.createElement("span");
+    label.className   = "tab-label";
+    label.textContent = t.name.split("/").pop();
+    const close = document.createElement("span");
+    close.className   = "tab-close";
+    close.textContent = "×";
+    close.title       = "Close tab";
+    close.onclick     = (e) => closeTab(t.name, e);
+    div.appendChild(label);
+    div.appendChild(close);
     div.onclick = () => openFile(t.name);
+    // Middle-click closes, like a browser tab.
+    div.onmousedown = (e) => { if (e.button === 1) { e.preventDefault(); closeTab(t.name, e); } };
     container.appendChild(div);
   });
+}
+
+// v4.7.0beta (PR#2) — Close an editor tab. If it's the active one, flush it and
+// switch to a neighbour (or clear the editor if it was the last tab).
+async function closeTab(name, e) {
+  if (e) e.stopPropagation();
+  const idx = openTabs.findIndex(t => t.name === name);
+  if (idx === -1) return;
+  const wasActive = (name === currentFile);
+  if (wasActive) { try { await saveCurrentFile(); } catch (_) {} }
+  openTabs.splice(idx, 1);
+  if (!wasActive) { renderTabs(); return; }
+  if (openTabs.length) {
+    await openFile(openTabs[Math.max(0, idx - 1)].name);   // neighbour to the left
+  } else {
+    currentFile = null;
+    cmEditor.setValue("");
+    clearErrorMarkers();
+    renderTabs();
+    updateOutline();
+    updateWordCount();
+  }
 }
 
 async function saveCurrentFile() {
@@ -1383,9 +1466,13 @@ function showErrorPanel({ errors, warnings }) {
       </div>
       <div class="err-mpkg-row">
         <code class="err-mpkg-cmd">${escapeHtml(cmdMiktex)}</code>
+        <button class="err-mpkg-install" type="button" title="Open MiKTeX Console / TeX Live to install">📦 Open Manager</button>
         <button class="err-mpkg-copy" type="button">Copy</button>
       </div>
     `;
+    // v4.4.0 — open the system package-manager GUI (MiKTeX Console / TeX Live)
+    // so the user installs there, rather than shelling the installer in-app.
+    card.querySelector(".err-mpkg-install").onclick = () => openPackageManager();
     const btn = card.querySelector(".err-mpkg-copy");
     btn.onclick = () => {
       // navigator.clipboard fails over http on some browsers; fallback to
@@ -1904,7 +1991,7 @@ function _compileStatsTooltip(currentElapsed) {
 }
 
 // ── PDF.js VIEWER ─────────────────────────────────────────────
-const PDFJS_CDN = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174";
+const PDFJS_CDN = "/static/vendor/pdfjs";  // v4.x — vendored (offline)
 pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_CDN + "/pdf.worker.min.js";
 
 let pdfJsDoc        = null;   // loaded PDFDocumentProxy
@@ -2715,6 +2802,131 @@ function onAutoCompileToggle() {
 }
 
 // ── LATEX AUTOCOMPLETE ────────────────────────────────────────
+// v4.4.0 — Scan the CURRENT buffer for command/environment definitions so a
+// macro you just typed (\newcommand{\foo}) autocompletes immediately, before
+// the project-wide cache (userCmdCache/userEnvCache) refreshes on next compile.
+// Cached by changeGeneration so it only re-scans when the buffer changes.
+let _bufDefs = { gen: null, cmds: [], envs: [] };
+function _bufferDefs() {
+  const gen = cmEditor.changeGeneration();
+  if (gen !== _bufDefs.gen) {
+    const text = cmEditor.getValue();
+    const cmds = new Set(), envs = new Set();
+    const cmdRe = /\\(?:newcommand|renewcommand|providecommand)\*?\s*\{?\\([a-zA-Z@]+)\}?|\\DeclareMathOperator\*?\s*\{\\([a-zA-Z@]+)\}|\\DeclarePairedDelimiter\*?\s*\{?\\([a-zA-Z@]+)\}?|\\(?:def|let)\s*\\([a-zA-Z@]+)/g;
+    const envRe = /\\(?:re)?newenvironment\s*\{([^}]+)\}|\\newtheorem\*?\s*\{([^}]+)\}/g;
+    let m;
+    while ((m = cmdRe.exec(text))) { const n = m[1]||m[2]||m[3]||m[4]; if (n) cmds.add("\\"+n); }
+    while ((m = envRe.exec(text))) { const e = (m[1]||m[2]||"").trim(); if (e) envs.add(e); }
+    _bufDefs = { gen, cmds: [...cmds], envs: [...envs] };
+  }
+  return _bufDefs;
+}
+
+// v4.4.0 — Picking an environment from the \begin{…} autocomplete inserts the
+// whole block: \begin{env} / indented body (cursor here) / \end{env}. List
+// environments get an \item on the body line.
+// v4.4.0 — Commands whose completion should append {} (cursor placed inside);
+// _CMD_TWO_BRACE ones take two args → {}{}. Symbols/spacing/structure-only
+// commands are NOT listed and insert as-is.
+const _CMD_BRACE = new Set([
+  "begin","end",
+  "textbf","textit","texttt","textsc","textrm","textsf","emph","underline","footnote","text",
+  "section","subsection","subsubsection","paragraph","subparagraph","chapter","part",
+  "title","author","date","documentclass","usepackage","input","include",
+  "label","caption","includegraphics","url","hspace","vspace",
+  "cite","ref","pageref","eqref","autoref","cref","Cref","nameref",
+  "bibliography","bibliographystyle","addbibresource",
+  "sqrt","mathbb","mathcal","mathbf","hat","tilde","bar","vec","dot","ddot",
+  "overline","overbrace","underbrace","widehat","widetilde","bm",
+  "newcommand","renewcommand","providecommand","DeclareMathOperator",
+]);
+const _CMD_TWO_BRACE = new Set(["frac","dfrac","href"]);
+// Commands whose {} content has its own autocomplete — after inserting the
+// braces, reopen the dropdown so you can pick the env / cite key / ref.
+const _CMD_OPEN_HINT = new Set([
+  "begin","end","cite","ref","pageref","eqref","autoref","cref","Cref","nameref",
+]);
+
+// Insert "\cmd{}" (or "{}{}") replacing the typed token, cursor inside the
+// first braces. If an argument brace already follows, just complete the name.
+function _insertCmdWithBraces(cm, data, cmd, n) {
+  const lineText = cm.getLine(data.from.line) || "";
+  const alreadyBraced = lineText[data.to.ch] === "{";
+  const text = alreadyBraced ? cmd : cmd + (n === 2 ? "{}{}" : "{}");
+  cm.replaceRange(text, data.from, data.to);
+  // cursor just inside the first "{"
+  cm.setCursor({ line: data.from.line, ch: data.from.ch + cmd.length + 1 });
+  cm.focus();
+  // Chain: \begin{|} → env list, \cite{|} → bib keys, \ref{|} → labels.
+  if (_CMD_OPEN_HINT.has(cmd.slice(1))) {
+    setTimeout(() => cm.showHint({ hint: CodeMirror.hint.latex, completeSingle: false }), 0);
+  }
+}
+
+const _LIST_ENVS = new Set(["itemize", "enumerate", "description"]);
+// Per-environment skeletons. _CUR () marks where the cursor lands; it is
+// stripped on insert. opt = text appended to the \begin{env} line (e.g. [H]).
+// body = lines between \begin and \end (each gets the body indent prepended;
+// deeper nesting carries explicit leading spaces). Envs with no template fall
+// back to a single blank body line.
+const _CUR = "@@CURSOR@@";
+const _ENV_TEMPLATES = {
+  figure: { opt: "[H]", body:
+    "\\centering\n" +
+    "\\includegraphics[width=0.8\\textwidth]{" + _CUR + "}\n" +
+    "\\caption{}\n\\label{fig:}" },
+  table: { opt: "[H]", body:
+    "\\centering\n\\caption{" + _CUR + "}\n\\label{tab:}\n" +
+    "\\begin{tabular}{|c|c|}\n  \\hline\n   &  \\\\\n  \\hline\n\\end{tabular}" },
+  itemize:     { body: "\\item " + _CUR },
+  enumerate:   { body: "\\item " + _CUR },
+  description: { body: "\\item[" + _CUR + "] " },
+  equation:    { body: _CUR + "\n\\label{eq:}" },
+  align:       { body: _CUR + " &= \n\\label{eq:}" },
+};
+_ENV_TEMPLATES["figure*"] = _ENV_TEMPLATES.figure;
+_ENV_TEMPLATES["table*"]  = _ENV_TEMPLATES.table;
+_ENV_TEMPLATES["equation*"] = { body: _CUR };
+_ENV_TEMPLATES["align*"]    = { body: _CUR + " &= " };
+
+function _insertEnvBlock(cm, data, env) {
+  const lineNo   = data.from.line;
+  const lineText = cm.getLine(lineNo) || "";
+  const beginStart = Math.max(0, data.from.ch - "\\begin{".length);  // back over "\begin{"
+  let closeCh = data.to.ch;
+  if (lineText[closeCh] === "}") closeCh++;            // consume the auto-closed "}"
+  const indent = (lineText.match(/^[ \t]*/) || [""])[0];
+  const unit   = cm.getOption("indentWithTabs") ? "\t" : " ".repeat(cm.getOption("indentUnit") || 2);
+  const inner  = indent + unit;
+
+  const tpl = _ENV_TEMPLATES[env];
+  const opt = tpl && tpl.opt ? tpl.opt : "";
+  let bodyRaw;
+  if (tpl)                       bodyRaw = tpl.body;
+  else if (_LIST_ENVS.has(env))  bodyRaw = "\\item " + _CUR;
+  else                           bodyRaw = _CUR;            // blank body line
+  const bodyLines = bodyRaw.split("\n").map(l => inner + l);
+
+  let block = "\\begin{" + env + "}" + opt + "\n" + bodyLines.join("\n") +
+              "\n" + indent + "\\end{" + env + "}";
+
+  // Resolve the cursor marker → {line, ch}; strip it. Fall back to the first
+  // body line if (somehow) absent.
+  let curLine = lineNo + 1, curCh = inner.length;
+  const idx = block.indexOf(_CUR);
+  if (idx >= 0) {
+    const before = block.slice(0, idx);
+    const nl = (before.match(/\n/g) || []).length;
+    curLine = lineNo + nl;
+    curCh   = (nl === 0 ? beginStart : 0) + (idx - before.lastIndexOf("\n") - 1);
+    block   = block.slice(0, idx) + block.slice(idx + _CUR.length);
+  }
+
+  cm.replaceRange(block, { line: lineNo, ch: beginStart }, { line: lineNo, ch: closeCh });
+  cm.setCursor({ line: curLine, ch: curCh });
+  cm.focus();
+}
+
 const LATEX_COMMANDS = [
   // document structure
   "\\documentclass","\\usepackage","\\begin","\\end","\\input","\\include",
@@ -2853,28 +3065,59 @@ CodeMirror.registerHelper("hint","latex", function(cm) {
     }
   }
 
-  // ── Existing \begin{...} / \cmd autocomplete ─────────────────────
+  // ── \begin{...} / \end{...} environment autocomplete ─────────────
+  // Detect this BEFORE the \cmd guard below: the typed env name has no leading
+  // backslash, so the guard would otherwise return early and block it.
+  const buf = _bufferDefs();
+  const envMatch = pre.match(/\\(begin|end)\{([^}]*)$/);
+  if (envMatch) {
+    const which = envMatch[1];          // "begin" or "end"
+    const typed = envMatch[2];
+    // built-in envs + user-defined (project-wide + current buffer)
+    const all  = [...new Set([
+      ...LATEX_COMMANDS.filter(c => !c.startsWith("\\")),
+      ...userEnvCache, ...buf.envs,
+    ])];
+    const names = all.filter(c => c.startsWith(typed));
+    const from  = { line: cur.line, ch: end - typed.length };
+    if (which === "end") {
+      return { list: names, from, to: cur };   // \end{ → just complete the name
+    }
+    // \begin{ → insert the FULL block: \begin{env} … \end{env}
+    const list = names.map(env => ({
+      text: env,
+      displayText: "\\begin{" + env + "}",
+      hint: (cm, data) => _insertEnvBlock(cm, data, env),
+    }));
+    return { list, from, to: cur };
+  }
+
+  // ── \cmd autocomplete ────────────────────────────────────────────
   // ดึง token ปัจจุบันย้อนหลัง
   let start = end;
   while (start > 0 && /[\\\w*]/.test(line[start-1])) start--;
   const token = line.slice(start, end);
   if (!token.startsWith("\\") && !pre.match(/\\[a-zA-Z]*$/)) return;
 
-  // ถ้า cursor อยู่หลัง \begin{ หรือ \end{ → suggest environments
-  const envMatch = pre.match(/\\(?:begin|end)\{([^}]*)$/);
-  if (envMatch) {
-    const typed = envMatch[1];
-    const envs  = LATEX_COMMANDS.filter(c => !c.startsWith("\\")).filter(c => c.startsWith(typed));
-    const from  = { line: cur.line, ch: end - typed.length };
-    return { list: envs, from, to: cur };
-  }
-
-  // otherwise suggest commands
+  // suggest commands — built-ins + user-defined macros
   const cmdMatch = pre.match(/\\[a-zA-Z*]*$/);
   if (!cmdMatch) return;
   const typed = cmdMatch[0];
-  const list  = LATEX_COMMANDS.filter(c => c.startsWith("\\") && c.startsWith(typed));
+  const all   = [...new Set([
+    ...LATEX_COMMANDS.filter(c => c.startsWith("\\")),
+    ...userCmdCache, ...buf.cmds,
+  ])];
   const from  = { line: cur.line, ch: end - typed.length };
+  // Commands that take an argument get {} inserted with the cursor inside;
+  // symbols (\alpha, \ldots, …) insert as-is.
+  const list  = all.filter(c => c.startsWith(typed)).map(cmd => {
+    const name = cmd.slice(1);
+    const two  = _CMD_TWO_BRACE.has(name);
+    if (!_CMD_BRACE.has(name) && !two) return cmd;  // symbol/no-arg → plain insert
+    const n = two ? 2 : 1;
+    return { text: cmd, displayText: cmd + (n === 2 ? "{}{}" : "{}"),
+             hint: (cm, data) => _insertCmdWithBraces(cm, data, cmd, n) };
+  });
   return { list, from, to: cur };
 });
 
@@ -2886,20 +3129,22 @@ cmEditor.on("keyup", (cm, e) => {
   const cur = cm.getCursor();
   const pre = cm.getLine(cur.line).slice(0, cur.ch);
   const inCiteOrRef = _CITE_CTX.test(pre) || _REF_CTX.test(pre);
+  // v4.4.0 — also pop the dropdown while typing the env name in \begin{…}/\end{…}
+  const inEnv = /\\(?:begin|end)\{[^}]*$/.test(pre);
 
-  // `{` is special: it TRANSITIONS context from \cmd → \cite{ / \ref{,
+  // `{` is special: it TRANSITIONS context from \cmd → \cite{ / \ref{ / \begin{,
   // so we must force a fresh dropdown even if a stale completion is still
   // active. showHint replaces the active dropdown internally.
-  if (e.key === "{" && inCiteOrRef) {
+  if (e.key === "{" && (inCiteOrRef || inEnv)) {
     cm.showHint({ hint: CodeMirror.hint.latex, completeSingle: false });
     return;
   }
 
   if (cm.state.completionActive) return;
 
-  // Inside a cite/ref brace — fire on any printable key (incl. comma for
+  // Inside a cite/ref/env brace — fire on any printable key (incl. comma for
   // multi-key `\cite{a, b, c|}`) or Backspace to refresh the filter.
-  if (inCiteOrRef && (e.key.length === 1 || e.key === "Backspace")) {
+  if ((inCiteOrRef || inEnv) && (e.key.length === 1 || e.key === "Backspace")) {
     cm.showHint({ hint: CodeMirror.hint.latex, completeSingle: false });
     return;
   }
@@ -3231,6 +3476,222 @@ function applyGrammarText() {
   _grammarRange = null;
   closeModal("modal-grammar");
   cmEditor.focus();
+}
+
+// v4.4.0 — Ctrl-G toggle: open Grammar mode, or close it if already open.
+function toggleGrammarMode() {
+  const modal = document.getElementById("modal-grammar");
+  if (modal && modal.classList.contains("open")) closeModal("modal-grammar");
+  else openGrammarMode();
+}
+// CodeMirror's "Shift-Ctrl-G" extraKey handles the open case while the editor
+// is focused. This document-level handler covers Ctrl+Shift+G when focus is
+// elsewhere (e.g. inside the grammar textarea, to close it) — and bails when
+// the editor is focused so the two never double-fire.
+document.addEventListener("keydown", e => {
+  if (!((e.ctrlKey || e.metaKey) && e.shiftKey && !e.altKey
+        && (e.key === "g" || e.key === "G"))) return;
+  if (cmEditor && cmEditor.hasFocus && cmEditor.hasFocus()) return;  // CM keymap handles it
+  e.preventDefault();
+  toggleGrammarMode();
+});
+
+// ── GITHUB BACKUP (v4.4.0) ────────────────────────────────────
+// Per-project "Backup to GitHub": commit & push via the backend. The modal
+// shows sign-in status and a device-flow login/logout; backup flushes the
+// open file first so on-disk state matches.
+// showLogin / showLogout toggle the two auth-row buttons independently.
+function _ghSetStatus(text, showLogin, showLogout) {
+  const t  = document.getElementById("gh-auth-text");
+  const bi = document.getElementById("gh-login-btn");
+  const bo = document.getElementById("gh-logout-btn");
+  if (t)  t.textContent = text;
+  if (bi) bi.style.display = showLogin  ? "" : "none";
+  if (bo) bo.style.display = showLogout ? "" : "none";
+}
+
+async function _ghRefreshStatus() {
+  try {
+    const st = await (await fetch("/api/github/status")).json();
+    if (st.logged_in) {
+      const viaGh = st.mode === "gh";   // gh CLI session — our Log out can't end it
+      _ghSetStatus("Signed in as " + (st.account || "GitHub") + (viaGh ? " (gh CLI) ✓" : " ✓"),
+                   false, !viaGh);
+    } else {
+      _ghSetStatus("Not signed in to GitHub.", true, false);
+    }
+    return st;
+  } catch (_) {
+    _ghSetStatus("Could not reach the server.", false, false);
+    return null;
+  }
+}
+
+function openGitHubModal() {
+  if (!currentProject) { alert("Open a project first."); return; }
+  const nameInput = document.getElementById("gh-repo-name");
+  if (nameInput && !nameInput.value.trim()) nameInput.value = currentProject;
+  const res = document.getElementById("gh-result");
+  if (res) { res.style.display = "none"; res.textContent = ""; }
+  const sync = document.getElementById("gh-sync-row");
+  if (sync) sync.style.display = "none";
+  openModal("modal-github");
+  _ghRefreshStatus();
+  _ghCheckSync();
+}
+
+let _ghPollTimer = null;
+async function githubLogin() {
+  _ghSetStatus("Starting GitHub sign-in…", false, false);
+  try {
+    const r = await fetch("/api/github/login", { method: "POST" });
+    const d = await r.json();
+    if (!r.ok) { _ghSetStatus(d.error || "Sign-in failed.", true, false); return; }
+    if (d.already) { _ghRefreshStatus(); return; }
+    const uri  = d.verification_uri || "https://github.com/login/device";
+    const code = d.user_code || "";
+    // v4.7.0 — open the verify page in a REAL browser. The WebView2 desktop
+    // build (pywebview injects window.pywebview) can't window.open a system tab,
+    // so ask the backend to launch the OS browser; plain browser mode uses
+    // window.open as before.
+    if (window.pywebview) {
+      try { await fetch("/api/github/open-verify", { method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ url: uri }) }); } catch (_) {}
+    } else {
+      try { window.open(uri, "_blank", "noopener"); } catch (_) {}
+    }
+    _ghSetStatus("Enter code " + code + " at " + uri + " — waiting for you to authorise…", false, false);
+    clearInterval(_ghPollTimer);
+    const interval = Math.max(2, (d.interval || 5)) * 1000;
+    _ghPollTimer = setInterval(async () => {
+      let p;
+      try { p = await (await fetch("/api/github/login/poll", { method: "POST" })).json(); }
+      catch (_) { return; }
+      if (p.status === "authorized") {
+        clearInterval(_ghPollTimer);
+        _ghSetStatus("Signed in as " + (p.account || "GitHub") + " ✓", false, true);
+      } else if (p.status === "error") {
+        clearInterval(_ghPollTimer);
+        _ghSetStatus(p.error || "Sign-in failed.", true, false);
+      }
+    }, interval);
+  } catch (_) {
+    _ghSetStatus("Sign-in request failed.", true, false);
+  }
+}
+
+async function githubLogout() {
+  clearInterval(_ghPollTimer);
+  _ghSetStatus("Signing out…", false, false);
+  try { await fetch("/api/github/logout", { method: "POST" }); } catch (_) {}
+  _ghRefreshStatus();
+}
+
+async function githubBackup() {
+  if (!currentProject) { alert("Open a project first."); return; }
+  const btn = document.getElementById("gh-backup-btn");
+  const res = document.getElementById("gh-result");
+  const repo = (document.getElementById("gh-repo-name").value || currentProject).trim();
+  const priv = document.getElementById("gh-visibility").value !== "public";
+  const msg  = (document.getElementById("gh-commit-msg").value || "Backup from TexLocal").trim();
+  if (btn) { btn.disabled = true; btn.textContent = "⏳ Backing up…"; }
+  if (res) { res.style.display = "block"; res.textContent = "Working…"; }
+  try { await saveCurrentFile(); } catch (_) {}
+  try {
+    const r = await fetch(`/api/projects/${encodeURIComponent(currentProject)}/github/backup`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ repo, private: priv, message: msg }),
+    });
+    const d = await r.json();
+    const lines = (d.steps || []).map(s =>
+      (s.ok ? "✓ " : "✗ ") + s.step + (!s.ok && s.err ? "\n   " + s.err : ""));
+    if (d.ok) lines.push("", d.repo_url ? ("Done → " + d.repo_url) : "Done.");
+    else if (d.error) lines.push((lines.length ? "\n" : "") + "Error: " + d.error);
+    if (res) res.textContent = lines.join("\n");
+    if (r.status === 401) _ghRefreshStatus();
+    if (d.ok) _ghCheckSync();   // refresh ahead/behind after pushing
+  } catch (e) {
+    if (res) res.textContent = "Request failed: " + e;
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = "⬆ Commit & push"; }
+  }
+}
+
+// v4.4.0 — Check how local compares to the GitHub remote (fetch + ahead/behind)
+// and offer Pull when the remote is ahead.
+async function _ghCheckSync() {
+  const row  = document.getElementById("gh-sync-row");
+  const txt  = document.getElementById("gh-sync-text");
+  const pull = document.getElementById("gh-pull-btn");
+  if (!row || !currentProject) { if (row) row.style.display = "none"; return; }
+  row.style.display = "flex";
+  txt.textContent = "Checking for remote changes…";
+  pull.style.display = "none";
+  let d;
+  try {
+    d = await (await fetch(`/api/projects/${encodeURIComponent(currentProject)}/github/sync`)).json();
+  } catch (_) { row.style.display = "none"; return; }
+  if (!d.repo || !d.remote) { row.style.display = "none"; return; }   // nothing connected yet
+  if (!d.fetched) {
+    txt.textContent = "Couldn't reach the remote" + (d.fetch_error ? ": " + d.fetch_error : ".");
+    return;
+  }
+  const parts = [];
+  if (d.behind) parts.push(`↓ ${d.behind} behind`);
+  if (d.ahead)  parts.push(`↑ ${d.ahead} ahead`);
+  txt.textContent = parts.length
+    ? `${parts.join(" · ")} origin/${d.branch}` + (d.dirty ? " · local edits" : "")
+    : `Up to date with origin/${d.branch} ✓`;
+  pull.style.display = d.behind ? "" : "none";
+  pull.disabled = false; pull.textContent = "⬇ Pull";
+}
+
+async function githubPull() {
+  const pull = document.getElementById("gh-pull-btn");
+  const res  = document.getElementById("gh-result");
+  pull.disabled = true; pull.textContent = "⏳ Pulling…";
+  try {
+    const d = await (await fetch(`/api/projects/${encodeURIComponent(currentProject)}/github/pull`,
+                                 { method: "POST" })).json();
+    if (res) res.style.display = "block";
+    if (d.ok) {
+      await _reloadCurrentFileFromDisk();   // bring pulled content into the editor
+      await loadFiles();                    // newly-pulled files show in the tree
+      if (res) res.textContent = "Pulled from GitHub:\n" + (d.out || "done");
+      _ghCheckSync();
+    } else {
+      // Reload so any conflict markers / merged content show in the editor.
+      await _reloadCurrentFileFromDisk();
+      await loadFiles();
+      let head;
+      if (d.conflict)     head = "Merge conflict — open the file(s), fix the <<<<< ===== >>>>> markers, then back up:\n";
+      else if (d.blocked) head = "Couldn't merge automatically — back up (Commit & push) first, then Pull:\n";
+      else                head = "Pull failed:\n";
+      if (res) res.textContent = head + (d.error || "");
+      pull.disabled = false; pull.textContent = "⬇ Pull";
+      _ghCheckSync();
+    }
+  } catch (e) {
+    if (res) { res.style.display = "block"; res.textContent = "Pull request failed: " + e; }
+    pull.disabled = false; pull.textContent = "⬇ Pull";
+  }
+}
+
+// Reload the open file's content from disk WITHOUT saving the editor buffer
+// first — used after a pull, where saving would push the stale buffer back
+// over the freshly-pulled changes.
+async function _reloadCurrentFileFromDisk() {
+  if (!currentProject || !currentFile || isImageFile(currentFile)) return;
+  try {
+    const data = await (await fetch(`/api/projects/${encodeURIComponent(currentProject)}/file?path=${encodeURIComponent(currentFile)}`)).json();
+    const tab = openTabs.find(t => t.name === currentFile);
+    if (tab) tab.content = data.content;
+    cmEditor.setValue(data.content || "");
+    cmEditor.clearHistory();
+    updateOutline(); updateWordCount();
+  } catch (_) { /* leave the editor as-is on failure */ }
 }
 
 function insertDisplayMath() {
@@ -3869,6 +4330,222 @@ document.addEventListener("click", e => {
   if (e.target.closest("#env-toggle-btn")) return;
   panel.classList.remove("open");
 });
+
+// ── v4.4.0 — PACKAGE MANAGER ────────────────────────────────────
+// Lists the \usepackage{} packages in the current document, lets you remove
+// them, and suggests important packages you're not using yet — each added to
+// the preamble with one click. Pure document editing (no MiKTeX install).
+//
+// Curated "important packages": the ones a thesis/article almost always wants.
+// `line` overrides the default `\usepackage{name}` when sensible options help.
+const _IMPORTANT_PACKAGES = [
+  { name: "amsmath",    desc: "Core math: align, gather, \\text, \\dfrac" },
+  { name: "amssymb",    desc: "Extra math symbols: \\mathbb, \\lesssim" },
+  { name: "amsthm",     desc: "Theorem / proof environments" },
+  { name: "graphicx",   desc: "\\includegraphics for figures" },
+  { name: "hyperref",   desc: "Clickable links + PDF bookmarks (load late)" },
+  { name: "cleveref",   desc: "Smart cross-refs \\cref (load after hyperref)" },
+  { name: "booktabs",   desc: "Professional tables: \\toprule \\midrule" },
+  { name: "geometry",   desc: "Page margins", line: "\\usepackage[margin=1in]{geometry}" },
+  { name: "xcolor",     desc: "Colours: \\textcolor, \\color" },
+  { name: "siunitx",    desc: "Units & numbers: \\SI, \\num" },
+  { name: "microtype",  desc: "Subtle typographic polish" },
+  { name: "babel",      desc: "Language & hyphenation", line: "\\usepackage[english]{babel}" },
+  { name: "caption",    desc: "Customise figure/table captions" },
+  { name: "subcaption", desc: "Sub-figures (subfigure env)" },
+  { name: "enumitem",   desc: "Customisable lists" },
+  { name: "float",      desc: "Precise [H] float placement" },
+  { name: "listings",   desc: "Source-code listings" },
+  { name: "bm",         desc: "Bold math: \\bm" },
+  { name: "url",        desc: "Line-breakable \\url{}" },
+  { name: "csquotes",   desc: "Context-sensitive quotes" },
+];
+
+// Extract package names from every \usepackage[..]{a,b,c} in the document.
+function _usedPackages() {
+  const used = new Set();
+  const re = /\\usepackage\s*(?:\[[^\]]*\])?\s*\{([^}]*)\}/g;
+  const text = cmEditor.getValue();
+  let m;
+  while ((m = re.exec(text))) {
+    m[1].split(",").forEach(p => { const n = p.trim(); if (n) used.add(n); });
+  }
+  return used;
+}
+
+function togglePackagePanel(e) {
+  const panel = document.getElementById("package-panel");
+  if (panel.classList.contains("open")) { panel.classList.remove("open"); return; }
+  _closeOtherToolbarPanels("package-panel");
+  const btn  = document.getElementById("package-toggle-btn");
+  const rect = btn.getBoundingClientRect();
+  let left   = rect.right - 380;
+  if (left < 4) left = 4;
+  panel.style.top  = (rect.bottom + 4) + "px";
+  panel.style.left = left + "px";
+  renderPackagePanel();
+  panel.classList.add("open");
+  if (e) e.stopPropagation();
+}
+document.addEventListener("click", e => {
+  const panel = document.getElementById("package-panel");
+  if (!panel || !panel.classList.contains("open")) return;
+  if (panel.contains(e.target)) return;
+  if (e.target.closest("#package-toggle-btn")) return;
+  panel.classList.remove("open");
+});
+
+function renderPackagePanel() {
+  const list = document.getElementById("package-list");
+  if (!list) return;
+  const used = _usedPackages();
+  const usedArr = [...used].sort();
+
+  const usedRows = usedArr.length
+    ? usedArr.map(n => {
+        const known = _IMPORTANT_PACKAGES.find(p => p.name === n);
+        const desc  = known ? known.desc : "";
+        return `<div class="pkg-row">
+          <div class="pkg-info">
+            <div class="pkg-name">${escapeHtml(n)}</div>
+            ${desc ? `<div class="pkg-desc">${escapeHtml(desc)}</div>` : ""}
+          </div>
+          <span class="pkg-state" data-pkg="${escapeHtml(n)}"></span>
+          <button class="pkg-btn remove" title="Remove \\usepackage{${escapeHtml(n)}}"
+                  onclick="removePackage('${escapeHtml(n)}', event)">✕</button>
+        </div>`;
+      }).join("")
+    : `<div class="pkg-empty">No \\usepackage lines found in this file.</div>`;
+
+  // Suggestions = curated importants not already used.
+  const suggestions = _IMPORTANT_PACKAGES.filter(p => !used.has(p.name));
+  const suggRows = suggestions.length
+    ? suggestions.map(p => `<div class="pkg-row">
+          <div class="pkg-info">
+            <div class="pkg-name">${escapeHtml(p.name)}</div>
+            <div class="pkg-desc">${escapeHtml(p.desc)}</div>
+          </div>
+          <span class="pkg-state" data-pkg="${escapeHtml(p.name)}"></span>
+          <button class="pkg-btn add" title="Add ${escapeHtml(p.line || ('\\usepackage{' + p.name + '}'))}"
+                  onclick="addPackage('${escapeHtml(p.name)}', event)">＋</button>
+        </div>`).join("")
+    : `<div class="pkg-empty">You're already using all the suggested packages. 🎉</div>`;
+
+  list.innerHTML =
+    `<div class="pkg-section">In this document (${usedArr.length})</div>` + usedRows +
+    `<div class="pkg-section">Suggested</div>` + suggRows;
+
+  // Annotate each row with system install-state (kpsewhich) + an Install button
+  // for missing packages. Async so the panel paints immediately.
+  const names = [...new Set([...usedArr, ...suggestions.map(p => p.name)])];
+  _refreshPackageInstallStatus(names);
+}
+
+// Session cache for install state. kpsewhich can be slow on MiKTeX (and the
+// package DB may be locked), so we fetch once in the background, cache the
+// result, and never block the panel — add/remove/install all work regardless.
+const _pkgInstallCache = {};   // name -> bool (installed)
+let   _pkgManager = null;      // manager label (e.g. "MiKTeX Console") or null
+let   _pkgStatusFetching = false;
+
+function _pkgStateHTML(name) {
+  if (!(name in _pkgInstallCache)) return "";          // unknown → blank slot
+  if (_pkgInstallCache[name])
+    return `<span class="pkg-installed" title="Installed on this system">✓</span>`;
+  if (_pkgManager)
+    return `<button class="pkg-btn install" title="Not installed — open ${_pkgManager} to install"
+                    onclick="openPackageManager(event)">📦</button>`;
+  return `<span class="pkg-missing" title="Not installed">not installed</span>`;
+}
+
+function _applyPkgSlots() {
+  document.querySelectorAll("#package-list .pkg-state").forEach(slot => {
+    if (slot.dataset.pkg) slot.innerHTML = _pkgStateHTML(slot.dataset.pkg);
+  });
+}
+
+// Show cached state immediately, then fetch only the names we don't know yet.
+async function _refreshPackageInstallStatus(names) {
+  _applyPkgSlots();
+  const unknown = names.filter(n => !(n in _pkgInstallCache));
+  if (!unknown.length || _pkgStatusFetching) return;
+  _pkgStatusFetching = true;
+  try {
+    const d = await (await fetch("/api/packages/status", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ names: unknown }),
+    })).json();
+    Object.assign(_pkgInstallCache, d.installed || {});
+    _pkgManager = d.manager || null;
+  } catch (_) { /* leave slots blank; panel still works */ }
+  finally { _pkgStatusFetching = false; }
+  _applyPkgSlots();
+}
+
+// Open the system's package-manager GUI (MiKTeX Console / TeX Live) so the
+// user installs there — TexLocal doesn't shell the installer itself.
+async function openPackageManager(e) {
+  if (e) e.stopPropagation();
+  try {
+    const d = await (await fetch("/api/packages/open-manager", { method: "POST" })).json();
+    if (!d.ok && d.error) alert(d.error);
+  } catch (_) { alert("Couldn't open the package manager."); }
+}
+
+// Insert a \usepackage line into the preamble: after the last existing
+// \usepackage, else after \documentclass, else at the top. Never past
+// \begin{document}.
+function addPackage(name, e) {
+  if (e) e.stopPropagation();
+  const pkg  = _IMPORTANT_PACKAGES.find(p => p.name === name);
+  const line = (pkg && pkg.line) ? pkg.line : `\\usepackage{${name}}`;
+  if (_usedPackages().has(name)) return;   // already there
+
+  const lines = cmEditor.getValue().split("\n");
+  let insertAt = null, lastUse = -1, docClass = -1, beginDoc = lines.length;
+  for (let i = 0; i < lines.length; i++) {
+    if (/\\begin\s*\{document\}/.test(lines[i])) { beginDoc = i; break; }
+    if (/\\usepackage\b/.test(lines[i]))   lastUse  = i;
+    if (/\\documentclass\b/.test(lines[i])) docClass = i;
+  }
+  if (lastUse >= 0)        insertAt = lastUse + 1;
+  else if (docClass >= 0)  insertAt = docClass + 1;
+  else                     insertAt = 0;
+  if (insertAt > beginDoc) insertAt = beginDoc;   // stay in the preamble
+
+  cmEditor.replaceRange(line + "\n", { line: insertAt, ch: 0 });
+  renderPackagePanel();
+  cmEditor.focus();
+}
+
+// Remove a package: delete its whole \usepackage line if it's the only name,
+// otherwise drop just that name from the comma list.
+function removePackage(name, e) {
+  if (e) e.stopPropagation();
+  const lines = cmEditor.getValue().split("\n");
+  const re = /\\usepackage\s*(?:\[[^\]]*\])?\s*\{([^}]*)\}/;
+  for (let i = 0; i < lines.length; i++) {
+    const m = re.exec(lines[i]);
+    if (!m) continue;
+    const names = m[1].split(",").map(s => s.trim()).filter(Boolean);
+    if (!names.includes(name)) continue;
+    cmEditor.operation(() => {
+      if (names.length === 1) {
+        // Whole line goes (including its trailing newline).
+        cmEditor.replaceRange("", { line: i, ch: 0 },
+                              { line: i + 1, ch: 0 });
+      } else {
+        const kept    = names.filter(n => n !== name);
+        const newLine = lines[i].replace(/\{[^}]*\}/, "{" + kept.join(",") + "}");
+        cmEditor.replaceRange(newLine, { line: i, ch: 0 },
+                              { line: i, ch: lines[i].length });
+      }
+    });
+    break;
+  }
+  renderPackagePanel();
+  cmEditor.focus();
+}
 
 // ── v3.3.0 — Snippet library ────────────────────────────────────
 // Type a trigger (e.g. `eq`) + Tab to expand it into a multi-line template
@@ -4584,7 +5261,7 @@ async function _ensureSpellDict() {
       return null;
     }
     try {
-      const base = "https://cdn.jsdelivr.net/npm/typo-js@1.2.4/dictionaries/en_US";
+      const base = "/static/vendor/typo/dictionaries/en_US";
       const [aff, dic] = await Promise.all([
         fetch(base + "/en_US.aff").then(r => r.ok ? r.text() : Promise.reject(r.status)),
         fetch(base + "/en_US.dic").then(r => r.ok ? r.text() : Promise.reject(r.status)),
@@ -4915,13 +5592,13 @@ const _suggestCache = new Map();
 // Worker loads its own copy of Typo.js + en_US dict (~1.7MB extra memory,
 // acceptable for a single-user local app).
 const _SUGGEST_WORKER_SRC = `
-importScripts('https://cdn.jsdelivr.net/npm/typo-js@1.2.4/typo.js');
+importScripts('${location.origin}/static/vendor/typo/typo.js');
 let _wTypo = null;
 let _wLoading = null;
 function _wLoadDict() {
   if (_wTypo) return Promise.resolve(_wTypo);
   if (_wLoading) return _wLoading;
-  const base = 'https://cdn.jsdelivr.net/npm/typo-js@1.2.4/dictionaries/en_US';
+  const base = '${location.origin}/static/vendor/typo/dictionaries/en_US';
   _wLoading = Promise.all([
     fetch(base + '/en_US.aff').then(r => r.text()),
     fetch(base + '/en_US.dic').then(r => r.text()),
@@ -5064,13 +5741,14 @@ function _showSpellContextMenu(word, range, x, y) {
     // tall, sometimes short"). The compute itself is free here.
     setTimeout(() => _injectSuggestions(_suggestCache.get(cacheKey)), 0);
   } else {
-    setTimeout(() => {
-      let suggestions = [];
-      try { suggestions = spellChecker.suggest(word, 5) || []; }
-      catch (e) { suggestions = []; }
+    // v4.7.0 — restore the v4.4.0 Web Worker path. The v4.6.0 rebuild regressed
+    // this to a synchronous spellChecker.suggest(), which blocks the main thread
+    // ~50-250ms and makes the right-click menu stutter. _suggestAsync runs
+    // Typo.suggest() off-thread; falls back to empty if the worker is unavailable.
+    _suggestAsync(word).then(suggestions => {
       _suggestCache.set(cacheKey, suggestions);
       _injectSuggestions(suggestions);
-    }, 0);
+    });
   }
 }
 

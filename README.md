@@ -2,7 +2,7 @@
 
 A lightweight, self-hosted LaTeX editor that runs entirely on your own machine — no internet dependency, no compile timeout, full multi-file project support. Use it as a browser app or install the standalone Windows desktop build with bundled MiKTeX.
 
-![Version](https://img.shields.io/badge/version-4.3.1-informational)
+![Version](https://img.shields.io/badge/version-4.7.0-informational)
 ![Python](https://img.shields.io/badge/Python-3.8%2B-blue)
 ![Flask](https://img.shields.io/badge/Flask-2.x-lightgrey)
 ![Platform](https://img.shields.io/badge/Desktop-Windows-0078d6)
@@ -22,6 +22,8 @@ A lightweight, self-hosted LaTeX editor that runs entirely on your own machine �
 - **Find & Replace** — in-file, plus project-wide replace-all
 - **Quick Open** — fuzzy file switcher (`Ctrl+P`)
 - **Symbol & environment palettes** — insert math symbols and LaTeX environments from a panel
+- **Closable, resumable tabs** — × / middle-click to close; reopens your last file and cursor line when you reopen a project
+- **User-macro autocomplete** — your own `\newcommand` / `\newenvironment` definitions are suggested as you type
 - **Auto-save** — every 800 ms; manual save with `Ctrl+S`
 
 ### Compiling
@@ -45,13 +47,20 @@ A lightweight, self-hosted LaTeX editor that runs entirely on your own machine �
 - **TODO scanner** — collects `\todo{}` and `% TODO / FIXME / XXX` markers
 - **Light / dark themes** — independent UI theme and editor theme
 
+### GitHub & Packages
+- **Sign in with GitHub** in-app (device-flow, no CLI) and **back up a project** in one click — git init + LaTeX-aware `.gitignore` + commit + create repo + push (private by default)
+- **Import from GitHub** and **pull remote changes** (auto-stashes your local edits)
+- **Package manager panel** — see the packages your document uses, check what's installed, and open MiKTeX / TeX Live to add any that are missing
+
+> GitHub sign-in and Grammar mode work best in browser/source mode; Grammar mode is browser-only (it relies on browser grammar extensions).
+
 ---
 
 ## Two Ways to Run
 
 ### A) Windows Desktop App (recommended)
 
-Download **`TexLocal-Setup-4.3.1.exe`** from the [Releases page](https://github.com/FourthPs/Tex-Local-Public/releases) and run it. Per-user install (no admin required), bundles a portable MiKTeX — nothing else to set up. The app opens in a native window and checks for updates automatically on launch.
+Download **`TexLocal-Setup-4.7.0.exe`** from the [Releases page](https://github.com/FourthPs/Tex-Local-Public/releases) and run it. Per-user install (no admin required), bundles a portable MiKTeX — nothing else to set up. The app opens in a native window and checks for updates automatically on launch.
 
 ### B) From Source
 

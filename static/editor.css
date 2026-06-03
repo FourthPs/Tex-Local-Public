@@ -202,6 +202,14 @@
   }
   .tab.active { background: var(--bg); color: var(--text); border-color: var(--border); }
   .tab:hover:not(.active) { color: var(--text); }
+  /* v4.4.0 — per-tab close button */
+  .tab { display: inline-flex; align-items: center; gap: 7px; }
+  .tab-close {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 15px; height: 15px; border-radius: 4px; font-size: 13px; line-height: 1;
+    color: var(--muted); opacity: .65; transition: all .12s;
+  }
+  .tab-close:hover { opacity: 1; color: var(--text); background: rgba(127,127,127,.22); }
   #editor-host {
     flex: 1;
     overflow: hidden;
@@ -534,6 +542,16 @@
   }
   .err-mpkg-copy:hover  { filter: brightness(1.1); }
   .err-mpkg-copy.copied { background: var(--green); border-color: var(--green); }
+  /* v4.4.0 — Install-now button beside Copy (outline so Copy stays primary) */
+  .err-mpkg-install {
+    background: transparent; border: 1px solid var(--accent); color: var(--accent);
+    cursor: pointer; font-size: 11px; padding: 4px 10px; border-radius: 4px;
+    font-family: var(--font-ui); font-weight: 600; flex-shrink: 0; transition: all .15s;
+  }
+  .err-mpkg-install:hover            { background: var(--accent); color: #fff; }
+  .err-mpkg-install:disabled         { cursor: default; opacity: .8; }
+  .err-mpkg-install.done             { border-color: var(--green); color: var(--green); }
+  .err-mpkg-install.failed           { border-color: var(--red,#f87171); color: var(--red,#f87171); }
   /* badge บนปุ่ม Logs */
   #logs-btn-badge {
     display: inline-block; margin-left: 5px; padding: 1px 6px;
@@ -957,13 +975,37 @@
 
   /* v3.2.2 — Environment template panel. Same skin as symbol-panel,
      wider rows because items are full env names + previews, not glyphs. */
-  #env-panel, #snippet-panel {
+  #env-panel, #snippet-panel, #package-panel {
     display: none; position: fixed; z-index: 200;
     background: var(--surface); border: 1px solid var(--border);
     border-radius: 10px; box-shadow: 0 8px 32px rgba(0,0,0,.45);
     width: 380px; max-height: 460px; flex-direction: column; overflow: hidden;
   }
-  #env-panel.open, #snippet-panel.open { display: flex; }
+  #env-panel.open, #snippet-panel.open, #package-panel.open { display: flex; }
+  /* v4.4.0 — Package manager panel rows */
+  #package-panel .pkg-section {
+    font-size: 10.5px; font-weight: 600; letter-spacing: 1px; text-transform: uppercase;
+    color: var(--muted); padding: 10px 14px 4px;
+  }
+  #package-panel .pkg-row {
+    display: flex; align-items: center; gap: 10px; padding: 7px 14px;
+  }
+  #package-panel .pkg-info { flex: 1; min-width: 0; }
+  #package-panel .pkg-name { font-family: var(--font-code); font-size: 12.5px; color: var(--text); }
+  #package-panel .pkg-desc { font-size: 11px; color: var(--muted); margin-top: 1px; line-height: 1.3; }
+  #package-panel .pkg-btn {
+    flex: none; border: 1px solid var(--border); background: transparent; color: var(--muted);
+    border-radius: 5px; font-size: 14px; line-height: 1; width: 26px; height: 26px; cursor: pointer;
+    transition: all .12s;
+  }
+  #package-panel .pkg-btn.add:hover    { border-color: var(--accent); color: var(--accent); }
+  #package-panel .pkg-btn.remove:hover { border-color: var(--red, #f87171); color: var(--red, #f87171); }
+  #package-panel .pkg-empty { padding: 6px 14px 10px; font-size: 11.5px; color: var(--muted); }
+  #package-panel .pkg-state { flex: none; display: inline-flex; align-items: center; }
+  #package-panel .pkg-btn.install:hover { border-color: var(--accent); color: var(--accent); }
+  #package-panel .pkg-installed { color: var(--green, #34d399); font-size: 13px; }
+  #package-panel .pkg-installing { font-size: 13px; }
+  #package-panel .pkg-missing { font-size: 10px; color: var(--muted); }
   /* v3.3.0 — Snippet placeholder highlight inside CodeMirror.
      Background tint + thin outline so the selectable range is visible
      even when no text is selected; matches the existing search-match style.
@@ -1098,24 +1140,19 @@
      if total content exceeds the pane the user can scroll left/right
      instead of losing access to the rightmost actions. Trackpad and
      shift+wheel both work; scrollbar styled thin below. */
+  /* v4.4.0 — Wrap to a second row when the editor pane is too narrow (e.g. PDF
+     preview open) instead of scrolling horizontally / hiding the right-side
+     tools behind the PDF pane. Auto height grows to fit the extra row. */
   .editor-toolbar {
-    height: 34px; background: var(--surface); border-bottom: 1px solid var(--border);
-    display: flex; align-items: center; padding: 0 8px; gap: 2px; flex-shrink: 0;
-    min-width: 0; overflow-x: auto; overflow-y: hidden;
-    /* Firefox thin scrollbar; webkit pseudo-elements below. */
-    scrollbar-width: thin;
-    scrollbar-color: var(--border) transparent;
+    min-height: 34px; background: var(--surface); border-bottom: 1px solid var(--border);
+    display: flex; flex-wrap: wrap; align-items: center;
+    padding: 3px 8px; gap: 3px 4px; flex-shrink: 0; min-width: 0;
   }
-  /* webkit (Chrome / WebView2) — thin horizontal scrollbar that lives inside
-     the 34px toolbar. Track is transparent so it disappears when content
-     fits; thumb fades in on hover so it's discoverable without being noisy. */
-  .editor-toolbar::-webkit-scrollbar { height: 4px; }
-  .editor-toolbar::-webkit-scrollbar-track { background: transparent; }
-  .editor-toolbar::-webkit-scrollbar-thumb { background: transparent; border-radius: 2px; }
-  .editor-toolbar:hover::-webkit-scrollbar-thumb { background: var(--border); }
-  /* v4.2.2 — Groups never shrink: the whole toolbar scrolls instead. This
-     keeps each button at its natural content width (no more squeezed \[…\]). */
-  .etb-group { display: flex; align-items: center; gap: 1px; flex-shrink: 0; }
+  /* v4.4.0 — Groups may shrink and wrap their own buttons (each button keeps its
+     natural width via .etb-btn flex-shrink:0), so a wide group like the
+     icon cluster never overflows / hides behind the PDF pane — it flows onto
+     the next row instead. */
+  .etb-group { display: flex; flex-wrap: wrap; align-items: center; gap: 1px; }
   .etb-spacer { flex: 1 1 auto; min-width: 12px; }
   .etb-sep { width: 1px; height: 16px; background: var(--border); margin: 0 5px; flex-shrink: 0; }
   .etb-btn {
