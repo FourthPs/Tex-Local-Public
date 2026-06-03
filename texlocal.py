@@ -9,7 +9,7 @@ import threading, urllib.request, urllib.error, urllib.parse, tempfile, time
 # The Inno installer keeps its own MyAppVersion in texlocal.iss; the two
 # MUST be bumped together when cutting a release. Discipline reminder in
 # HANDOFF section 1.
-TEXLOCAL_VERSION = "4.7.0"
+TEXLOCAL_VERSION = "4.7.1"
 
 # GitHub release-check endpoint. Points to the public repo for update checks and About modal link.
 TEXLOCAL_GITHUB_OWNER = "FourthPs"
