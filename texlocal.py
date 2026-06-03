@@ -1,6 +1,6 @@
 from flask import Flask, request, jsonify, send_file, render_template
 import os, sys, subprocess, shutil, zipfile, io, re, gzip, json
-import threading, urllib.request, urllib.error, tempfile
+import threading, urllib.request, urllib.error, urllib.parse, tempfile, time
 
 # v4.2.0-phase4 — Single source of truth for the running version. Used by:
 #   - the startup banner string (printed when running source mode)
@@ -9,7 +9,7 @@ import threading, urllib.request, urllib.error, tempfile
 # The Inno installer keeps its own MyAppVersion in texlocal.iss; the two
 # MUST be bumped together when cutting a release. Discipline reminder in
 # HANDOFF section 1.
-TEXLOCAL_VERSION = "4.6.0"
+TEXLOCAL_VERSION = "4.7.0"
 
 # GitHub release-check endpoint. Points to the public repo for update checks and About modal link.
 TEXLOCAL_GITHUB_OWNER = "FourthPs"
@@ -96,6 +96,22 @@ def _safe_join(base_abs, *parts):
 
 def _err(msg, code=400):
     return jsonify({"error": msg}), code
+
+def _rmtree_force(path):
+    """shutil.rmtree that survives Windows read-only files. Git pack objects in
+    .git/ are marked read-only, so a plain rmtree raises PermissionError on
+    Windows — which broke deleting any project that contains a git repo (now
+    common via GitHub import/backup). The handler clears the bit and retries."""
+    def _fix(func, p, _exc):
+        try:
+            os.chmod(p, 0o700)
+            func(p)
+        except OSError:
+            pass
+    try:
+        shutil.rmtree(path, onexc=_fix)          # Python 3.12+
+    except TypeError:
+        shutil.rmtree(path, onerror=_fix)        # older Pythons
 
 
 # v4.3.1 — Atomic file writes. WHY: direct open(path,"w") truncates the
@@ -425,7 +441,7 @@ def delete_project(name):
     except _PathError as e:
         return _err(str(e))
     if os.path.exists(path):
-        shutil.rmtree(path)
+        _rmtree_force(path)
     return jsonify({"ok": True})
 
 @app.route("/api/projects/<name>/rename", methods=["POST"])
@@ -709,6 +725,564 @@ def export_zip(project):
     return send_file(buf, mimetype="application/zip",
                      as_attachment=True, download_name=f"{project}.zip")
 
+# ── GitHub integration (v4.4.0) ──────────────────────────────────────
+# Per-project Backup (init/commit/create/push) + Import (clone) + a real
+# in-app "Sign in with GitHub" via the OAuth device flow. Auth prefers an
+# in-app OAuth token (no CLI needed); falls back to the gh CLI when present.
+
+# A LaTeX-aware .gitignore so build artifacts (and the .aux_files cache) never
+# get committed. Mirrors export-zip's SKIP_EXTS.
+_GITIGNORE_TEX = (
+    "# TexLocal — LaTeX build artifacts (auto-generated)\n"
+    "*.aux\n*.log\n*.toc\n*.out\n*.bbl\n*.blg\n*.fls\n*.bcf\n"
+    "*.lof\n*.lot\n*.nav\n*.snm\n*.vrb\n*.xdv\n*.fdb_latexmk\n"
+    "*.synctex.gz\n*.run.xml\n.aux_files/\n"
+)
+
+def _run(cmd, cwd=None, timeout=60):
+    """Run a subprocess; return (rc, stdout, stderr). Never raises."""
+    try:
+        r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True,
+                           timeout=timeout, stdin=subprocess.DEVNULL,
+                           creationflags=SUBPROC_FLAGS)
+        return r.returncode, (r.stdout or ""), (r.stderr or "")
+    except FileNotFoundError:
+        return 127, "", f"{cmd[0]}: not found"
+    except subprocess.TimeoutExpired:
+        return 124, "", f"{cmd[0]}: timed out after {timeout}s"
+
+def _gh_available():
+    rc, _out, _err = _run(["gh", "--version"], timeout=10)
+    return rc == 0
+
+# ── In-app GitHub OAuth (device flow) ────────────────────────────────
+# Register an OAuth App at github.com/settings/developers (enable Device Flow);
+# the client id is public (no secret), safe to ship. Override via env var.
+GITHUB_CLIENT_ID = os.environ.get("TEXLOCAL_GITHUB_CLIENT_ID", "").strip() or "Ov23liYkjm4KmhEtKMHR"
+
+def _config_dir():
+    if os.name == "nt":
+        base = os.environ.get("APPDATA") or os.path.expanduser("~")
+        d = os.path.join(base, "TexLocal")
+    else:
+        d = os.path.join(os.path.expanduser("~"), ".config", "texlocal")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+def _gh_token_path():
+    return os.path.join(_config_dir(), "github-auth.json")
+
+def _gh_token_load():
+    try:
+        with open(_gh_token_path(), encoding="utf-8") as f:
+            d = json.load(f)
+        return d if d.get("token") else None
+    except (OSError, ValueError):
+        return None
+
+def _gh_token_save(token, account):
+    try:
+        with open(_gh_token_path(), "w", encoding="utf-8") as f:
+            json.dump({"token": token, "account": account}, f)
+    except OSError:
+        pass
+
+def _gh_token_clear():
+    try:
+        os.remove(_gh_token_path())
+    except OSError:
+        pass
+
+def _gh_api(method, url, token=None, data=None):
+    """Call the GitHub REST API. Returns (status_code, parsed_json_or_None)."""
+    headers = {"Accept": "application/vnd.github+json", "User-Agent": "TexLocal"}
+    if token:
+        headers["Authorization"] = "Bearer " + token
+    body = None
+    if data is not None:
+        body = json.dumps(data).encode()
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(url, data=body, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return r.status, json.loads(r.read().decode() or "null")
+    except urllib.error.HTTPError as e:
+        try:    return e.code, json.loads(e.read().decode() or "null")
+        except Exception: return e.code, None
+    except Exception as e:
+        return 0, {"message": str(e)}
+
+def _gh_oauth_post(url, fields):
+    """Form-POST to GitHub's OAuth endpoints (Accept: json)."""
+    body = urllib.parse.urlencode(fields).encode()
+    req = urllib.request.Request(url, data=body, method="POST",
+                                 headers={"Accept": "application/json",
+                                          "User-Agent": "TexLocal"})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return r.status, json.loads(r.read().decode() or "null")
+    except urllib.error.HTTPError as e:
+        try:    return e.code, json.loads(e.read().decode() or "null")
+        except Exception: return e.code, None
+    except Exception as e:
+        return 0, {"error": str(e)}
+
+def _authed_clone_url(url, token):
+    """https URL with the token embedded, for clone/push of private repos
+    without a credential helper. Accepts a full github URL or owner/repo."""
+    if re.match(r"^[\w.-]+/[\w.-]+$", url):
+        owner_repo = url
+    else:
+        m = re.search(r"github\.com[/:]([\w.-]+/[\w.-]+?)(?:\.git)?/?$", url)
+        owner_repo = m.group(1) if m else None
+    if not owner_repo:
+        return None
+    return f"https://x-access-token:{token}@github.com/{owner_repo}.git"
+
+def _gh_status():
+    """{installed, logged_in, account, mode}. Prefers an in-app OAuth token;
+    falls back to the gh CLI so pre-existing setups keep working."""
+    tok = _gh_token_load()
+    if tok:
+        return {"installed": True, "logged_in": True,
+                "account": tok.get("account"), "mode": "oauth"}
+    if not _gh_available():
+        return {"installed": False, "logged_in": False,
+                "account": None, "mode": None}
+    rc, out, err = _run(["gh", "auth", "status"], timeout=15)
+    text = (out or "") + "\n" + (err or "")
+    logged_in = ("Logged in to github.com" in text)
+    m = (re.search(r"Logged in to github\.com account\s+(\S+)", text)
+         or re.search(r"Logged in to github\.com as\s+(\S+)", text)
+         or re.search(r"account\s+(\S+)", text))
+    return {"installed": True, "logged_in": logged_in,
+            "account": (m.group(1) if m else None), "mode": "gh"}
+
+# In-memory pending device-flow state (single local user → module global).
+_gh_device = {}
+
+@app.route("/api/github/status", methods=["GET"])
+def github_status():
+    return jsonify(_gh_status())
+
+@app.route("/api/github/login", methods=["POST"])
+def github_login():
+    """Start the OAuth device flow. Returns a user code + verification URL; the
+    UI then polls /api/github/login/poll until the user authorises. Already-
+    signed-in is a no-op."""
+    st = _gh_status()
+    if st["logged_in"]:
+        return jsonify({"ok": True, "already": True, "account": st["account"]})
+    if not GITHUB_CLIENT_ID:
+        return _err("In-app GitHub sign-in isn't configured yet. Register a "
+                    "GitHub OAuth App (enable Device Flow) and set its client "
+                    "id in TEXLOCAL_GITHUB_CLIENT_ID.", 400)
+    status, data = _gh_oauth_post(
+        "https://github.com/login/device/code",
+        {"client_id": GITHUB_CLIENT_ID, "scope": "repo read:user"})
+    if status != 200 or not data or "device_code" not in data:
+        return _err("Could not start GitHub sign-in: "
+                    + (str(data) if data else "no response from GitHub"), 502)
+    _gh_device.clear()
+    _gh_device.update({
+        "device_code": data["device_code"],
+        "interval":    int(data.get("interval", 5)),
+        "expires_at":  time.time() + int(data.get("expires_in", 900)),
+    })
+    return jsonify({
+        "ok": True, "started": True,
+        "user_code":        data.get("user_code"),
+        "verification_uri": data.get("verification_uri", "https://github.com/login/device"),
+        "interval":         _gh_device["interval"],
+    })
+
+@app.route("/api/github/login/poll", methods=["POST"])
+def github_login_poll():
+    """Poll GitHub for the device-flow token. On success, store it per-user."""
+    if not _gh_device.get("device_code"):
+        return jsonify({"status": "error", "error": "No sign-in in progress."})
+    if time.time() > _gh_device.get("expires_at", 0):
+        _gh_device.clear()
+        return jsonify({"status": "error", "error": "Code expired — try again."})
+    status, data = _gh_oauth_post(
+        "https://github.com/login/oauth/access_token",
+        {"client_id":  GITHUB_CLIENT_ID,
+         "device_code": _gh_device["device_code"],
+         "grant_type":  "urn:ietf:params:oauth:grant-type:device_code"})
+    if not data:
+        return jsonify({"status": "pending"})
+    err = data.get("error")
+    if err == "authorization_pending":
+        return jsonify({"status": "pending"})
+    if err == "slow_down":
+        _gh_device["interval"] = int(data.get("interval", _gh_device.get("interval", 5) + 5))
+        return jsonify({"status": "pending", "interval": _gh_device["interval"]})
+    if err:
+        _gh_device.clear()
+        return jsonify({"status": "error", "error": data.get("error_description") or err})
+    token = data.get("access_token")
+    if not token:
+        return jsonify({"status": "pending"})
+    _, who = _gh_api("GET", "https://api.github.com/user", token=token)
+    account = who.get("login") if isinstance(who, dict) else None
+    _gh_token_save(token, account)
+    _gh_device.clear()
+    return jsonify({"status": "authorized", "account": account})
+
+@app.route("/api/github/logout", methods=["POST"])
+def github_logout():
+    """Sign out: forget the stored OAuth token. (gh CLI sessions are managed
+    by `gh auth logout`, not us.)"""
+    had = _gh_token_load() is not None
+    _gh_token_clear()
+    _gh_device.clear()
+    return jsonify({"ok": True, "was_oauth": had})
+
+@app.route("/api/github/open-verify", methods=["POST"])
+def github_open_verify():
+    """Open the GitHub device-verification page in the user's SYSTEM browser.
+    The WebView2 desktop build can't satisfy JS window.open() with a real
+    browser tab (no popup/new-window host), so the frontend asks us to launch
+    the OS browser instead. Restricted to GitHub's own login/device URLs so this
+    can't be turned into an open-redirect / arbitrary-launcher."""
+    import webbrowser
+    url = (request.json or {}).get("url") or "https://github.com/login/device"
+    if not re.match(r"^https://github\.com/login(/device)?([/?]|$)", url):
+        url = "https://github.com/login/device"
+    try:
+        webbrowser.open(url, new=2)
+        return jsonify({"ok": True})
+    except Exception as e:
+        return _err(f"Could not open the system browser: {e}", 500)
+
+@app.route("/api/github/repos", methods=["GET"])
+def github_repos():
+    """List the signed-in user's repositories (newest first) for the import
+    dialog's dropdown."""
+    st = _gh_status()
+    if not st["logged_in"]:
+        return _err("Not signed in to GitHub.", 401)
+    tok = _gh_token_load()
+    if tok:                                            # OAuth → REST API
+        repos = []
+        for page in range(1, 6):                       # up to 500 repos
+            code, data = _gh_api("GET",
+                "https://api.github.com/user/repos"
+                f"?per_page=100&sort=updated&affiliation=owner&page={page}",
+                token=tok["token"])
+            if code != 200 or not isinstance(data, list) or not data:
+                break
+            for r in data:
+                repos.append({
+                    "nameWithOwner": r.get("full_name"),
+                    "url":           r.get("html_url"),
+                    "visibility":    "private" if r.get("private") else "public",
+                    "description":   r.get("description"),
+                    "updatedAt":     r.get("updated_at"),
+                })
+            if len(data) < 100:
+                break
+        return jsonify({"repos": repos, "account": st.get("account")})
+    if not st["installed"]:                            # fallback → gh CLI
+        return _err("GitHub CLI (gh) is not installed.", 400)
+    rc, out, err = _run(
+        ["gh", "repo", "list", "--no-archived", "--limit", "200", "--json",
+         "nameWithOwner,url,visibility,description,updatedAt"], timeout=30)
+    if rc != 0:
+        return _err((err or out or "Failed to list repositories.").strip()[-400:], 500)
+    try:
+        repos = json.loads(out or "[]")
+    except ValueError:
+        repos = []
+    repos.sort(key=lambda r: r.get("updatedAt") or "", reverse=True)
+    return jsonify({"repos": repos, "account": st.get("account")})
+
+@app.route("/api/github/import", methods=["POST"])
+def github_import():
+    """Clone a GitHub repo into projects/<name> as a new project."""
+    data = request.json or {}
+    url  = (data.get("url") or "").strip()
+    if not url:
+        return _err("Enter a GitHub repository URL.")
+    if not (re.match(r"^https?://", url, re.I) or re.match(r"^[\w.-]+/[\w.-]+$", url)):
+        return _err("Enter an https:// GitHub URL or owner/repo.")
+    raw = (data.get("name") or "").strip()
+    if not raw:
+        raw = re.sub(r"\.git$", "", url.rstrip("/").split("/")[-1])
+    name = re.sub(r"[^A-Za-z0-9_\- ]", "_", raw).strip() or "imported-repo"
+    if not _is_safe_project_name(name):
+        return _err("Invalid project name derived from the URL.")
+    try:
+        dest = _safe_project(name)
+    except _PathError as e:
+        return _err(str(e))
+    if os.path.exists(dest):
+        return _err(f'A project named "{name}" already exists.', 409)
+
+    tok = _gh_token_load()
+    if tok:
+        authed = _authed_clone_url(url, tok["token"])
+        if not authed:
+            return _err("Could not parse that GitHub repository URL.")
+        rc, out, err = _run(["git", "clone", authed, dest], timeout=300)
+        if rc == 0:
+            clean = _authed_clone_url(url, "").replace("x-access-token:@", "")
+            if clean:
+                _run(["git", "remote", "set-url", "origin", clean], cwd=dest)
+    elif _gh_available():
+        rc, out, err = _run(["gh", "repo", "clone", url, dest], timeout=300)
+    else:
+        rc, out, err = _run(["git", "clone", url, dest], timeout=300)
+    if rc != 0:
+        if os.path.isdir(dest):
+            _rmtree_force(dest)
+        emsg = (err or out or "clone failed").strip()[-600:]
+        if tok:
+            emsg = emsg.replace(tok["token"], "***")
+        return jsonify({"ok": False, "error": emsg}), 500
+    return jsonify({"ok": True, "name": name})
+
+@app.route("/api/projects/<project>/github/backup", methods=["POST"])
+def github_backup(project):
+    try:
+        path = _safe_project(project)
+    except _PathError as e:
+        return _err(str(e))
+    if not os.path.isdir(path):
+        return _err("Project not found", 404)
+
+    data    = request.json or {}
+    message = (data.get("message") or "").strip() or "Backup from TexLocal"
+    repo    = (data.get("repo") or project).strip() or project
+    private = data.get("private", True)
+    vis     = "--private" if private else "--public"
+
+    st = _gh_status()
+    if not st["logged_in"]:
+        return _err("Not signed in to GitHub. Use the Sign in button first.", 401)
+
+    steps = []
+    def step(label, rc, out, err):
+        steps.append({"step": label, "ok": rc == 0,
+                      "out": (out or "").strip()[-600:],
+                      "err": (err or "").strip()[-600:]})
+        return rc == 0
+
+    if not os.path.isdir(os.path.join(path, ".git")):
+        rc, out, err = _run(["git", "init", "-b", "main"], cwd=path)
+        if rc != 0:
+            _run(["git", "init"], cwd=path)
+            _run(["git", "checkout", "-b", "main"], cwd=path)
+        step("git init", 0, "initialised empty repository", "")
+
+    gi = os.path.join(path, ".gitignore")
+    if not os.path.exists(gi):
+        try:
+            with open(gi, "w", encoding="utf-8") as f:
+                f.write(_GITIGNORE_TEX)
+        except OSError:
+            pass
+
+    rc, name_out, _ = _run(["git", "config", "user.name"], cwd=path)
+    if rc != 0 or not name_out.strip():
+        acct = st.get("account") or "TexLocal"
+        _run(["git", "config", "user.name", acct], cwd=path)
+        _run(["git", "config", "user.email",
+              f"{acct}@users.noreply.github.com"], cwd=path)
+
+    step("git add", *_run(["git", "add", "-A"], cwd=path))
+    rc, out, err = _run(["git", "commit", "-m", message], cwd=path)
+    nothing = "nothing to commit" in (out + err).lower()
+    if rc != 0 and not nothing:
+        step("git commit", rc, out, err)
+        return jsonify({"ok": False, "steps": steps}), 500
+    step("git commit", 0,
+         "nothing to commit (already up to date)" if nothing else out, err)
+
+    rc, remote_out, _ = _run(["git", "remote", "get-url", "origin"], cwd=path)
+    has_remote = rc == 0 and remote_out.strip()
+    tok = _gh_token_load()
+    repo_url = ""
+    if has_remote:
+        repo_url = remote_out.strip()
+        if tok:
+            authed = _authed_clone_url(repo_url, tok["token"]) or repo_url
+            ok = step("git push", *_run(["git", "push", authed, "HEAD:main"],
+                                        cwd=path, timeout=180))
+        else:
+            ok = step("git push", *_run(["git", "push", "origin", "HEAD"],
+                                        cwd=path, timeout=180))
+    elif tok:
+        code, data2 = _gh_api("POST", "https://api.github.com/user/repos",
+                             token=tok["token"],
+                             data={"name": repo, "private": bool(private)})
+        if code not in (200, 201) or not isinstance(data2, dict) or not data2.get("clone_url"):
+            step("create repo", 1, "", (data2 or {}).get("message", "could not create repository"))
+            return jsonify({"ok": False, "steps": steps}), 500
+        repo_url = data2.get("html_url", "")
+        clean = data2["clone_url"]
+        _run(["git", "remote", "add", "origin", clean], cwd=path)
+        authed = _authed_clone_url(clean, tok["token"]) or clean
+        ok = step("create repo + push",
+                  *_run(["git", "push", "-u", authed, "HEAD:main"],
+                        cwd=path, timeout=180))
+    else:
+        ok = step("gh repo create + push",
+                  *_run(["gh", "repo", "create", repo, vis, "--source", ".",
+                         "--remote", "origin", "--push"], cwd=path, timeout=180))
+        rc2, url_out, _ = _run(["gh", "repo", "view", "--json", "url",
+                                "-q", ".url"], cwd=path)
+        repo_url = url_out.strip() if rc2 == 0 else ""
+
+    if tok:                                   # never echo the token
+        for s in steps:
+            s["err"] = (s.get("err") or "").replace(tok["token"], "***")
+            s["out"] = (s.get("out") or "").replace(tok["token"], "***")
+
+    return jsonify({"ok": ok, "repo_url": repo_url,
+                    "account": st.get("account"), "steps": steps}), \
+           (200 if ok else 500)
+
+def _git_remote_branch(path):
+    """(remote_url, branch) for a project repo, or ('', '')."""
+    rc, remote, _ = _run(["git", "remote", "get-url", "origin"], cwd=path)
+    remote = remote.strip() if rc == 0 else ""
+    rc2, br, _ = _run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=path)
+    branch = (br.strip() if rc2 == 0 else "") or "main"
+    return remote, branch
+
+@app.route("/api/projects/<project>/github/sync", methods=["GET"])
+def github_sync(project):
+    """Fetch from origin and report how local compares to the remote:
+    {repo, remote, branch, ahead, behind, dirty, fetched}."""
+    try:
+        path = _safe_project(project)
+    except _PathError as e:
+        return _err(str(e))
+    if not os.path.isdir(os.path.join(path, ".git")):
+        return jsonify({"repo": False})
+    remote, branch = _git_remote_branch(path)
+    if not remote:
+        return jsonify({"repo": True, "remote": None})
+
+    tok = _gh_token_load()
+    fetch_target = (_authed_clone_url(remote, tok["token"]) or remote) if tok else "origin"
+    rc, out, err = _run(["git", "fetch", fetch_target, branch], cwd=path, timeout=60)
+    fetched = rc == 0
+    ferr = ""
+    if not fetched:
+        ferr = (err or out).strip()
+        if tok: ferr = ferr.replace(tok["token"], "***")
+        ferr = ferr[-300:]
+
+    behind = ahead = 0
+    if fetched:
+        rc2, c, _ = _run(["git", "rev-list", "--count", "HEAD..FETCH_HEAD"], cwd=path)
+        if rc2 == 0: behind = int((c.strip() or "0"))
+        rc3, c2, _ = _run(["git", "rev-list", "--count", "FETCH_HEAD..HEAD"], cwd=path)
+        if rc3 == 0: ahead = int((c2.strip() or "0"))
+    rc4, st, _ = _run(["git", "status", "--porcelain"], cwd=path)
+    dirty = bool(st.strip())
+    return jsonify({"repo": True, "remote": remote, "branch": branch,
+                    "fetched": fetched, "ahead": ahead, "behind": behind,
+                    "dirty": dirty, "fetch_error": ferr})
+
+@app.route("/api/projects/<project>/github/pull", methods=["POST"])
+def github_pull(project):
+    """Pull (merge) the remote branch into the local one. Token-authed when
+    signed in via OAuth; otherwise relies on gh's git credential helper."""
+    try:
+        path = _safe_project(project)
+    except _PathError as e:
+        return _err(str(e))
+    if not os.path.isdir(os.path.join(path, ".git")):
+        return _err("Not a git repository — back up first to connect a repo.", 400)
+    remote, branch = _git_remote_branch(path)
+    if not remote:
+        return _err("No GitHub remote connected.", 400)
+    tok = _gh_token_load()
+    target = (_authed_clone_url(remote, tok["token"]) or remote) if tok else "origin"
+    # --autostash: stash uncommitted local edits, merge, then re-apply them.
+    # Without it, unsaved local changes (the common case — the editor autosaves
+    # to disk) abort the pull with "would be overwritten by merge".
+    rc, out, err = _run(["git", "pull", "--no-rebase", "--no-edit", "--autostash",
+                         target, branch], cwd=path, timeout=120)
+    text = ((out or "") + "\n" + (err or "")).strip()
+    if tok: text = text.replace(tok["token"], "***")
+    low = text.lower()
+    # NB: `git pull --autostash` exits 0 even when re-applying the stash
+    # conflicts (it prints "Applying autostash resulted in conflicts" and keeps
+    # the stash) — so we must detect that case despite rc == 0.
+    autostash_conflict = "autostash resulted in conflicts" in low
+    conflict = autostash_conflict or ("automatic merge failed" in low) \
+               or ("needs merge" in low) or ("unmerged" in low) \
+               or ("conflict" in low and "resolv" not in low)
+    blocked  = ("would be overwritten" in low) \
+               or ("please commit your changes or stash" in low)
+    if rc != 0 or conflict or blocked:
+        return jsonify({"ok": False, "conflict": conflict, "blocked": blocked,
+                        "error": text[-700:]}), (409 if (conflict or blocked) else 500)
+    return jsonify({"ok": True, "out": text[-700:]})
+
+# ── LaTeX package helper (v4.4.0) ────────────────────────────────────
+# Check whether a package's .sty is present (kpsewhich). Installing is handed
+# off to the system's own package manager GUI (MiKTeX Console / TeX Live) — we
+# just launch it — rather than shelling mpm in-app. MiKTeX also auto-installs
+# missing packages on compile by default.
+
+def _pkg_manager():
+    """Detect the available package-manager GUI. Returns (label, launch_cmd) or
+    (None, None). Prefers MiKTeX Console, then TeX Live (tlshell / tlmgr gui)."""
+    if shutil.which("miktex-console"):
+        return "MiKTeX Console", ["miktex-console"]
+    if shutil.which("tlshell"):
+        return "TeX Live (tlshell)", ["tlshell"]
+    if shutil.which("tlmgr"):
+        return "TeX Live (tlmgr)", ["tlmgr", "gui"]
+    return None, None
+
+def _pkgs_installed(names):
+    """Batch the lookup into ONE kpsewhich call — it accepts many filenames and
+    prints the full path of each that's found. kpsewhich is slow to start on
+    MiKTeX (~5s), so per-package calls would take minutes; one call is ~seconds.
+    A name is 'installed' if a returned path's basename is <name>.sty."""
+    names = [n for n in names if re.match(r"^[A-Za-z0-9._-]+$", n or "")]
+    if not names:
+        return {}
+    rc, out, _err = _run(["kpsewhich", *[f"{n}.sty" for n in names]], timeout=60)
+    found = set()
+    for line in (out or "").splitlines():
+        base = line.strip().replace("\\", "/").split("/")[-1]
+        if base:
+            found.add(base.lower())
+    return {n: (f"{n}.sty".lower() in found) for n in names}
+
+@app.route("/api/packages/status", methods=["POST"])
+def packages_status():
+    """Body {names:[...]} → {installed:{name:bool}, manager:str|null}."""
+    data  = request.json or {}
+    names = data.get("names") or []
+    if not isinstance(names, list):
+        names = []
+    names = [n for n in names if isinstance(n, str)][:60]   # cap the work
+    label, _cmd = _pkg_manager()
+    return jsonify({"installed": _pkgs_installed(names), "manager": label})
+
+@app.route("/api/packages/open-manager", methods=["POST"])
+def packages_open_manager():
+    """Launch the system's package-manager GUI (MiKTeX Console / TeX Live) so
+    the user installs there. Local app: it opens on the user's screen."""
+    label, cmd = _pkg_manager()
+    if not cmd:
+        return _err("No package manager found. Install MiKTeX (miktex.org) or "
+                    "TeX Live, then reopen this.", 404)
+    try:
+        subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, creationflags=SUBPROC_FLAGS)
+    except Exception as e:
+        return _err(f"Couldn't launch {label}: {e}", 500)
+    return jsonify({"ok": True, "manager": label})
+
 @app.route("/api/projects/<project>/compile", methods=["POST"])
 def compile_project(project):
     data     = request.json or {}
@@ -765,6 +1339,17 @@ def compile_project(project):
             except Exception:
                 pass
 
+    # v4.4.0 — Make project-local .cls/.sty/.bst/.bib findable no matter where
+    # the main file lives. pdflatex/bibtex already run with cwd = main_dir, so
+    # files beside main.tex work; prepending the PROJECT ROOT (searched
+    # recursively via the trailing `//`) also covers a .cls/.bst kept at the
+    # root while main.tex sits in a subfolder. The trailing os.pathsep keeps the
+    # TeX distribution's own default search paths intact.
+    _texenv = os.environ.copy()
+    _root_search = path.replace("\\", "/") + "//"
+    for _var in ("TEXINPUTS", "BSTINPUTS", "BIBINPUTS"):
+        _texenv[_var] = _root_search + os.pathsep + _texenv.get(_var, "")
+
     def run(cmd, cwd=None):
         # v4.1.6-phase3 — diagnostic now silent by default; set TEXLOCAL_DEBUG=1
         # to capture per-subprocess PATH/which lookups in miktex-inject-debug.log
@@ -786,7 +1371,7 @@ def compile_project(project):
         try:
             r = subprocess.run(cmd, cwd=cwd or main_dir, capture_output=True, text=True,
                                encoding="utf-8", errors="replace",
-                               stdin=subprocess.DEVNULL,
+                               stdin=subprocess.DEVNULL, env=_texenv,
                                creationflags=SUBPROC_FLAGS)
         except FileNotFoundError as _fnf:
             if _debug:
@@ -1215,6 +1800,18 @@ _BIB_FIELD_RE = re.compile(
     re.IGNORECASE,
 )
 _LABEL_RE = re.compile(r'\\label\{([^}]+)\}')
+# v4.4.0 — user-defined commands/environments for autocomplete. Covers
+# \newcommand / \renewcommand / \providecommand (braced or bare), \def, \let,
+# \DeclareMathOperator, \DeclarePairedDelimiter; and \newenvironment /
+# \newtheorem for \begin{...} completion.
+_CMD_DEF_RE = re.compile(
+    r'\\(?:newcommand|renewcommand|providecommand)\*?\s*\{?\\([a-zA-Z@]+)\}?'
+    r'|\\DeclareMathOperator\*?\s*\{\\([a-zA-Z@]+)\}'
+    r'|\\DeclarePairedDelimiter\*?\s*\{?\\([a-zA-Z@]+)\}?'
+    r'|\\(?:def|let)\s*\\([a-zA-Z@]+)')
+_ENV_DEF_RE = re.compile(
+    r'\\(?:re)?newenvironment\s*\{([^}]+)\}'
+    r'|\\newtheorem\*?\s*\{([^}]+)\}')
 
 def _bib_read_field(rest, start):
     """Read a brace-/quote-delimited or bare value starting at `start` in `rest`.
@@ -1301,11 +1898,16 @@ def _parse_bib_text(text):
     return entries
 
 def _build_cite_data(path):
-    """Return {bibkeys, labels} aggregated over all .bib and .tex files in path."""
+    """Return {bibkeys, labels, commands, environments} aggregated over all
+    .bib and .tex files in path."""
     bibkeys = []
     labels  = []
+    commands = []
+    environments = []
     seen_keys   = set()
     seen_labels = set()
+    seen_cmds   = set()
+    seen_envs   = set()
     for root, dirs, files in os.walk(path):
         dirs[:] = [d for d in dirs if not d.startswith(".")]
         for f in files:
@@ -1336,11 +1938,26 @@ def _build_cite_data(path):
                                     "file": rel,
                                     "line": lineno,
                                 })
+                            for m in _CMD_DEF_RE.finditer(line):
+                                name = next((g for g in m.groups() if g), None)
+                                if name and name not in seen_cmds:
+                                    seen_cmds.add(name)
+                                    commands.append("\\" + name)
+                            for m in _ENV_DEF_RE.finditer(line):
+                                env = next((g for g in m.groups() if g), None)
+                                if env:
+                                    env = env.strip()
+                                    if env and env not in seen_envs:
+                                        seen_envs.add(env)
+                                        environments.append(env)
                 except Exception:
                     continue
     bibkeys.sort(key=lambda e: e["key"].lower())
     labels.sort(key=lambda e: e["name"].lower())
-    return {"bibkeys": bibkeys, "labels": labels}
+    commands.sort(key=str.lower)
+    environments.sort(key=str.lower)
+    return {"bibkeys": bibkeys, "labels": labels,
+            "commands": commands, "environments": environments}
 
 # ── \includeonly chapter list ─────────────────────────────────────────
 # Scan a single main file for `\include{path}` directives so the frontend

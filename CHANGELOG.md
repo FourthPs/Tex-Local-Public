@@ -4,6 +4,31 @@ All notable changes to TexLocal are documented here.
 
 ---
 
+## v4.7.0 — 2026-06-02
+
+### GitHub (browser/source mode)
+- **Sign in with GitHub** right inside TexLocal — no command-line setup. Uses GitHub's device-code flow: click the button, enter the short code on github.com, and you're connected.
+- **Back up a project to GitHub** in one click — TexLocal initialises a git repo (with a LaTeX-aware `.gitignore`), commits, creates the repository for you if needed, and pushes. Private by default.
+- **Import a project from GitHub** on the dashboard, and **check for / pull remote changes** (your unsaved local edits are stashed and re-applied automatically).
+
+### Editor
+- **Reopen where you left off** — projects now restore the last file you had open *and* your cursor line.
+- **Closable tabs** — an × on each editor tab, or middle-click to close.
+- **Smarter autocomplete** — your own `\newcommand` / `\newenvironment` definitions are now suggested, and the `\begin{...}` environment list pops up automatically as you type.
+- **Package manager panel** — see which LaTeX packages your document uses, check whether each is installed, and open MiKTeX / TeX Live to add any that are missing.
+
+### Fixes
+- Deleting a project that contains a git repository no longer fails on Windows.
+- Project-local `.cls` / `.bst` / `.bib` files are now found at compile time even when your main file lives in a subfolder.
+- Right-click spelling suggestions are smooth again — computing suggestions no longer briefly freezes the editor.
+
+### Desktop
+- The installed Windows app now works fully **offline** — the UI fonts and all editor libraries are bundled into the app, so no internet connection is needed at launch.
+
+_Thanks again to **PolarZ5** for contributing this whole batch of features (PR #2)._
+
+---
+
 ## v4.6.0 — 2026-06-02
 
 ### Editor

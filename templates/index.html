@@ -4,17 +4,17 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>TeX Local</title>
-<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Sora:wght@300;400;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css">
+<link href="{{ url_for('static', filename='fonts/fonts.css') }}" rel="stylesheet">
+<link rel="stylesheet" href="{{ url_for('static', filename='vendor/codemirror/codemirror.min.css') }}">
 <!-- v4.4.0 — KaTeX for math hover preview -->
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/hint/show-hint.min.css">
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/dialog/dialog.min.css">
+<link rel="stylesheet" href="{{ url_for('static', filename='vendor/katex/katex.min.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='vendor/codemirror/addon/hint/show-hint.min.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='vendor/codemirror/addon/dialog/dialog.min.css') }}">
 <!-- v3.2.3 — section folding addon. Custom rangeFinder for \chapter / \section
      / \subsection / \subsubsection / \paragraph is registered in JS below. -->
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/fold/foldgutter.min.css">
+<link rel="stylesheet" href="{{ url_for('static', filename='vendor/codemirror/addon/fold/foldgutter.min.css') }}">
 <!-- v4.4.0 — CodeMirror lint gutter for pre-compile syntax checker -->
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/lint/lint.min.css">
+<link rel="stylesheet" href="{{ url_for('static', filename='vendor/codemirror/addon/lint/lint.min.css') }}">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%235b9cf6'/><text x='16' y='24' text-anchor='middle' font-size='22' font-weight='bold' fill='white' font-family='Georgia,serif'>T</text></svg>">
 <link rel="stylesheet" href="{{ url_for('static', filename='editor.css') }}">
 </head>
@@ -29,6 +29,8 @@
   <button class="btn btn-ghost" onclick="openProjectsModal()" title="Manage projects">⚙ Projects</button>
   <div class="header-sep"></div>
   <span class="compile-status" id="compile-status"></span>
+  <!-- v4.4.0 — Backup to GitHub (moved to the header). -->
+  <button class="btn btn-ghost" id="github-btn" onclick="openGitHubModal()" title="Backup this project to GitHub — commit &amp; push" style="font-size:13px">☁ Backup</button>
   <button class="btn btn-ghost" id="settings-btn" onclick="toggleSettingsPanel(event)" title="Settings" style="font-size:13px">⚙</button>
   <button class="btn btn-success" onclick="compile()" id="compile-btn">▶ Compile</button>
 </header>
@@ -120,6 +122,8 @@
         <button class="etb-btn" id="env-toggle-btn" onclick="toggleEnvPanel(event)" title="Insert environment (equation, figure, table, …)" style="font-family:var(--font-code);font-size:11px">env</button>
         <!-- v3.3.0 — Snippet library (type trigger + Tab to expand). -->
         <button class="etb-btn" id="snippet-toggle-btn" onclick="toggleSnippetPanel(event)" title="Snippet library — type trigger + Tab to expand. ${1} ${2} ${0} placeholders" style="font-size:14px">❖</button>
+        <!-- v4.4.0 — Package manager: \usepackage in the preamble + suggestions. -->
+        <button class="etb-btn" id="package-toggle-btn" onclick="togglePackagePanel(event)" title="Packages — manage \usepackage in the preamble and add suggested ones" style="font-size:14px">📦</button>
         <!-- v3.2.2 — \includeonly chapter selector. Only enabled when the main file uses \include{}. -->
         <button class="etb-btn" id="chapters-toggle-btn" onclick="toggleChaptersPanel(event)" title="Compile only selected chapters (\includeonly)" style="font-size:14px">📑</button>
         <!-- v3.2.2 — \todo / TODO / FIXME tracker. -->
@@ -133,7 +137,7 @@
              a plain <textarea> that browser grammar extensions (QuillBot,
              Grammarly, LanguageTool) can attach to — CodeMirror's own surface
              is not an editable field they recognise. Insert back when done. -->
-        <button class="etb-btn" id="grammar-btn" onclick="openGrammarMode()" title="Grammar mode — edit the selected text (or current paragraph) in a plain box where QuillBot / Grammarly work, then insert it back. Browser mode only." style="font-size:14px">✍</button>
+        <button class="etb-btn" id="grammar-btn" onclick="openGrammarMode()" title="Grammar mode (Ctrl+Shift+G) — edit the selected text (or current paragraph) in a plain box where QuillBot / Grammarly work, then insert it back. Browser mode only." style="font-size:14px">✍</button>
       </div>
     </div>
 
@@ -230,6 +234,45 @@
     <div class="modal-actions">
       <button class="btn btn-ghost" onclick="closeModal('modal-projects')">Close</button>
       <button class="btn btn-primary" onclick="closeModal('modal-projects');showNewProject()">+ New Project</button>
+    </div>
+  </div>
+</div>
+
+<!-- v4.4.0 — Backup to GitHub. Sign in once (device flow), then commit & push
+     the current project. TexLocal stores no token — gh/OAuth owns credentials. -->
+<div class="modal-overlay" id="modal-github">
+  <div class="modal" style="width:min(560px,92vw)">
+    <h3 style="margin-bottom:10px">☁ Backup to GitHub</h3>
+    <div id="gh-auth-row" style="display:flex;align-items:center;gap:10px;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:14px;font-size:13px">
+      <span id="gh-auth-text" style="flex:1">Checking GitHub sign-in…</span>
+      <button class="btn btn-ghost" id="gh-login-btn" onclick="githubLogin()" style="display:none">Sign in with GitHub</button>
+      <button class="btn btn-ghost" id="gh-logout-btn" onclick="githubLogout()" style="display:none">Log out</button>
+    </div>
+    <!-- v4.4.0 — Remote sync status + Pull. Hidden until the project has a
+         connected GitHub remote. -->
+    <div id="gh-sync-row" style="display:none;align-items:center;gap:10px;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:9px 12px;margin-bottom:14px;font-size:12.5px">
+      <span id="gh-sync-text" style="flex:1">Checking for remote changes…</span>
+      <button class="btn btn-ghost" id="gh-pull-btn" onclick="githubPull()" style="display:none">⬇ Pull</button>
+    </div>
+    <label style="display:block;font-size:12px;color:var(--text-dim,#8a8f98);margin-bottom:4px">Repository name</label>
+    <input id="gh-repo-name" autocomplete="off" spellcheck="false" placeholder="my-thesis"
+      style="width:100%;box-sizing:border-box;background:var(--bg);border:1px solid var(--border);color:var(--text);font-family:var(--font-ui);font-size:14px;padding:9px 12px;border-radius:8px;outline:none;margin-bottom:12px">
+    <div style="display:flex;gap:12px;margin-bottom:12px">
+      <div style="flex:1">
+        <label style="display:block;font-size:12px;color:var(--text-dim,#8a8f98);margin-bottom:4px">Visibility</label>
+        <select id="gh-visibility" style="width:100%;box-sizing:border-box;background:var(--bg);border:1px solid var(--border);color:var(--text);font-family:var(--font-ui);font-size:14px;padding:9px 12px;border-radius:8px;outline:none">
+          <option value="private" selected>Private</option>
+          <option value="public">Public</option>
+        </select>
+      </div>
+    </div>
+    <label style="display:block;font-size:12px;color:var(--text-dim,#8a8f98);margin-bottom:4px">Commit message</label>
+    <input id="gh-commit-msg" autocomplete="off" value="Backup from TexLocal"
+      style="width:100%;box-sizing:border-box;background:var(--bg);border:1px solid var(--border);color:var(--text);font-family:var(--font-ui);font-size:14px;padding:9px 12px;border-radius:8px;outline:none;margin-bottom:6px">
+    <div id="gh-result" style="display:none;font-size:12.5px;line-height:1.5;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-top:10px;max-height:180px;overflow:auto;white-space:pre-wrap;font-family:var(--font-code)"></div>
+    <div class="modal-actions" style="margin-top:16px">
+      <button class="btn btn-ghost" onclick="closeModal('modal-github')">Close</button>
+      <button class="btn btn-primary" id="gh-backup-btn" onclick="githubBackup()">⬆ Commit &amp; push</button>
     </div>
   </div>
 </div>
@@ -535,6 +578,15 @@
   <div class="env-list" id="env-list"></div>
 </div>
 
+<!-- v4.4.0 — PACKAGE MANAGER PANEL -->
+<div id="package-panel">
+  <div class="env-header">
+    <span>Packages <span style="color:var(--muted);font-size:11px;font-weight:400">· \usepackage</span></span>
+    <button class="env-close" onclick="togglePackagePanel(event)">✕</button>
+  </div>
+  <div class="env-list" id="package-list"></div>
+</div>
+
 <!-- v3.3.0 — SNIPPET PANEL -->
 <div id="snippet-panel">
   <div class="env-header">
@@ -583,25 +635,25 @@
   </div>
 </div>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/stex/stex.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/hint/show-hint.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/search/searchcursor.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/search/search.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/dialog/dialog.min.js"></script>
+<script src="{{ url_for('static', filename='vendor/pdfjs/pdf.min.js') }}"></script>
+<script src="{{ url_for('static', filename='vendor/codemirror/codemirror.min.js') }}"></script>
+<script src="{{ url_for('static', filename='vendor/codemirror/mode/stex/stex.min.js') }}"></script>
+<script src="{{ url_for('static', filename='vendor/codemirror/addon/hint/show-hint.min.js') }}"></script>
+<script src="{{ url_for('static', filename='vendor/codemirror/addon/search/searchcursor.min.js') }}"></script>
+<script src="{{ url_for('static', filename='vendor/codemirror/addon/search/search.min.js') }}"></script>
+<script src="{{ url_for('static', filename='vendor/codemirror/addon/dialog/dialog.min.js') }}"></script>
 <!-- v3.2.2 — auto-close brackets / quotes / dollars in LaTeX source -->
-<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/edit/closebrackets.min.js"></script>
+<script src="{{ url_for('static', filename='vendor/codemirror/addon/edit/closebrackets.min.js') }}"></script>
 <!-- v3.2.3 — section folding -->
-<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/fold/foldcode.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/fold/foldgutter.min.js"></script>
+<script src="{{ url_for('static', filename='vendor/codemirror/addon/fold/foldcode.min.js') }}"></script>
+<script src="{{ url_for('static', filename='vendor/codemirror/addon/fold/foldgutter.min.js') }}"></script>
 <!-- v3.3.2 — Typo.js (Hunspell-compatible JS port) for English spell check.
      Loaded eagerly so the constructor is available on toggle-on, but the heavy
      ~1.7MB en_US dictionary is fetched lazily inside _ensureSpellDict() so
      users who never enable spell check don't pay the network cost. -->
-<script src="https://cdn.jsdelivr.net/npm/typo-js@1.2.4/typo.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/lint/lint.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="{{ url_for('static', filename='vendor/typo/typo.js') }}"></script>
+<script src="{{ url_for('static', filename='vendor/codemirror/addon/lint/lint.min.js') }}"></script>
+<script src="{{ url_for('static', filename='vendor/katex/katex.min.js') }}"></script>
 <script defer src="{{ url_for('static', filename='editor.js') }}"></script>
 </body>
 </html>
