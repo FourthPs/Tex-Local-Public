@@ -7,7 +7,7 @@ All notable changes to TexLocal are documented here.
 ## v4.7.9 — 2026-06-07
 
 ### Appearance
-- **New: switchable Cerulean theme.** Pick between the original Default look and a new Cerulean color scheme from Settings → Appearance — independent of your light/dark editor theme. The app icon is updated to match.
+- **New: switchable Cerulean theme.** Pick between the original Default look and a new Cerulean color scheme from Settings → Appearance — independent of your light/dark editor theme.
 
 ## v4.7.8 — 2026-06-07
 
@@ -17,7 +17,7 @@ All notable changes to TexLocal are documented here.
 ## v4.7.7 — 2026-06-07
 
 ### Appearance
-- Updated the app icon and favicon to a new Cerulean blue.
+- Updated the app icon and favicon to a new Cerulean blue. (Reverted in v4.7.9 — the icon is back to the original blue.)
 
 ## v4.7.6 — 2026-06-05
 
