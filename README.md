@@ -2,7 +2,7 @@
 
 A lightweight, self-hosted LaTeX editor that runs entirely on your own machine — no internet dependency, no compile timeout, full multi-file project support. Use it as a browser app or install the standalone Windows desktop build with bundled MiKTeX.
 
-![Version](https://img.shields.io/badge/version-4.7.1-informational)
+![Version](https://img.shields.io/badge/version-4.7.9-informational)
 ![Python](https://img.shields.io/badge/Python-3.8%2B-blue)
 ![Flask](https://img.shields.io/badge/Flask-2.x-lightgrey)
 ![Platform](https://img.shields.io/badge/Desktop-Windows-0078d6)
@@ -45,7 +45,7 @@ A lightweight, self-hosted LaTeX editor that runs entirely on your own machine �
 - **Import / Export ZIP** — import an Overleaf-exported ZIP; export a clean project ZIP
 - **Writing goals & word count** — per-project goals tracking with live word count
 - **TODO scanner** — collects `\todo{}` and `% TODO / FIXME / XXX` markers
-- **Light / dark themes** — independent UI theme and editor theme
+- **Light / dark themes**, plus a switchable **Cerulean appearance** (Settings → Appearance) — independent of light/dark mode
 
 ### GitHub & Packages
 - **Sign in with GitHub** in-app (device-flow, no CLI) and **back up a project** in one click — git init + LaTeX-aware `.gitignore` + commit + create repo + push (private by default)
@@ -60,7 +60,7 @@ A lightweight, self-hosted LaTeX editor that runs entirely on your own machine �
 
 ### A) Windows Desktop App (recommended)
 
-Download **`TexLocal-Setup-4.7.1.exe`** from the [Releases page](https://github.com/FourthPs/Tex-Local-Public/releases) and run it. Per-user install (no admin required), bundles a portable MiKTeX — nothing else to set up. The app opens in a native window and checks for updates automatically on launch.
+Download **`TexLocal-Setup-4.7.9.exe`** from the [Releases page](https://github.com/FourthPs/Tex-Local-Public/releases) and run it. Per-user install (no admin required), bundles a portable MiKTeX — nothing else to set up. The app opens in a native window and checks for updates automatically on launch.
 
 ### B) From Source
 

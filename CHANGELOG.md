@@ -4,6 +4,51 @@ All notable changes to TexLocal are documented here.
 
 ---
 
+## v4.7.9 — 2026-06-07
+
+### Appearance
+- **New: switchable Cerulean theme.** Pick between the original Default look and a new Cerulean color scheme from Settings → Appearance — independent of your light/dark editor theme. The app icon is updated to match.
+
+## v4.7.8 — 2026-06-07
+
+### Appearance
+- Introduced a new Cerulean accent color across buttons, links, and highlights. (Made switchable in v4.7.9 — see above.)
+
+## v4.7.7 — 2026-06-07
+
+### Appearance
+- Updated the app icon and favicon to a new Cerulean blue.
+
+## v4.7.6 — 2026-06-05
+
+### Desktop
+- **Fixed: PDF Download and Export ZIP didn't work in the desktop app.** Both buttons now save correctly via a native Save dialog. (Browser mode was never affected.)
+
+---
+
+## v4.7.5 — 2026-06-04
+
+### Under the hood
+- Internal code cleanup (de-duplicated file scanning, removed unused code). No change to how the app behaves.
+
+## v4.7.4 — 2026-06-04
+
+### Editor
+- Projects open faster — especially ones you've opened before.
+
+## v4.7.3 — 2026-06-04
+
+### Fixes
+- Switching to another project (from the dropdown or the Projects list) now always opens a file — your last-edited one, at your last cursor position — instead of sometimes leaving the editor blank.
+- After updating the app, the newest version now loads reliably.
+
+## v4.7.2 — 2026-06-04
+
+### Editor
+- **Cleaner toolbar icons** — every button in the editor toolbar, PDF viewer, settings panel, and dashboard now uses a proper icon instead of emoji or plain symbols. The toolbar looks consistent across all operating systems and themes.
+
+---
+
 ## v4.7.1 — 2026-06-02
 
 ### Desktop
