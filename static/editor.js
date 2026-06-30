@@ -243,6 +243,9 @@ async function init() {
   // v3.2.3 — restore saved editor theme (default = light, the original look)
   const savedEditorTheme = localStorage.getItem("texlocal_editor_theme") || "light";
   setEditorTheme(savedEditorTheme, true);
+  // v4.7.9 — restore saved appearance theme (default = original blue scheme)
+  const savedAppearance = localStorage.getItem("texlocal_appearance") || "default";
+  setAppearance(savedAppearance, true);
   // restore font & tab size
   const savedFontSize = localStorage.getItem("texlocal_font_size");
   if (savedFontSize) setFontSize(savedFontSize);
@@ -674,17 +677,45 @@ async function switchProject(name, opts) {
   });
   document.getElementById("compile-status").textContent = "";
   document.getElementById("compile-status").title       = "";   // v3.3.0 — clear stale stats tooltip on project switch
-  // ── Auto-detect main file ──────────────────────────────────
-  try {
-    const mRes  = await fetch(`/api/projects/${encodeURIComponent(name)}/detect-main`);
-    const mData = await mRes.json();
-    mainFile = mData.main;
-    if (mainFile !== "main.tex") {
+  // ── Detect main file — cache-first (v4.7.4) ────────────────
+  // detect-main is one network round-trip that previously BLOCKED the whole
+  // parallel batch below (it's awaited before the batch can start). The main
+  // file almost never changes, so cache it per project and reuse it instantly;
+  // only the FIRST open of a project pays the round-trip. A background
+  // revalidate (stale-while-revalidate) keeps the cache honest for next time.
+  const _mainKey = `texlocal_main_${name}`;
+  const _setMainStatus = (m) => {
+    if (m && m !== "main.tex") {
       const status = document.getElementById("compile-status");
-      status.textContent = `Main: ${mainFile.split("/").pop()}`;
+      status.textContent = `Main: ${m.split("/").pop()}`;
       status.className = "compile-status";
     }
-  } catch (_) { /* fallback to main.tex */ }
+  };
+  const _cachedMain = localStorage.getItem(_mainKey);
+  if (_cachedMain) {
+    mainFile = _cachedMain;          // use immediately — no await, no blocking
+    _setMainStatus(mainFile);
+    // Revalidate in the background; only refresh the cache (next open is then
+    // correct). We don't reopen files this session — a renamed main is rare and
+    // self-heals on the next open. Guard against a fast project switch.
+    fetch(`/api/projects/${encodeURIComponent(name)}/detect-main`)
+      .then(r => r.json())
+      .then(d => {
+        const fresh = d.main || "main.tex";
+        if (fresh !== _cachedMain) {
+          localStorage.setItem(_mainKey, fresh);
+          if (currentProject === name) _setMainStatus(fresh);
+        }
+      })
+      .catch(() => {});
+  } else {
+    try {
+      const mData = await (await fetch(`/api/projects/${encodeURIComponent(name)}/detect-main`)).json();
+      mainFile = mData.main || "main.tex";
+      localStorage.setItem(_mainKey, mainFile);   // cache for instant reuse next time
+      _setMainStatus(mainFile);
+    } catch (_) { /* fallback to main.tex */ }
+  }
   // ── Parallel startup (v4.5.0) ──────────────────────────────────────
   // The file-tree, the main file's editor content, and the compiled PDF are
   // all independent. Loading them concurrently — instead of awaiting
@@ -692,7 +723,10 @@ async function switchProject(name, opts) {
   // from "open editor" to "PDF + source on screen". Combined with lazy PDF
   // rasterisation (renderPdfFromUrl), the compiled main file now appears
   // almost immediately even for a 150-page thesis.
-  const _startupTasks = [ loadFiles() ];
+  // v4.7.4 — capture loadFiles()'s promise so _restoreLastFile can reuse this
+  // one /files fetch instead of issuing a second identical round-trip.
+  const _filesP = loadFiles();
+  const _startupTasks = [ _filesP ];
 
   const pdfName = mainFile.replace(/\.tex$/, ".pdf");
   _startupTasks.push((async () => {
@@ -707,11 +741,18 @@ async function switchProject(name, opts) {
     } catch (_) { /* network error — leave placeholder */ }
   })());
 
-  // v4.5.0 — open the source as part of the same batch (callers that want it
-  // pass { openMain: true }). v4.7.0beta (PR#2): reopen the LAST-visited file
-  // (with its saved cursor) instead of always main; _restoreLastFile falls back
-  // to mainFile when there's no valid last file.
-  if (opts && opts.openMain) _startupTasks.push(_restoreLastFile(name));
+  // v4.5.0 — open the source as part of the same batch. v4.7.0beta (PR#2):
+  // reopen the LAST-visited file (with its saved cursor) instead of always
+  // main; _restoreLastFile falls back to mainFile when there's no valid last
+  // file.
+  // v4.7.3 — open the main/last file by DEFAULT on every project switch. Bug:
+  // only init's dashboard (?project=) and last-session paths passed
+  // { openMain: true }; switching via the header dropdown, the Projects modal,
+  // or after a ZIP import called switchProject(name) with no opts, so no file
+  // opened and the editor sat blank ("stuck, didn't go to main"). Now any
+  // switch restores a file unless a caller explicitly opts out with
+  // { openMain: false }.
+  if (!opts || opts.openMain !== false) _startupTasks.push(_restoreLastFile(name, _filesP));
 
   await Promise.allSettled(_startupTasks);
 }
@@ -864,8 +905,9 @@ async function loadFiles() {
   const treeData = buildFileTree(files);
   renderFileTree(treeData, container);
 
-  // แสดง "auto" badge ถ้ามี .bib file อยู่ใน project
-  const hasBib = files.some(f => f.endsWith(".bib"));
+  // v4.7.4 — return the (filtered) file list so callers (e.g. _restoreLastFile)
+  // can reuse this fetch instead of issuing their own.
+  return files;
 }
 
 async function openFile(name) {
@@ -917,9 +959,14 @@ async function openFile(name) {
   document.getElementById("editor-host").style.display   = "";
   const res  = await fetch(`/api/projects/${currentProject}/file?path=${encodeURIComponent(name)}`);
   const data = await res.json();
-  if (!openTabs.find(t => t.name === name)) openTabs.push({ name, content: data.content });
-  else openTabs.find(t => t.name === name).content = data.content;
-  cmEditor.setValue(data.content);
+  // v4.7.3 — guard against a missing/unreadable file (e.g. detect-main fell back
+  // to "main.tex" but no such file exists → backend 404 → data.content undefined).
+  // setValue(undefined) throws and leaves the editor blank ("stuck"); show an
+  // empty buffer instead so the project at least opens.
+  const content = (typeof data.content === "string") ? data.content : "";
+  if (!openTabs.find(t => t.name === name)) openTabs.push({ name, content });
+  else openTabs.find(t => t.name === name).content = content;
+  cmEditor.setValue(content);
   cmEditor.clearHistory();
   clearErrorMarkers();
   const ext = name.split(".").pop();
@@ -958,11 +1005,14 @@ cmEditor.on("cursorActivity", () => {
 // v4.7.0beta (PR#2) — reopen the last-visited file on project open (cursor
 // restored inside openFile); falls back to the detected main file. Used by
 // switchProject's parallel-startup batch.
-async function _restoreLastFile(project) {
+async function _restoreLastFile(project, filesP) {
   const last = localStorage.getItem(`texlocal_last_file_${project}`);
   if (last) {
     try {
-      const files = await (await fetch(`/api/projects/${encodeURIComponent(project)}/files`)).json();
+      // v4.7.4 — reuse loadFiles()'s in-flight fetch (passed as filesP) instead
+      // of a second /files round-trip; fall back to a direct fetch if not given.
+      const files = filesP ? await filesP
+                           : await (await fetch(`/api/projects/${encodeURIComponent(project)}/files`)).json();
       if (Array.isArray(files) && files.includes(last)) { await openFile(last); return; }
     } catch (_) {}
   }
@@ -2396,6 +2446,13 @@ async function showPDF(filename) {
   dl.href = `/api/projects/${currentProject}/pdf?file=${encodeURIComponent(filename)}`;
   dl.download = filename;
   dl.style.display = "inline";
+  // v4.7.6 — the WebView2 desktop build ignores <a download> (no download
+  // handler in the embedded host), so the button did nothing there while
+  // browser mode worked. In desktop mode, route through the pywebview bridge
+  // (native Save dialog). Browser mode keeps the plain anchor behaviour.
+  dl.onclick = window.pywebview
+    ? (e) => { e.preventDefault(); desktopSave(dl.getAttribute("href"), filename); }
+    : null;
 
   await renderPdfFromUrl(url, true);   // force reload — new compile output
 }
@@ -2765,13 +2822,39 @@ document.querySelectorAll(".modal-overlay").forEach(o => {
 });
 
 // ── EXPORT ZIP ───────────────────────────────────────────────
+// v4.7.6 — WebView2 (the host the desktop build embeds) treats HTML5 download
+// (<a download> / programmatic a.click()) as a no-op, so PDF/ZIP downloads
+// silently failed in the desktop app though browser mode worked. desktopSave
+// hands the server-relative URL + a suggested filename to the Python js_api,
+// which fetches the bytes from the local server and shows a native Save dialog.
+async function desktopSave(urlPath, filename) {
+  try {
+    const res = await window.pywebview.api.save_file(urlPath, filename);
+    if (res && res.ok) return;                    // saved — dialog already confirmed location
+    if (res && res.cancelled) return;             // user cancelled — stay quiet
+    alert("Download failed: " + ((res && res.error) || "unknown error"));
+  } catch (e) {
+    alert("Download failed: " + e);
+  }
+}
+
 function exportZip() {
   if (!currentProject) return alert("Select a project first.");
   const btn = document.getElementById("export-zip-btn");
+  const urlPath = `/api/projects/${encodeURIComponent(currentProject)}/export-zip`;
+  const fname   = `${currentProject}.zip`;
+  // v4.7.6 — desktop build can't use <a download>; go through the bridge.
+  if (window.pywebview) {
+    btn.textContent = "⏳ Exporting…"; btn.disabled = true;
+    desktopSave(urlPath, fname).finally(() => {
+      setTimeout(() => { btn.textContent = "⬇ Export ZIP"; btn.disabled = false; }, 300);
+    });
+    return;
+  }
   btn.textContent = "⏳ Exporting…"; btn.disabled = true;
   const a = document.createElement("a");
-  a.href = `/api/projects/${encodeURIComponent(currentProject)}/export-zip`;
-  a.download = `${currentProject}.zip`;
+  a.href = urlPath;
+  a.download = fname;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
@@ -3804,6 +3887,27 @@ function setEditorTheme(theme, skipSave) {
   const darkBtn  = document.getElementById("editor-theme-dark-btn");
   if (lightBtn) lightBtn.classList.toggle("active", theme === "light");
   if (darkBtn)  darkBtn.classList.toggle("active", theme === "dark");
+}
+
+// v4.7.9 — Appearance theme: accent color scheme for UI text & buttons.
+// Orthogonal to data-theme (dark/light) and data-editor-theme — it only
+// swaps the accent system (--accent, --accent-rgb, --accent-bright,
+// --btn-primary-bg[-hover]). "default" = the original blue (#5b9cf6);
+// "cerulean" applies the SchemeColor "Cerulean Gradient" palette via the
+// [data-appearance="cerulean"] block in editor.css. The app icon is NOT
+// affected. Persisted globally (not per-project), shared with dashboard.html.
+function setAppearance(name, skipSave) {
+  if (name === "cerulean") {
+    document.documentElement.setAttribute("data-appearance", "cerulean");
+  } else {
+    name = "default";
+    document.documentElement.removeAttribute("data-appearance");
+  }
+  if (!skipSave) localStorage.setItem("texlocal_appearance", name);
+  const defBtn = document.getElementById("appearance-default-btn");
+  const cerBtn = document.getElementById("appearance-cerulean-btn");
+  if (defBtn) defBtn.classList.toggle("active", name === "default");
+  if (cerBtn) cerBtn.classList.toggle("active", name === "cerulean");
 }
 
 // ── v3.2.3 — QUICK OPEN (Ctrl+P) ────────────────────────────────
@@ -4954,8 +5058,10 @@ async function renderOutlinePanel() {
         `<span class="ol-file" title="${item.file}">${item.file.split('/').pop()}</span>`;
       div.addEventListener("click", async () => {
         await openFile(item.file);
-        cmEditor.setCursor(item.line, 0);
-        cmEditor.scrollIntoView({ line: item.line, ch: 0 }, 80);
+        // v4.7.10 — /outline now returns 1-based lines (was 0-based); convert
+        // to CodeMirror's 0-based index here.
+        cmEditor.setCursor(item.line - 1, 0);
+        cmEditor.scrollIntoView({ line: item.line - 1, ch: 0 }, 80);
         cmEditor.focus();
       });
       frag.appendChild(div);
@@ -6222,15 +6328,16 @@ async function doSearch() {
     div.className = "search-result-item";
     const hiText = esc(r.text).replace(qRe, m => `<mark>${m}</mark>`);
     div.innerHTML = `
-      <div class="search-result-loc">${esc(r.file)} : line ${r.line + 1}</div>
+      <div class="search-result-loc">${esc(r.file)} : line ${r.line}</div>
       <div class="search-result-text">${hiText}</div>
     `;
     div.onclick = async () => {
       hideSearchPanel();
       if (r.file !== currentFile) await openFile(r.file);
       setTimeout(() => {
-        cmEditor.setCursor(r.line, 0);
-        cmEditor.scrollIntoView({ line: r.line, ch: 0 }, 100);
+        // v4.7.10 — /search now returns 1-based lines; convert to 0-based.
+        cmEditor.setCursor(r.line - 1, 0);
+        cmEditor.scrollIntoView({ line: r.line - 1, ch: 0 }, 100);
         cmEditor.focus();
       }, 180);
     };
