@@ -4,6 +4,14 @@ All notable changes to TexLocal are documented here.
 
 ---
 
+## v4.7.10 — 2026-07-01
+
+### Fixes
+- **Outline & search jump to the exact line.** Clicking an entry in the document outline or a project-search result now lands the cursor right on the target heading/match (line numbering is now consistent across the app).
+- **Clearer GitHub errors.** "Back up to GitHub" now reports immediately if Git isn't installed instead of failing later with a confusing message, and the import dialog tells "couldn't reach GitHub" apart from "no repositories" rather than showing an empty list.
+- **Reverse SyncTeX on non-English paths.** Clicking in the PDF to jump back to the source no longer errors on projects whose file paths contain non-ASCII characters (e.g. Thai folder names).
+- **Faster compiles on large projects.** Removed redundant file scans before each compile — noticeable on multi-chapter theses.
+
 ## v4.7.9 — 2026-06-07
 
 ### Appearance

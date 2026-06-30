@@ -9,7 +9,7 @@ import threading, urllib.request, urllib.error, urllib.parse, tempfile, time
 # The Inno installer keeps its own MyAppVersion in texlocal.iss; the two
 # MUST be bumped together when cutting a release. Discipline reminder in
 # HANDOFF section 1.
-TEXLOCAL_VERSION = "4.7.1"
+TEXLOCAL_VERSION = "4.7.10"
 
 # GitHub release-check endpoint. Points to the public repo for update checks and About modal link.
 TEXLOCAL_GITHUB_OWNER = "FourthPs"
@@ -93,6 +93,16 @@ def _safe_join(base_abs, *parts):
     if target == base_abs or target.startswith(base_abs + os.sep):
         return target
     raise _PathError("Path escapes project")
+
+def _walk_visible(base):
+    """os.walk over `base`, pruning hidden (dot-prefixed) directories in place.
+    v4.7.5 — single source of the "skip .git / .texlocal-* / etc." rule that ~11
+    endpoints each duplicated. Yields the same (root, dirs, files) tuples as
+    os.walk, so call sites keep their loop body; only the header line changes."""
+    for root, dirs, files in os.walk(base):
+        dirs[:] = [d for d in dirs if not d.startswith(".")]
+        yield root, dirs, files
+
 
 def _err(msg, code=400):
     return jsonify({"error": msg}), code
@@ -336,8 +346,7 @@ def list_projects():
             continue
         tex_count = 0
         try:
-            for r, dirs, fs in os.walk(path):
-                dirs[:] = [d for d in dirs if not d.startswith(".")]
+            for r, dirs, fs in _walk_visible(path):
                 tex_count += sum(1 for f in fs if f.endswith(".tex"))
         except Exception:
             pass
@@ -418,7 +427,7 @@ TEMPLATES = {
 
 @app.route("/api/projects", methods=["POST"])
 def create_project():
-    data = request.json
+    data = request.get_json(silent=True) or {}
     name     = data.get("name", "").strip()
     template = data.get("template", "article")
     if not name:
@@ -446,7 +455,7 @@ def delete_project(name):
 
 @app.route("/api/projects/<name>/rename", methods=["POST"])
 def rename_project(name):
-    new_name = request.json.get("name", "").strip()
+    new_name = (request.get_json(silent=True) or {}).get("name", "").strip()
     if not new_name:
         return _err("Name required")
     if not _is_safe_project_name(new_name):
@@ -465,7 +474,7 @@ def rename_project(name):
 
 @app.route("/api/projects/<name>/duplicate", methods=["POST"])
 def duplicate_project(name):
-    new_name = request.json.get("name", "").strip()
+    new_name = (request.get_json(silent=True) or {}).get("name", "").strip()
     if not new_name:
         new_name = name + "-copy"
     if not _is_safe_project_name(new_name):
@@ -489,8 +498,7 @@ def list_files(project):
     except _PathError as e:
         return _err(str(e))
     files = []
-    for root, dirs, filenames in os.walk(path):
-        dirs[:] = [d for d in dirs if not d.startswith(".")]
+    for root, dirs, filenames in _walk_visible(path):
         for f in filenames:
             rel = os.path.relpath(os.path.join(root, f), path)
             files.append(rel.replace("\\", "/"))
@@ -511,7 +519,7 @@ def read_file(project):
 
 @app.route("/api/projects/<project>/file", methods=["POST"])
 def write_file(project):
-    data = request.json
+    data = request.get_json(silent=True) or {}
     filepath = data.get("path", "")
     content  = data.get("content", "")
     try:
@@ -532,13 +540,17 @@ def delete_file(project):
         full = _safe_join(_safe_project(project), filepath)
     except _PathError as e:
         return _err(str(e))
+    # v4.7.10 — os.remove() raises IsADirectoryError on a folder → unhandled 500.
+    # Reject directories explicitly (folder deletion isn't this endpoint's job).
+    if os.path.isdir(full):
+        return _err("Path is a directory, not a file", 400)
     if os.path.exists(full):
         os.remove(full)
     return jsonify({"ok": True})
 
 @app.route("/api/projects/<project>/movefile", methods=["POST"])
 def move_file(project):
-    data = request.json
+    data = request.get_json(silent=True) or {}
     src  = data.get("src", "").strip()
     dst  = data.get("dst", "").strip()
     if not src or not dst or src == dst:
@@ -639,7 +651,7 @@ def import_zip():
 
 @app.route("/api/projects/<project>/newfolder", methods=["POST"])
 def new_folder(project):
-    data   = request.json
+    data   = request.get_json(silent=True) or {}
     folder = data.get("path", "").strip()
     if not folder:
         return _err("Path required")
@@ -656,7 +668,7 @@ def new_folder(project):
 
 @app.route("/api/projects/<project>/newfile", methods=["POST"])
 def new_file(project):
-    data     = request.json
+    data     = request.get_json(silent=True) or {}
     filepath = data.get("path", "").strip()
     try:
         proj = _safe_project(project)
@@ -679,8 +691,7 @@ def detect_main(project):
     if not os.path.exists(path):
         return jsonify({"main": "main.tex"})
     tex_files = []
-    for root, dirs, files in os.walk(path):
-        dirs[:] = [d for d in dirs if not d.startswith(".")]
+    for root, dirs, files in _walk_visible(path):
         for f in files:
             if f.endswith(".tex"):
                 full = os.path.join(root, f)
@@ -711,8 +722,7 @@ def export_zip(project):
                   ".lof",".lot",".nav",".snm",".vrb",".xdv",".gz",".fdb_latexmk"}
     SKIP_NAMES = {".keep"}
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        for root, dirs, files in os.walk(path):
-            dirs[:] = [d for d in dirs if not d.startswith(".")]
+        for root, dirs, files in _walk_visible(path):
             for fname in files:
                 if fname in SKIP_NAMES or fname.endswith(".run.xml"):
                     continue
@@ -970,6 +980,12 @@ def github_repos():
                 "https://api.github.com/user/repos"
                 f"?per_page=100&sort=updated&affiliation=owner&page={page}",
                 token=tok["token"])
+            # v4.7.10 — _gh_api returns code 0 on network/timeout. Don't let
+            # that masquerade as "no repos" (empty list, HTTP 200) — surface it
+            # so the import dialog can say "couldn't reach GitHub".
+            if code == 0 and page == 1:
+                msg = data.get("message") if isinstance(data, dict) else "network error"
+                return _err(f"Could not reach GitHub: {msg}", 502)
             if code != 200 or not isinstance(data, list) or not data:
                 break
             for r in data:
@@ -1071,9 +1087,15 @@ def github_backup(project):
     if not os.path.isdir(os.path.join(path, ".git")):
         rc, out, err = _run(["git", "init", "-b", "main"], cwd=path)
         if rc != 0:
-            _run(["git", "init"], cwd=path)
-            _run(["git", "checkout", "-b", "main"], cwd=path)
-        step("git init", 0, "initialised empty repository", "")
+            # older git without -b: fall back to plain init + checkout
+            rc, out, err = _run(["git", "init"], cwd=path)
+            if rc == 0:
+                _run(["git", "checkout", "-b", "main"], cwd=path)
+        # v4.7.10 — report the REAL rc (was hardcoded 0). If git is missing
+        # (rc 127) the old code claimed success then failed confusingly at
+        # `git add`; now we surface it and bail with the actual error.
+        if not step("git init", rc, out or "initialised empty repository", err):
+            return jsonify({"ok": False, "steps": steps}), 500
 
     gi = os.path.join(path, ".gitignore")
     if not os.path.exists(gi):
@@ -1323,8 +1345,7 @@ def compile_project(project):
 
     # Strip UTF-8 BOM from all .tex files before compiling (silent — was logging
     # noise on every compile).
-    for root, dirs, files in os.walk(path):
-        dirs[:] = [d for d in dirs if not d.startswith(".")]
+    for root, dirs, files in _walk_visible(path):
         for fname in files:
             if not fname.endswith(".tex"):
                 continue
@@ -1423,29 +1444,28 @@ def compile_project(project):
     try:
         # ── Detect bib usage across ALL .tex files in the project ────────
         # (a sub-file may declare \addbibresource even if main only \input's it)
+        # v4.7.10 — single pass: collect .bib files AND scan .tex for bib
+        # commands together (was two full os.walks, each re-reading the tree).
+        # The thesis has 50+ source files, so the duplicate walk + re-read was
+        # pure per-compile overhead. Also uses _walk_visible for the dot-dir skip.
         bib_files = []
-        for r_, ds_, fs_ in os.walk(path):
-            ds_[:] = [d for d in ds_ if not d.startswith(".")]
+        has_bib_cmd = False
+        needs_biber = False
+        for r_, ds_, fs_ in _walk_visible(path):
             for f_ in fs_:
                 if f_.endswith(".bib"):
                     bib_files.append(os.path.relpath(os.path.join(r_, f_), path))
-
-        has_bib_cmd = False
-        needs_biber = False
-        for r_, ds_, fs_ in os.walk(path):
-            ds_[:] = [d for d in ds_ if not d.startswith(".")]
-            for f_ in fs_:
-                if not f_.endswith(".tex"):
-                    continue
-                try:
-                    with open(os.path.join(r_, f_), "r", encoding="utf-8", errors="replace") as fh:
-                        src = fh.read()
-                except Exception:
-                    continue
-                if "\\bibliography{" in src or "\\addbibresource{" in src:
-                    has_bib_cmd = True
-                if "\\addbibresource{" in src:
-                    needs_biber = True
+                elif f_.endswith(".tex"):
+                    try:
+                        with open(os.path.join(r_, f_), "r", encoding="utf-8", errors="replace") as fh:
+                            src = fh.read()
+                    except Exception:
+                        continue
+                    if "\\addbibresource{" in src:
+                        has_bib_cmd = True
+                        needs_biber = True
+                    elif "\\bibliography{" in src:
+                        has_bib_cmd = True
 
         run_bib = use_bib or (bib_files and has_bib_cmd)
         if run_bib and not bib_files:
@@ -1719,6 +1739,7 @@ def synctex_backward(project):
         # synctex edit -o "page:x:y:pdf"
         cmd = ["synctex", "edit", "-o", f"{page}:{x}:{y}:{pdf_path}"]
         r   = subprocess.run(cmd, cwd=path, capture_output=True, text=True, timeout=8,
+                             encoding="utf-8", errors="replace",  # v4.7.10 — non-ASCII paths
                              creationflags=SUBPROC_FLAGS)  # v4.0.1-phase2
 
         src_file = None
@@ -1766,8 +1787,7 @@ def search_project(project):
         return jsonify({"results": []})
     results = []
     ql = query.lower()
-    for root, dirs, files in os.walk(path):
-        dirs[:] = [d for d in dirs if not d.startswith(".")]
+    for root, dirs, files in _walk_visible(path):
         for fname in files:
             if not (fname.endswith(".tex") or fname.endswith(".bib")):
                 continue
@@ -1775,7 +1795,8 @@ def search_project(project):
             rel = os.path.relpath(fpath, path).replace("\\", "/")
             try:
                 with open(fpath, "r", encoding="utf-8", errors="replace") as f:
-                    for lineno, line in enumerate(f):
+                    # v4.7.10 — 1-based to match /todos, /outline, and the gutter
+                    for lineno, line in enumerate(f, start=1):
                         if ql in line.lower():
                             results.append({
                                 "file": rel,
@@ -1908,8 +1929,7 @@ def _build_cite_data(path):
     seen_labels = set()
     seen_cmds   = set()
     seen_envs   = set()
-    for root, dirs, files in os.walk(path):
-        dirs[:] = [d for d in dirs if not d.startswith(".")]
+    for root, dirs, files in _walk_visible(path):
         for f in files:
             full = os.path.join(root, f)
             if f.endswith(".bib"):
@@ -2030,8 +2050,7 @@ def cite_data(project):
         return jsonify({"bibkeys": [], "labels": []})
     # Cheapest refresh signal — walk once and take the max mtime
     latest = 0.0
-    for root, dirs, files in os.walk(path):
-        dirs[:] = [d for d in dirs if not d.startswith(".")]
+    for root, dirs, files in _walk_visible(path):
         for f in files:
             if not (f.endswith(".bib") or f.endswith(".tex")):
                 continue
@@ -2071,7 +2090,10 @@ def project_outline(project):
     except _PathError as e:
         return _err(str(e))
     results = []
-    for dirpath, _, filenames in os.walk(root):
+    # v4.7.10 — was raw os.walk (missed the v4.7.5 _walk_visible cleanup), so it
+    # descended into .git/ etc. on every outline open. line base also normalised
+    # to 1-based (enumerate start=1) to match /todos and the editor gutter.
+    for dirpath, _dirs, filenames in _walk_visible(root):
         for fname in sorted(filenames):
             if not fname.endswith(".tex"):
                 continue
@@ -2079,7 +2101,7 @@ def project_outline(project):
             rel   = os.path.relpath(fpath, root).replace("\\", "/")
             try:
                 with open(fpath, encoding="utf-8", errors="replace") as f:
-                    for lineno, line in enumerate(f):
+                    for lineno, line in enumerate(f, start=1):
                         m = _SECTION_RE.search(line)
                         if m:
                             results.append({
@@ -2101,8 +2123,7 @@ def list_todos(project):
     if not os.path.exists(path):
         return jsonify({"todos": []})
     out = []
-    for root, dirs, files in os.walk(path):
-        dirs[:] = [d for d in dirs if not d.startswith(".")]
+    for root, dirs, files in _walk_visible(path):
         for f in files:
             if not f.endswith(".tex"):
                 continue
@@ -2230,8 +2251,7 @@ def project_goals(project):
         except Exception:
             goals = {}
     counts = {}
-    for root, dirs, files in os.walk(path):
-        dirs[:] = [d for d in dirs if not d.startswith(".")]
+    for root, dirs, files in _walk_visible(path):
         for f in files:
             if not f.endswith(".tex"):
                 continue
@@ -2507,8 +2527,7 @@ def replace_all(project):
             if os.path.isfile(full):
                 candidates.append((rel.replace("\\", "/"), full))
     else:
-        for root, dirs, fs in os.walk(path):
-            dirs[:] = [d for d in dirs if not d.startswith(".")]
+        for root, dirs, fs in _walk_visible(path):
             for f in fs:
                 if not (f.endswith(".tex") or f.endswith(".bib")):
                     continue
