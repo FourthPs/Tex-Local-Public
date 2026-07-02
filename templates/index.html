@@ -16,7 +16,8 @@
 <!-- v4.4.0 — CodeMirror lint gutter for pre-compile syntax checker -->
 <link rel="stylesheet" href="{{ url_for('static', filename='vendor/codemirror/addon/lint/lint.min.css') }}">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%235b9cf6'/><text x='16' y='24' text-anchor='middle' font-size='22' font-weight='bold' fill='white' font-family='Georgia,serif'>T</text></svg>">
-<link rel="stylesheet" href="{{ url_for('static', filename='editor.css') }}">
+<!-- v4.7.3 — ?v= cache-bust: WebView2/browser caches editor.{css,js} by URL with no query, so a stale copy survived the v4.7.2 recovery (fast-load + resume-file/cursor looked "lost" though the source was correct). Version query forces a re-fetch on every bump. -->
+<link rel="stylesheet" href="{{ url_for('static', filename='editor.css') }}?v={{ texlocal_version }}">
 </head>
 <body>
 
@@ -26,12 +27,12 @@
   <select class="project-selector" id="project-select" onchange="switchProject(this.value)">
     <option value="">— select project —</option>
   </select>
-  <button class="btn btn-ghost" onclick="openProjectsModal()" title="Manage projects">⚙ Projects</button>
+  <button class="btn btn-ghost" onclick="openProjectsModal()" title="Manage projects"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none" aria-hidden="true" style="vertical-align:-3px"><rect x="4" y="4" width="6" height="6" rx="1"/><rect x="14" y="4" width="6" height="6" rx="1"/><rect x="4" y="14" width="6" height="6" rx="1"/><rect x="14" y="14" width="6" height="6" rx="1"/></svg> Projects</button>
   <div class="header-sep"></div>
   <span class="compile-status" id="compile-status"></span>
   <!-- v4.4.0 — Backup to GitHub (moved to the header). -->
-  <button class="btn btn-ghost" id="github-btn" onclick="openGitHubModal()" title="Backup this project to GitHub — commit &amp; push" style="font-size:13px">☁ Backup</button>
-  <button class="btn btn-ghost" id="settings-btn" onclick="toggleSettingsPanel(event)" title="Settings" style="font-size:13px">⚙</button>
+  <button class="btn btn-ghost" id="github-btn" onclick="openGitHubModal()" title="Backup this project to GitHub — commit &amp; push"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none" aria-hidden="true" style="vertical-align:-3px"><path d="M7 18a4.6 4.4 0 0 1 0-9a5 4.5 0 0 1 11 2h1a3.5 3.5 0 0 1 0 7h-1"/><polyline points="9 15 12 12 15 15"/><line x1="12" y1="12" x2="12" y2="21"/></svg> Backup</button>
+  <button class="btn btn-ghost" id="settings-btn" onclick="toggleSettingsPanel(event)" title="Settings"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none" aria-hidden="true"><path d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 0 0 2.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 0 0 1.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 0 0-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 0 0-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 0 0-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 0 0-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 0 0 1.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><circle cx="12" cy="12" r="3"/></svg></button>
   <button class="btn btn-success" onclick="compile()" id="compile-btn">▶ Compile</button>
 </header>
 
@@ -94,10 +95,15 @@
         <button class="etb-btn" onclick="wrapSel('\\textbf{','}')" title="Bold — \textbf{}"><b>B</b></button>
         <button class="etb-btn" onclick="wrapSel('\\textit{','}')" title="Italic — \textit{}"><i>I</i></button>
         <button class="etb-btn" onclick="wrapSel('\\underline{','}')" title="Underline — \underline{}" style="text-decoration:underline">U</button>
-        <button class="etb-btn" onclick="wrapSel('\\texttt{','}')" title="Monospace — \texttt{}" style="font-family:var(--font-code);font-size:11px">TT</button>
+        <button class="etb-btn" onclick="wrapSel('\\texttt{','}')" title="Monospace — \texttt{}"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none" aria-hidden="true"><polyline points="7 8 3 12 7 16"/><polyline points="17 8 21 12 17 16"/><line x1="14" y1="4" x2="10" y2="20"/></svg></button>
         <div class="etb-sep"></div>
-        <button class="etb-btn" onclick="wrapSel('$','$')" title="Inline math — $...$" style="font-family:var(--font-code)">$</button>
-        <button class="etb-btn" onclick="insertDisplayMath()" title="Display math — \[...\]" style="font-family:var(--font-code);font-size:11px">\[…\]</button>
+        <button class="etb-btn" onclick="wrapSel('$','$')" title="Inline math — $...$"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none" aria-hidden="true"><path d="M2 14l2.5 5L9 4"/><path d="M9 4h12"/><path d="M13 9l4 8"/><path d="M17 9l-4 8"/></svg></button>
+        <button class="etb-btn" onclick="insertDisplayMath()" title="Display math — \[...\]"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none" aria-hidden="true"><path d="M13 6A2 2 0 0 1 17 4"/><line x1="13" y1="4" x2="11" y2="20"/><path d="M11 20A2 2 0 0 1 7 18"/></svg></button>
+        <div class="etb-sep"></div>
+        <button class="etb-btn" id="sym-toggle-btn" onclick="toggleSymbolPanel(event)" title="Insert LaTeX symbol" style="font-weight:700;font-size:14px">Ω</button>
+        <!-- v3.2.2 — Insert math/figure/list environment templates. -->
+        <button class="etb-btn" id="env-toggle-btn" onclick="toggleEnvPanel(event)" title="Insert environment (equation, figure, table, …)"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none" aria-hidden="true"><path d="M7 4a2 2 0 0 0-2 2v3a2 3 0 0 1-2 3 2 3 0 0 1 2 3v3a2 2 0 0 0 2 2"/><path d="M17 4a2 2 0 0 1 2 2v3a2 3 0 0 0 2 3 2 3 0 0 0-2 3v3a2 2 0 0 1-2 2"/></svg></button>
+        <button class="etb-btn" id="grammar-btn" onclick="openGrammarMode()" title="Grammar mode (Ctrl+Shift+G) — edit the selected text (or current paragraph) in a plain box where QuillBot / Grammarly work, then insert it back. Browser mode only."><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none" aria-hidden="true"><path d="M4 20h4l10.5-10.5a2.828 2.828 0 1 0-4-4L4 16v4"/><line x1="13.5" y1="6.5" x2="17.5" y2="10.5"/></svg></button>
       </div>
       <div class="etb-spacer"></div>
       <div class="etb-group">
@@ -116,28 +122,22 @@
           <option value="4">4 sp</option>
         </select>
         <div class="etb-sep"></div>
-        <button class="etb-btn" id="search-toggle-btn" onclick="toggleSearchPanel()" title="Search across files — Ctrl+Shift+F">🔍</button>
-        <button class="etb-btn" id="sym-toggle-btn" onclick="toggleSymbolPanel(event)" title="Insert LaTeX symbol" style="font-weight:700;font-size:14px">Ω</button>
-        <!-- v3.2.2 — Insert math/figure/list environment templates. -->
-        <button class="etb-btn" id="env-toggle-btn" onclick="toggleEnvPanel(event)" title="Insert environment (equation, figure, table, …)" style="font-family:var(--font-code);font-size:11px">env</button>
+        <button class="etb-btn" id="search-toggle-btn" onclick="toggleSearchPanel()" title="Search across files — Ctrl+Shift+F"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none" aria-hidden="true"><circle cx="10" cy="10" r="7"/><line x1="21" y1="21" x2="15" y2="15"/></svg></button>
         <!-- v3.3.0 — Snippet library (type trigger + Tab to expand). -->
-        <button class="etb-btn" id="snippet-toggle-btn" onclick="toggleSnippetPanel(event)" title="Snippet library — type trigger + Tab to expand. ${1} ${2} ${0} placeholders" style="font-size:14px">❖</button>
+        <button class="etb-btn" id="snippet-toggle-btn" onclick="toggleSnippetPanel(event)" title="Snippet library — type trigger + Tab to expand. ${1} ${2} ${0} placeholders"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none" aria-hidden="true"><path d="M4 7h3a1 1 0 0 0 1-1v-1a2 2 0 0 1 4 0v1a1 1 0 0 0 1 1h3a1 1 0 0 1 1 1v3a1 1 0 0 0 1 1h1a2 2 0 0 1 0 4h-1a1 1 0 0 0-1 1v3a1 1 0 0 1-1 1h-3a1 1 0 0 1-1-1v-1a2 2 0 0 0-4 0v1a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-3a1 1 0 0 0-1-1H1a2 2 0 0 1 0-4h1a1 1 0 0 0 1-1V8a1 1 0 0 1 1-1"/></svg></button>
         <!-- v4.4.0 — Package manager: \usepackage in the preamble + suggestions. -->
-        <button class="etb-btn" id="package-toggle-btn" onclick="togglePackagePanel(event)" title="Packages — manage \usepackage in the preamble and add suggested ones" style="font-size:14px">📦</button>
+        <button class="etb-btn" id="package-toggle-btn" onclick="togglePackagePanel(event)" title="Packages — manage \usepackage in the preamble and add suggested ones"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none" aria-hidden="true"><polyline points="12 3 20 7.5 20 16.5 12 21 4 16.5 4 7.5 12 3"/><line x1="12" y1="12" x2="20" y2="7.5"/><line x1="12" y1="12" x2="12" y2="21"/><line x1="12" y1="12" x2="4" y2="7.5"/></svg></button>
         <!-- v3.2.2 — \includeonly chapter selector. Only enabled when the main file uses \include{}. -->
-        <button class="etb-btn" id="chapters-toggle-btn" onclick="toggleChaptersPanel(event)" title="Compile only selected chapters (\includeonly)" style="font-size:14px">📑</button>
+        <button class="etb-btn" id="chapters-toggle-btn" onclick="toggleChaptersPanel(event)" title="Compile only selected chapters (\includeonly)"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none" aria-hidden="true"><rect x="4" y="4" width="6" height="6" rx="1"/><line x1="14" y1="5" x2="20" y2="5"/><line x1="14" y1="9" x2="20" y2="9"/><rect x="4" y="14" width="6" height="6" rx="1"/><line x1="14" y1="15" x2="20" y2="15"/><line x1="14" y1="19" x2="20" y2="19"/></svg></button>
         <!-- v3.2.2 — \todo / TODO / FIXME tracker. -->
-        <button class="etb-btn" id="todo-toggle-btn" onclick="toggleTodoPanel(event)" title="Show \todo / TODO / FIXME markers across the project" style="font-size:14px">✓</button>
+        <button class="etb-btn" id="todo-toggle-btn" onclick="toggleTodoPanel(event)" title="Show \todo / TODO / FIXME markers across the project"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none" aria-hidden="true"><polyline points="9 11 12 14 20 6"/><path d="M20 12v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h9"/></svg></button>
+        <!-- v4.9.0 — Bibliography audit: unresolved / unused / duplicate cite keys. -->
+        <button class="etb-btn" id="bib-toggle-btn" onclick="toggleBibPanel(event)" title="Bibliography audit — unresolved, unused, and duplicate citation keys"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg><span id="bib-badge" class="etb-badge"></span></button>
         <!-- v3.2.3 — Word-count goals per chapter -->
-        <button class="etb-btn" id="goals-toggle-btn" onclick="toggleGoalsPanel(event)" title="Word-count goals per chapter" style="font-size:14px">🎯</button>
+        <button class="etb-btn" id="goals-toggle-btn" onclick="toggleGoalsPanel(event)" title="Word-count goals per chapter"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="1"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="9"/></svg></button>
         <!-- v4.4.0 — Document outline: jump to section/chapter in editor -->
-        <button class="etb-btn" id="outline-toggle-btn" onclick="toggleOutlinePanel(event)" title="Document outline — jump to section" style="font-size:14px">§</button>
-        <button class="etb-btn" id="focus-mode-btn" onclick="toggleFocusMode()" title="Focus mode — Esc to exit" style="font-size:14px">⛶</button>
-        <!-- v4.4.0 — Grammar mode. Opens the selection (or current paragraph) in
-             a plain <textarea> that browser grammar extensions (QuillBot,
-             Grammarly, LanguageTool) can attach to — CodeMirror's own surface
-             is not an editable field they recognise. Insert back when done. -->
-        <button class="etb-btn" id="grammar-btn" onclick="openGrammarMode()" title="Grammar mode (Ctrl+Shift+G) — edit the selected text (or current paragraph) in a plain box where QuillBot / Grammarly work, then insert it back. Browser mode only." style="font-size:14px">✍</button>
+        <button class="etb-btn" id="outline-toggle-btn" onclick="toggleOutlinePanel(event)" title="Document outline — jump to section"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none" aria-hidden="true"><line x1="9" y1="6" x2="20" y2="6"/><line x1="9" y1="12" x2="20" y2="12"/><line x1="9" y1="18" x2="20" y2="18"/><line x1="4" y1="6" x2="4" y2="6.01"/><line x1="4" y1="12" x2="4" y2="12.01"/><line x1="4" y1="18" x2="4" y2="18.01"/></svg></button>
+        <button class="etb-btn" id="focus-mode-btn" onclick="toggleFocusMode()" title="Focus mode — Esc to exit"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none" aria-hidden="true"><path d="M4 8v-2a2 2 0 0 1 2-2h2"/><path d="M4 16v2a2 2 0 0 0 2 2h2"/><path d="M16 4h2a2 2 0 0 1 2 2v2"/><path d="M16 20h2a2 2 0 0 0 2-2v-2"/></svg></button>
       </div>
     </div>
 
@@ -171,7 +171,7 @@
            returns at least one entry. -->
       <button class="btn btn-ghost" id="pdf-outline-btn" onclick="togglePdfOutline()"
               style="font-size:13px;padding:2px 8px;display:none;margin-right:4px"
-              title="Toggle PDF outline / table of contents">🗂</button>
+              title="Toggle PDF outline / table of contents"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none" aria-hidden="true"><path d="M9 6h11"/><path d="M12 12h8"/><path d="M15 18h5"/><path d="M5 6v.01"/><path d="M8 12v.01"/><path d="M11 18v.01"/><path d="M5 6v12"/><path d="M5 12h3"/><path d="M8 12v6"/><path d="M8 18h3"/></svg></button>
       <span id="pdf-pane-title">PDF Preview</span>
       <div class="pdf-zoom-sep" id="pdf-zoom-controls" style="display:none;contents:''"></div>
       <!-- v3.2.3 — Step bumped from 0.25 → 0.10 for finer-grained zoom.
@@ -194,10 +194,10 @@
            Logic: history เป็น scope กว้างกว่า (trend หลายๆ ครั้ง) ผู้ใช้มักดู trend ก่อน
            แล้วจึงเปิด Logs ของรอบล่าสุด ถ้าเห็น regression. ย้าย margin-left:auto
            มาที่ history-btn เพราะตอนนี้มันคือตัวซ้ายสุดของกลุ่ม -->
-      <button class="btn btn-ghost" id="history-btn" onclick="toggleHistoryPanel(event)" style="font-size:11px;padding:3px 10px;margin-left:auto;margin-right:4px" title="Recent compile log history (last 10 runs)">📜</button>
+      <button class="btn btn-ghost" id="history-btn" onclick="toggleHistoryPanel(event)" style="padding:3px 10px;margin-left:auto;margin-right:4px" title="Recent compile log history (last 10 runs)"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none" aria-hidden="true" style="vertical-align:-3px"><path d="M12 8v4l3 3"/><path d="M3.05 11a9 9 0 1 1 .5 4m-.5 5v-5h5"/></svg></button>
       <button class="btn btn-ghost" onclick="toggleLogsPanel()" style="font-size:11px;padding:3px 10px;margin-right:4px">Logs<span id="logs-btn-badge"></span></button>
       <button class="btn btn-ghost" onclick="toggleLog()" style="font-size:11px;padding:3px 10px;margin-right:4px">Raw Log</button>
-      <a id="pdf-download" href="#" download style="display:none">⬇ Download</a>
+      <a id="pdf-download" href="#" download style="display:none"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none" aria-hidden="true" style="vertical-align:-3px"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/><polyline points="7 11 12 16 17 11"/><line x1="12" y1="4" x2="12" y2="16"/></svg> Download</a>
     </div>
     <!-- Content wrapper — ให้ error-panel ใช้ position:absolute ได้ -->
     <div class="pdf-content">
@@ -252,7 +252,7 @@
          connected GitHub remote. -->
     <div id="gh-sync-row" style="display:none;align-items:center;gap:10px;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:9px 12px;margin-bottom:14px;font-size:12.5px">
       <span id="gh-sync-text" style="flex:1">Checking for remote changes…</span>
-      <button class="btn btn-ghost" id="gh-pull-btn" onclick="githubPull()" style="display:none">⬇ Pull</button>
+      <button class="btn btn-ghost" id="gh-pull-btn" onclick="githubPull()" style="display:none"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none" aria-hidden="true" style="vertical-align:-3px"><circle cx="6" cy="18" r="2"/><circle cx="18" cy="6" r="2"/><path d="M8 16a10 10 0 0 0 10-10"/><polyline points="14 6 18 6 18 10"/></svg> Pull</button>
     </div>
     <label style="display:block;font-size:12px;color:var(--text-dim,#8a8f98);margin-bottom:4px">Repository name</label>
     <input id="gh-repo-name" autocomplete="off" spellcheck="false" placeholder="my-thesis"
@@ -284,7 +284,7 @@
      only — not in the desktop WebView2 build.) -->
 <div class="modal-overlay" id="modal-grammar">
   <div class="modal" style="width:min(780px,92vw)">
-    <h3 style="margin-bottom:6px">✍ Grammar mode</h3>
+    <h3 style="margin-bottom:6px;display:flex;align-items:center;gap:6px"><svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none" aria-hidden="true"><path d="M4 20h4l10.5-10.5a2.828 2.828 0 1 0-4-4L4 16v4"/><line x1="13.5" y1="6.5" x2="17.5" y2="10.5"/></svg> Grammar mode</h3>
     <p style="margin:0 0 12px;font-size:12.5px;color:var(--text-dim,#8a8f98);line-height:1.5">
       Edit the text below — your grammar extension (QuillBot, Grammarly, …)
       attaches to this box. Press <b>Insert back</b> to replace the original
@@ -303,7 +303,7 @@
   <div class="modal" style="width:460px">
     <h3>Import ZIP</h3>
     <div class="zip-drop-zone" id="zip-drop-zone" onclick="document.getElementById('zip-file-input').click()">
-      <span class="zip-icon">📦</span>
+      <span class="zip-icon"><svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none" aria-hidden="true"><path d="M14 3v4a1 1 0 0 0 1 1h4"/><path d="M17 21h-10a2 2 0 0 1-2-2v-14a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2z"/><line x1="12" y1="17" x2="12" y2="17.01"/><path d="M11 11h1v1h-1zm1-3h1v1h-1zm-1-3h1v1h-1z"/></svg></span>
       <span id="zip-drop-label">คลิกเพื่อเลือก หรือลาก .zip มาวางที่นี่</span>
     </div>
     <input type="file" id="zip-file-input" accept=".zip" style="display:none" onchange="onZipSelected(this)">
@@ -349,20 +349,29 @@
 </div>
 
 <!-- SETTINGS PANEL -->
-<div id="settings-panel">
+<div id="settings-panel" onclick="if(event.target===this) closeSettingsPanel()">
+  <div class="settings-modal" onclick="event.stopPropagation()">
   <div class="settings-hdr">
     <span>Settings</span>
     <button class="settings-close" onclick="closeSettingsPanel()">✕</button>
   </div>
-  <div class="settings-body">
+  <div class="settings-cols">
+    <div class="settings-tabs" role="tablist">
+      <button class="settings-tab active" id="settings-tab-appearance" role="tab" aria-selected="true" onclick="switchSettingsTab('appearance')">Appearance</button>
+      <button class="settings-tab" id="settings-tab-compile" role="tab" aria-selected="false" onclick="switchSettingsTab('compile')">Compile</button>
+      <button class="settings-tab" id="settings-tab-editor" role="tab" aria-selected="false" onclick="switchSettingsTab('editor')">Editor</button>
+      <button class="settings-tab" id="settings-tab-keyboard" role="tab" aria-selected="false" onclick="switchSettingsTab('keyboard')">Keyboard</button>
+    </div>
+    <div class="settings-panes">
+      <div class="settings-pane active" id="settings-pane-appearance">
     <div class="setting-row">
       <span class="setting-label">Theme</span>
       <div class="theme-opt-group">
         <!-- v3.3.1 — สลับให้ Light ซ้าย Dark ขวา ตรงกับ Editor theme row ด้านล่าง
              (ก่อนหน้านี้ UI row เรียง Dark→Light แต่ Editor row เรียง Light→Dark
               ผู้ใช้สับสน — เลือกเอา convention OS-toggle: Light=off, Dark=on) -->
-        <button class="theme-opt" id="theme-light-btn" onclick="setTheme('light')">☀ Light</button>
-        <button class="theme-opt" id="theme-dark-btn" onclick="setTheme('dark')">🌙 Dark</button>
+        <button class="theme-opt" id="theme-light-btn" onclick="setTheme('light')"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none" aria-hidden="true" style="vertical-align:-3px"><circle cx="12" cy="12" r="4"/><line x1="12" y1="3" x2="12" y2="4"/><line x1="12" y1="20" x2="12" y2="21"/><line x1="3" y1="12" x2="4" y2="12"/><line x1="20" y1="12" x2="21" y2="12"/><line x1="5.64" y1="5.64" x2="6.35" y2="6.35"/><line x1="17.65" y1="17.65" x2="18.36" y2="18.36"/><line x1="5.64" y1="18.36" x2="6.35" y2="17.65"/><line x1="17.65" y1="6.35" x2="18.36" y2="5.64"/></svg> Light</button>
+        <button class="theme-opt" id="theme-dark-btn" onclick="setTheme('dark')"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none" aria-hidden="true" style="vertical-align:-3px"><path d="M12 3c.132 0 .263 0 .393 0a7.5 7.5 0 0 0 7.92 12.446a9 9 0 1 1-8.313-12.454z"/></svg> Dark</button>
       </div>
     </div>
     <!-- v3.2.3 — Editor theme is independent of UI theme so users can pair
@@ -370,11 +379,22 @@
     <div class="setting-row">
       <span class="setting-label" title="Color theme for the code editor (independent of UI theme)">Editor theme</span>
       <div class="theme-opt-group">
-        <button class="theme-opt" id="editor-theme-light-btn" onclick="setEditorTheme('light')">☀ Light</button>
-        <button class="theme-opt" id="editor-theme-dark-btn" onclick="setEditorTheme('dark')">🌙 Dark</button>
+        <button class="theme-opt" id="editor-theme-light-btn" onclick="setEditorTheme('light')" title="Light" aria-label="Light editor theme"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none" aria-hidden="true" style="vertical-align:-3px"><circle cx="12" cy="12" r="4"/><line x1="12" y1="3" x2="12" y2="4"/><line x1="12" y1="20" x2="12" y2="21"/><line x1="3" y1="12" x2="4" y2="12"/><line x1="20" y1="12" x2="21" y2="12"/><line x1="5.64" y1="5.64" x2="6.35" y2="6.35"/><line x1="17.65" y1="17.65" x2="18.36" y2="18.36"/><line x1="5.64" y1="18.36" x2="6.35" y2="17.65"/><line x1="17.65" y1="6.35" x2="18.36" y2="5.64"/></svg> Light</button>
+        <button class="theme-opt" id="editor-theme-dark-btn" onclick="setEditorTheme('dark')" title="Dark" aria-label="Dark editor theme"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none" aria-hidden="true" style="vertical-align:-3px"><path d="M12 3c.132 0 .263 0 .393 0a7.5 7.5 0 0 0 7.92 12.446a9 9 0 1 1-8.313-12.454z"/></svg> Dark</button>
       </div>
     </div>
+    <!-- v4.7.9 — Appearance theme: accent color scheme for UI text & buttons.
+         Independent of the dark/light Theme above. Does NOT change the app icon. -->
     <div class="setting-row">
+      <span class="setting-label" title="Accent color scheme for UI text & buttons — independent of the dark/light theme. Does not change the app icon.">Appearance</span>
+      <div class="theme-opt-group">
+        <button class="theme-opt" id="appearance-default-btn" onclick="setAppearance('default')" title="Original blue scheme"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none" aria-hidden="true" style="vertical-align:-3px"><circle cx="12" cy="12" r="9"/></svg> Default</button>
+        <button class="theme-opt" id="appearance-cerulean-btn" onclick="setAppearance('cerulean')" title="Cerulean gradient scheme"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none" aria-hidden="true" style="vertical-align:-3px"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 0 0 18z" fill="currentColor" stroke="none"/></svg> Cerulean</button>
+      </div>
+    </div>
+    </div>
+      <div class="settings-pane" id="settings-pane-compile">
+      <div class="setting-row">
       <span class="setting-label">Compiler</span>
       <select id="compiler-select" class="settings-select" onchange="saveCompilerPref(this.value)">
         <option value="pdflatex">pdflatex</option>
@@ -397,7 +417,9 @@
         <div class="toggle-track"></div>
       </label>
     </div>
-    <!-- v3.3.2 — English spell check (Typo.js, token-aware). First enable lazy-
+    </div>
+      <div class="settings-pane" id="settings-pane-editor">
+      <!-- v3.3.2 — English spell check (Typo.js, token-aware). First enable lazy-
          loads ~1.7MB en_US dictionary from CDN; subsequent loads are cached.
          Add proper nouns to `.texlocal-dict.txt` (one word per line) at the
          project root. Skips \commands, math mode, citation/ref braces. -->
@@ -424,7 +446,13 @@
          each delete so wavy underlines reappear without a page refresh. -->
     <div class="setting-row">
       <span class="setting-label" title="View and remove words you've added to this project's custom dictionary (.texlocal-dict.txt).">Custom dictionary</span>
-      <button class="settings-btn" onclick="openDictManager()" title="View and remove words in the per-project custom dictionary">📚 Manage…</button>
+      <button class="settings-btn" onclick="openDictManager()" title="View and remove words in the per-project custom dictionary"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none" aria-hidden="true" style="vertical-align:-3px"><path d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 0 0 2.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 0 0 1.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 0 0-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 0 0-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 0 0-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 0 0-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 0 0 1.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><circle cx="12" cy="12" r="3"/></svg> Manage…</button>
+        </div>
+        </div>
+        <div class="settings-pane" id="settings-pane-keyboard">
+          <div class="settings-kb-note">Loading keyboard shortcuts…</div>
+        </div>
+      </div>
     </div>
   </div>
 </div>
@@ -509,6 +537,17 @@
     <button class="td-close" onclick="toggleTodoPanel(event)">✕</button>
   </div>
   <div id="td-list"></div>
+</div>
+
+<!-- v4.9.0 — Bibliography audit panel. Skin reuses the todo-panel styles. -->
+<div id="bib-panel">
+  <div class="td-header">
+    <span>Bibliography audit <span id="bib-count" class="td-count"></span></span>
+    <span style="flex:1"></span>
+    <button class="cp-btn-mini" onclick="loadBibAuditUI()" title="Re-scan project">↻</button>
+    <button class="td-close" onclick="toggleBibPanel(event)">✕</button>
+  </div>
+  <div id="bib-list"></div>
 </div>
 
 <!-- v3.2.3 — Recent compile log history. Stored in localStorage per project. -->
@@ -654,6 +693,6 @@
 <script src="{{ url_for('static', filename='vendor/typo/typo.js') }}"></script>
 <script src="{{ url_for('static', filename='vendor/codemirror/addon/lint/lint.min.js') }}"></script>
 <script src="{{ url_for('static', filename='vendor/katex/katex.min.js') }}"></script>
-<script defer src="{{ url_for('static', filename='editor.js') }}"></script>
+<script defer src="{{ url_for('static', filename='editor.js') }}?v={{ texlocal_version }}"></script>
 </body>
 </html>

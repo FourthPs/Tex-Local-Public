@@ -9,7 +9,7 @@ import threading, urllib.request, urllib.error, urllib.parse, tempfile, time
 # The Inno installer keeps its own MyAppVersion in texlocal.iss; the two
 # MUST be bumped together when cutting a release. Discipline reminder in
 # HANDOFF section 1.
-TEXLOCAL_VERSION = "4.7.10"
+TEXLOCAL_VERSION = "4.10.0"
 
 # GitHub release-check endpoint. Points to the public repo for update checks and About modal link.
 TEXLOCAL_GITHUB_OWNER = "FourthPs"
@@ -1105,10 +1105,16 @@ def github_backup(project):
         except OSError:
             pass
 
+    acct = st.get("account") or "TexLocal"
     rc, name_out, _ = _run(["git", "config", "user.name"], cwd=path)
     if rc != 0 or not name_out.strip():
-        acct = st.get("account") or "TexLocal"
         _run(["git", "config", "user.name", acct], cwd=path)
+    # v4.9.8 (B6) — check user.email INDEPENDENTLY of user.name. A repo with
+    # user.name already set (cloned via Import, or inherited from a global
+    # config) but no user.email previously skipped this whole block, then
+    # failed `git commit` with "Please tell me who you are".
+    rc, email_out, _ = _run(["git", "config", "user.email"], cwd=path)
+    if rc != 0 or not email_out.strip():
         _run(["git", "config", "user.email",
               f"{acct}@users.noreply.github.com"], cwd=path)
 
@@ -1815,6 +1821,7 @@ def search_project(project):
 #   - all \label{...} occurrences from every .tex (with file + line for jump)
 # Cached per-project, keyed by the latest mtime among the source files.
 _cite_data_cache = {}   # project_dir → (max_mtime, parsed)
+_bib_audit_cache = {}   # v4.9.6 (B2) — project_dir → (max_mtime, result); mirrors _cite_data_cache so back-to-back audits per compile don't re-scan the tree
 
 _BIB_FIELD_RE = re.compile(
     r'\b(?P<name>author|year|title|editor|journal|booktitle)\s*=\s*',
@@ -1894,6 +1901,11 @@ def _parse_bib_text(text):
             if   text[j] == '{': depth += 1
             elif text[j] == '}': depth -= 1
             j += 1
+        # Skip TexLocal-disabled (commented) entries so they drop out of the
+        # \cite{ autocomplete just like they drop out of the audit.
+        if _bib_at_commented(text, at):
+            i = j
+            continue
         body = text[ob + 1:j - 1]
         comma = body.find(',')
         if comma < 0:
@@ -1978,6 +1990,104 @@ def _build_cite_data(path):
     environments.sort(key=str.lower)
     return {"bibkeys": bibkeys, "labels": labels,
             "commands": commands, "environments": environments}
+
+# ── v4.9.0 — Bibliography audit (cite/bib cross-check) ────────────────
+# Cross-checks \cite-family calls against .bib entries to surface three
+# classes of problem the autocomplete linter can't show inline:
+#   • unresolved — a key is \cite'd but defined in no .bib  (→ [?] in output)
+#   • unused     — a .bib entry no key ever \cite's         (clutter)
+#   • duplicate  — same key defined 2+ times; BibTeX silently keeps the first
+# `\nocite{*}` pulls in every entry, so it suppresses the unused list.
+#
+# Matches any command containing "cite" (\cite, \citep, \parencite,
+# \textcite, \footcite, \nocite, …) with optional [..] args, then a
+# {a,b,c} key group. Comment-stripped per line so a commented-out \cite
+# isn't counted as a real usage.
+_CITE_CMD_RE = re.compile(
+    r'\\[a-zA-Z]*cite[a-zA-Z]*\*?\s*(?:\[[^\]]*\]\s*)*\{([^}]*)\}'
+)
+
+def _strip_tex_comment(line):
+    """Return `line` with any trailing TeX comment removed. A `%` counts as a
+    comment start only when not escaped as `\%`."""
+    i = 0
+    while i < len(line):
+        if line[i] == "\\" and i + 1 < len(line):
+            i += 2
+            continue
+        if line[i] == "%":
+            return line[:i]
+        i += 1
+    return line
+
+def _iter_bib_keys_with_pos(text):
+    """Yield (key, line_no) for every real @entry in a .bib string, skipping
+    @string/@comment/@preamble. Mirrors _parse_bib_text's brace matching but
+    keeps EVERY occurrence (no dedupe) so duplicate keys are visible, and
+    reports the 1-based line of the `@`."""
+    i, n = 0, len(text)
+    while i < n:
+        at = text.find('@', i)
+        if at < 0:
+            break
+        ob = text.find('{', at)
+        if ob < 0:
+            break
+        type_str = text[at + 1:ob].strip().lower()
+        depth, j = 1, ob + 1
+        while j < n and depth > 0:
+            if   text[j] == '{': depth += 1
+            elif text[j] == '}': depth -= 1
+            j += 1
+        if type_str in ('string', 'comment', 'preamble') or _bib_at_commented(text, at):
+            i = j
+            continue
+        body = text[ob + 1:j - 1]
+        comma = body.find(',')
+        if comma >= 0:
+            key = body[:comma].strip()
+            if key:
+                yield key, text.count('\n', 0, at) + 1
+        i = j
+
+def _bib_at_commented(text, at):
+    """True if the `@` at offset `at` sits on a line whose first non-whitespace
+    char is `%` — i.e. the entry has been commented out (TexLocal convention:
+    unused entries are disabled by prefixing every line with `%`). Note BibTeX
+    itself doesn't treat `%` as a comment, but disabled entries here are always
+    uncited, so they never reach BibTeX output regardless; this keeps TexLocal's
+    own autocomplete/audit consistent with what the user sees struck out."""
+    ls = text.rfind("\n", 0, at) + 1
+    return text[ls:at].lstrip().startswith("%")
+
+def _iter_bib_entry_spans(text):
+    """Yield (key, start, end, commented) for every real @entry, where
+    start=offset of `@` and end=offset just past the entry's closing brace.
+    Used by /bib-remove-unused to excise/comment exact byte ranges. Unlike
+    _iter_bib_keys_with_pos this does NOT skip commented entries — the caller
+    needs the flag to avoid re-commenting an already-disabled entry."""
+    i, n = 0, len(text)
+    while i < n:
+        at = text.find('@', i)
+        if at < 0:
+            break
+        ob = text.find('{', at)
+        if ob < 0:
+            break
+        type_str = text[at + 1:ob].strip().lower()
+        depth, j = 1, ob + 1
+        while j < n and depth > 0:
+            if   text[j] == '{': depth += 1
+            elif text[j] == '}': depth -= 1
+            j += 1
+        if type_str not in ('string', 'comment', 'preamble'):
+            body = text[ob + 1:j - 1]
+            comma = body.find(',')
+            if comma >= 0:
+                key = body[:comma].strip()
+                if key:
+                    yield key, at, j, _bib_at_commented(text, at)
+        i = j
 
 # ── \includeonly chapter list ─────────────────────────────────────────
 # Scan a single main file for `\include{path}` directives so the frontend
@@ -2065,6 +2175,203 @@ def cite_data(project):
     parsed = _build_cite_data(path)
     _cite_data_cache[path] = (latest, parsed)
     return jsonify(parsed)
+
+@app.route("/api/projects/<project>/bib-audit", methods=["GET"])
+def bib_audit(project):
+    """Cross-check \cite usage against .bib definitions. Returns
+    {unresolved, unused, duplicate, nocite_all, counts}. Cheap enough to run
+    on demand (same cost as an outline scan); not cached."""
+    try:
+        path = _safe_project(project)
+    except _PathError as e:
+        return _err(str(e))
+    empty = {"unresolved": [], "unused": [], "duplicate": [],
+             "nocite_all": False,
+             "counts": {"unresolved": 0, "unused": 0, "duplicate": 0}}
+    if not os.path.exists(path):
+        return jsonify(empty)
+    # v4.9.6 (B2) — mtime-keyed cache, mirroring cite_data(). A successful
+    # compile fires two audits back-to-back (badge via loadCiteData + the log
+    # breadcrumb), and the panel a third; this makes every call after the first
+    # essentially free until a .tex/.bib actually changes. Cheap stat-only walk
+    # for the refresh signal, same pattern cite_data() uses.
+    latest = 0.0
+    for root, dirs, files in _walk_visible(path):
+        for f in files:
+            if not (f.endswith(".bib") or f.endswith(".tex")):
+                continue
+            try:
+                m = os.path.getmtime(os.path.join(root, f))
+                if m > latest: latest = m
+            except OSError:
+                pass
+    cached = _bib_audit_cache.get(path)
+    if cached and cached[0] == latest:
+        return jsonify(cached[1])
+    defined = {}       # key -> [{file, line}, ...]  (all occurrences)
+    cited   = {}       # key -> {file, line}         (first usage only)
+    nocite_all = False
+    for root, dirs, files in _walk_visible(path):
+        for f in files:
+            full = os.path.join(root, f)
+            rel  = os.path.relpath(full, path).replace("\\", "/")
+            if f.endswith(".bib"):
+                try:
+                    with open(full, "r", encoding="utf-8", errors="replace") as fh:
+                        txt = fh.read()
+                except Exception:
+                    continue
+                for key, line_no in _iter_bib_keys_with_pos(txt):
+                    defined.setdefault(key, []).append({"file": rel, "line": line_no})
+            elif f.endswith(".tex"):
+                try:
+                    with open(full, "r", encoding="utf-8", errors="replace") as fh:
+                        for lineno, line in enumerate(fh, start=1):
+                            code = _strip_tex_comment(line)
+                            if "cite" not in code:
+                                continue
+                            for m in _CITE_CMD_RE.finditer(code):
+                                for part in m.group(1).split(","):
+                                    k = part.strip()
+                                    if not k:
+                                        continue
+                                    if k == "*":
+                                        nocite_all = True
+                                        continue
+                                    if k not in cited:
+                                        cited[k] = {"file": rel, "line": lineno}
+                except Exception:
+                    continue
+    defined_set = set(defined)
+    unresolved = [
+        {"key": k, "file": loc["file"], "line": loc["line"]}
+        for k, loc in sorted(cited.items())
+        if k not in defined_set
+    ]
+    unused = [] if nocite_all else [
+        {"key": k, "file": defined[k][0]["file"], "line": defined[k][0]["line"]}
+        for k in sorted(defined_set)
+        if k not in cited
+    ]
+    duplicate = [
+        {"key": k, "count": len(locs), "locations": locs}
+        for k, locs in sorted(defined.items())
+        if len(locs) > 1
+    ]
+    result = {
+        "unresolved": unresolved,
+        "unused": unused,
+        "duplicate": duplicate,
+        "nocite_all": nocite_all,
+        "counts": {
+            "unresolved": len(unresolved),
+            "unused": len(unused),
+            "duplicate": len(duplicate),
+        },
+    }
+    _bib_audit_cache[path] = (latest, result)   # v4.9.6 (B2)
+    return jsonify(result)
+
+@app.route("/api/projects/<project>/bib-remove-unused", methods=["POST"])
+def bib_remove_unused(project):
+    """Comment out (disable, reversibly) unused .bib entries. Body: {keys:[...]}.
+    Re-verifies each requested key is defined-and-uncited RIGHT NOW before
+    touching it (guards against stale client state), backs up every .bib it
+    edits into `<project>/.texlocal-bibbak/` (a dot-dir, so _walk_visible hides
+    it), then prefixes every line of each target entry with `%`. Returns which
+    keys were commented vs skipped."""
+    try:
+        path = _safe_project(project)
+    except _PathError as e:
+        return _err(str(e))
+    if not os.path.exists(path):
+        return _err("project not found", 404)
+    data = request.get_json(silent=True) or {}
+    req_keys = {k.strip() for k in (data.get("keys") or [])
+                if isinstance(k, str) and k.strip()}
+    if not req_keys:
+        return _err("no keys given")
+
+    # Re-scan .tex for cited keys + \nocite{*} — never comment a cited entry.
+    cited = set()
+    nocite_all = False
+    for root, dirs, files in _walk_visible(path):
+        for f in files:
+            if not f.endswith(".tex"):
+                continue
+            try:
+                with open(os.path.join(root, f), "r", encoding="utf-8", errors="replace") as fh:
+                    for line in fh:
+                        code = _strip_tex_comment(line)
+                        if "cite" not in code:
+                            continue
+                        for m in _CITE_CMD_RE.finditer(code):
+                            for part in m.group(1).split(","):
+                                k = part.strip()
+                                if k == "*":
+                                    nocite_all = True
+                                elif k:
+                                    cited.add(k)
+            except Exception:
+                continue
+    if nocite_all:
+        # \nocite{*} pulls in the whole library — nothing is truly unused.
+        return jsonify({"commented": [], "commented_count": 0,
+                        "skipped": sorted(req_keys), "reason": "nocite_all"})
+
+    targets = req_keys - cited        # eligible = requested AND uncited
+    commented = []
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    bak_dir = os.path.join(path, ".texlocal-bibbak")
+    for root, dirs, files in _walk_visible(path):
+        for f in files:
+            if not f.endswith(".bib"):
+                continue
+            full = os.path.join(root, f)
+            rel  = os.path.relpath(full, path).replace("\\", "/")
+            try:
+                with open(full, "r", encoding="utf-8", errors="replace") as fh:
+                    txt = fh.read()
+            except Exception:
+                continue
+            spans = [(k, s, e) for (k, s, e, com) in _iter_bib_entry_spans(txt)
+                     if k in targets and not com]
+            if not spans:
+                continue
+            # Back up the original ONCE per file, before mutating.
+            try:
+                os.makedirs(bak_dir, exist_ok=True)
+                flat = rel.replace("/", "__")
+                with open(os.path.join(bak_dir, f"{flat}.{stamp}.bak"),
+                          "w", encoding="utf-8", newline="") as bf:
+                    bf.write(txt)
+            except Exception as ex:
+                return _err(f"backup failed for {rel}: {ex}", 500)
+            # Comment out from the last span to the first so earlier offsets
+            # stay valid as we splice.
+            spans.sort(key=lambda x: x[1], reverse=True)
+            for k, s, e in spans:
+                block = txt[s:e]
+                disabled = "\n".join("%" + ln for ln in block.split("\n"))
+                txt = txt[:s] + disabled + txt[e:]
+                commented.append({"key": k, "file": rel})
+            try:
+                tmp = full + ".tmp"
+                with open(tmp, "w", encoding="utf-8", newline="") as wf:
+                    wf.write(txt)
+                os.replace(tmp, full)
+            except Exception as ex:
+                return _err(f"write failed for {rel}: {ex}", 500)
+
+    _cite_data_cache.pop(path, None)   # force autocomplete/audit refresh
+    _bib_audit_cache.pop(path, None)   # v4.9.6 (B2) — same (mtime-keying auto-invalidates too, this is immediate)
+    done = {c["key"] for c in commented}
+    return jsonify({
+        "commented": commented,
+        "commented_count": len(commented),
+        "skipped": sorted(req_keys - done),
+        "backup_dir": ".texlocal-bibbak",
+    })
 
 # v3.2.2 — \todo / TODO / FIXME tracker
 # Picks up three kinds of markers and reports each with file + line:

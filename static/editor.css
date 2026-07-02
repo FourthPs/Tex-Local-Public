@@ -3,7 +3,11 @@
     --surface:  #13161e;
     --panel:    #191c26;
     --border:   #252935;
-    --accent:   #5b9cf6;
+    --accent:   #5b9cf6;   /* v4.7.9 — Appearance: :root = Default (original blue). [data-appearance="cerulean"] overrides below. Orthogonal to data-theme. */
+    --accent-rgb: 91,156,246;             /* feeds rgba(var(--accent-rgb), a) tints */
+    --accent-bright: #79b1f8;             /* hover-brighten (SyncTeX button) */
+    --btn-primary-bg:       var(--accent);
+    --btn-primary-bg-hover: #4a8ae8;
     --accent2:  #a78bfa;
     --green:    #34d399;
     --red:      #f87171;
@@ -16,6 +20,14 @@
     --muted:    #94a3b8;
     --font-ui:  'Sora', sans-serif;
     --font-code:'JetBrains Mono', monospace;
+  }
+  /* v4.7.9 — Cerulean appearance theme (SchemeColor "Cerulean Gradient"). Recolors only blue-based UI; icon stays #007BA7. */
+  [data-appearance="cerulean"] {
+    --accent:   #35CAFF;                  /* tint5 */
+    --accent-rgb: 53,202,255;             /* rgb of tint5 */
+    --accent-bright: #58D3FF;             /* tint6 */
+    --btn-primary-bg:       linear-gradient(135deg, #00AFEE 0%, #007BA7 100%);   /* tint3 -> tint1 */
+    --btn-primary-bg-hover: linear-gradient(135deg, #12C1FF 0%, #0095CA 100%);   /* tint4 -> tint2 */
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { background: var(--bg); color: var(--text); font-family: var(--font-ui); height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
@@ -37,8 +49,8 @@
     padding: 6px 14px; border-radius: 6px; font-family: var(--font-ui); font-size: 12px;
     font-weight: 600; border: none; cursor: pointer; transition: all .15s; letter-spacing: .3px;
   }
-  .btn-primary { background: var(--accent); color: #fff; }
-  .btn-primary:hover { background: #4a8ae8; transform: translateY(-1px); }
+  .btn-primary { background: var(--btn-primary-bg); color: #fff; }
+  .btn-primary:hover { background: var(--btn-primary-bg-hover); transform: translateY(-1px); }
   .btn-success { background: var(--green); color: #0d0f14; }
   .btn-success:hover { background: #2ec98a; transform: translateY(-1px); }
   .btn-ghost { background: transparent; color: var(--muted); border: 1px solid var(--border); }
@@ -68,7 +80,7 @@
     padding: 4px 5px; border-radius: 4px; display: flex; align-items: center;
     justify-content: center; transition: color .15s, background .15s;
   }
-  .icon-btn:hover { color: var(--accent); background: rgba(91,156,246,.1); }
+  .icon-btn:hover { color: var(--accent); background: rgba(var(--accent-rgb),.1); }
   /* Resize handles */
   .resize-handle {
     width: 4px; background: transparent; cursor: col-resize;
@@ -97,7 +109,7 @@
     transition: background .1s, color .1s; white-space: nowrap; overflow: hidden;
   }
   .file-item:hover { background: var(--panel); color: var(--text); }
-  .file-item.active { background: rgba(91,156,246,.12); color: var(--accent); }
+  .file-item.active { background: rgba(var(--accent-rgb),.12); color: var(--accent); }
   .file-item .file-icon { font-size: 11px; flex-shrink: 0; }
   .file-item .file-ren { opacity: 0; font-size: 12px; color: var(--muted); padding: 0 2px; cursor: pointer; flex-shrink: 0; }
   .file-item:hover .file-ren { opacity: .6; }
@@ -119,6 +131,19 @@
   .folder-item span { pointer-events: none; } /* ป้องกัน drag เข้า child span */
   .folder-arrow { font-size: 9px; color: var(--muted); flex-shrink: 0; transition: transform .15s; }
   .folder-arrow.open { transform: rotate(90deg); }
+
+  /* v4.7.11 — inline SVG file-tree icons (replaced emoji). Single-accent look:
+     file + folder glyphs follow --accent; star=--yellow, del=--red, rename
+     =--muted→--accent, arrow=--muted. All via currentColor so Appearance themes
+     (Default/Cerulean) + light/dark recolor them for free — no per-theme rules. */
+  .file-item .file-icon svg,
+  .folder-arrow svg,
+  .file-star svg,
+  .file-ren svg,
+  .file-del svg { display: block; }
+  .file-item .file-icon { color: var(--accent); line-height: 0; }
+  .file-star.is-main svg,
+  .file-star:hover svg { fill: currentColor; }
   /* ── ERROR MARKERS ── */
   .cm-errors-gutter { width: 20px; }
   .cm-error-marker {
@@ -166,8 +191,8 @@
   }
   /* Drag & Drop */
   .file-item.dragging { opacity: 0.35; }
-  .file-item.drag-over { background: rgba(91,156,246,.18) !important; color: var(--accent) !important; outline: 1px dashed var(--accent); outline-offset: -2px; border-radius: 4px; }
-  #file-tree.drag-over-root { background: rgba(91,156,246,.06); }
+  .file-item.drag-over { background: rgba(var(--accent-rgb),.18) !important; color: var(--accent) !important; outline: 1px dashed var(--accent); outline-offset: -2px; border-radius: 4px; }
+  #file-tree.drag-over-root { background: rgba(var(--accent-rgb),.06); }
   /* ── OUTLINE ── */
   .outline-section { border-top: 1px solid var(--border); display: flex; flex-direction: column; min-height: 32px; max-height: 220px; flex-shrink: 0; }
   .outline-section.collapsed .outline-tree { display: none; }
@@ -194,11 +219,18 @@
   .editor-tabs {
     height: 36px; background: var(--surface); border-bottom: 1px solid var(--border);
     display: flex; align-items: flex-end; padding: 0 8px; gap: 2px; flex-shrink: 0;
+    /* v4.9.3 — clip+scroll tabs inside the editor pane. Without this, once the
+       tab row overflows its width the extra tabs (default flex-shrink can't
+       squeeze fixed-padding tabs below content size) spilled right over the
+       resize handle into the PDF pane. overflow-y hidden avoids a stray
+       vertical scrollbar from the 36px row. */
+    overflow-x: auto; overflow-y: hidden;
   }
   .tab {
     padding: 6px 14px; font-size: 11px; font-family: var(--font-code); cursor: pointer;
     border-radius: 6px 6px 0 0; color: var(--muted); transition: all .15s;
     border: 1px solid transparent; border-bottom: none;
+    flex-shrink: 0; white-space: nowrap;   /* v4.9.3 — keep full tab size; scroll, don't spill */
   }
   .tab.active { background: var(--bg); color: var(--text); border-color: var(--border); }
   .tab:hover:not(.active) { color: var(--text); }
@@ -229,7 +261,7 @@
   .CodeMirror-gutters { background: #f4f5f7 !important; border-right: 1px solid #dde1ea !important; }
   .CodeMirror-linenumber { color: #a0aab8 !important; }
   .CodeMirror-cursor { border-left-color: var(--accent) !important; }
-  .CodeMirror-selected { background: rgba(91,156,246,.18) !important; }
+  .CodeMirror-selected { background: rgba(var(--accent-rgb),.18) !important; }
   /* LaTeX token colors — light bg */
   .cm-s-default .cm-keyword  { color: #0057b8 !important; font-weight: 600; }  /* \commands — blue */
   .cm-s-default .cm-tag      { color: #007a4d !important; font-weight: 600; }  /* \begin \end — green */
@@ -253,7 +285,7 @@
     border-right: 1px solid #1f2330 !important;
   }
   [data-editor-theme="dark"] .CodeMirror-linenumber { color: #4a5365 !important; }
-  [data-editor-theme="dark"] .CodeMirror-selected  { background: rgba(91,156,246,.22) !important; }
+  [data-editor-theme="dark"] .CodeMirror-selected  { background: rgba(var(--accent-rgb),.22) !important; }
   [data-editor-theme="dark"] .cm-s-default .cm-keyword  { color: #7eb6ff !important; }  /* sky */
   [data-editor-theme="dark"] .cm-s-default .cm-tag      { color: #6ee7b7 !important; }  /* mint */
   [data-editor-theme="dark"] .cm-s-default .cm-comment  { color: #6b7585 !important; }  /* muted */
@@ -413,7 +445,7 @@
     100% { opacity: 0; }
   }
   /* backward-search jump flash on editor line */
-  .cm-synctex-jump { background: rgba(91,156,246,0.25) !important; transition: background 1.2s; }
+  .cm-synctex-jump { background: rgba(var(--accent-rgb),0.25) !important; transition: background 1.2s; }
   .pdf-placeholder { width: 100%; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; color: var(--muted); }
   .pdf-placeholder .icon { font-size: 48px; opacity: .3; }
   .pdf-placeholder p { font-size: 13px; }
@@ -502,7 +534,7 @@
     border-radius: 9px; font-size: 10px; font-weight: 700;
     background: var(--border); color: var(--muted);
   }
-  .logs-tab.active .lbadge { background: rgba(91,156,246,.18); color: var(--accent); }
+  .logs-tab.active .lbadge { background: rgba(var(--accent-rgb),.18); color: var(--accent); }
   .lbadge.b-err  { background: rgba(248,113,113,.15); color: var(--red); }
   .lbadge.b-warn { background: rgba(251,191,36,.12);  color: var(--yellow); }
   .lbadge.b-info { background: rgba(167,139,250,.12); color: var(--accent2); }
@@ -756,7 +788,7 @@
     transition: border-color .15s;
   }
   .project-row:hover { border-color: var(--accent); }
-  .project-row.active-proj { border-color: var(--accent); background: rgba(91,156,246,.07); }
+  .project-row.active-proj { border-color: var(--accent); background: rgba(var(--accent-rgb),.07); }
   .project-row-name { flex: 1; font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .project-row-date { font-size: 11px; color: var(--muted); flex-shrink: 0; }
   .project-row-del {
@@ -867,6 +899,76 @@
   .td-loc   { font: 10px var(--font-code); color: var(--muted); flex-shrink: 0; }
   .td-empty { padding: 24px; text-align: center; color: var(--muted); font-size: 12px; }
 
+  /* v4.9.0 — Bibliography audit panel. Reuses the todo-panel skin (.td-*)
+     for header/close; adds section headers + per-issue rows below. */
+  #bib-toggle-btn { position: relative; }
+  .etb-badge {
+    position: absolute; top: 1px; right: 1px;
+    min-width: 13px; height: 13px; padding: 0 3px; box-sizing: border-box;
+    background: var(--red); color: #fff; border-radius: 7px;
+    font: 600 8px var(--font-ui); line-height: 13px; text-align: center;
+    display: none;   /* shown (block) by JS only when issues exist */
+  }
+  #bib-panel {
+    display: none; position: fixed; z-index: 200;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; box-shadow: 0 8px 32px rgba(0,0,0,.45);
+    width: 440px; max-height: 480px; flex-direction: column; overflow: hidden;
+  }
+  #bib-panel.open { display: flex; }
+  #bib-list { flex: 1; overflow-y: auto; padding: 4px 0; }
+  .bib-section {
+    padding: 6px 12px 3px; margin-top: 4px;
+    font: 600 10px var(--font-ui); letter-spacing: .5px; text-transform: uppercase;
+    color: var(--muted); display: flex; align-items: center; gap: 6px;
+  }
+  .bib-section:first-child { margin-top: 0; }
+  .bib-section .bib-sec-count {
+    font: 600 9px var(--font-code); padding: 1px 6px; border-radius: 3px;
+    color: #fff; letter-spacing: 0;
+  }
+  .bib-sec-count.unresolved { background: var(--red); }
+  .bib-sec-count.unused     { background: var(--yellow); color: #0d0f14; }
+  .bib-sec-count.duplicate  { background: var(--accent2); }
+  .bib-item {
+    padding: 5px 12px; cursor: pointer;
+    display: flex; gap: 8px; align-items: baseline;
+    border-left: 3px solid transparent;
+  }
+  .bib-item:hover { background: var(--panel); border-left-color: var(--accent); }
+  .bib-key  { font: 12px var(--font-code); color: var(--text); flex: 1;
+              white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .bib-note { font: 10px var(--font-ui); color: var(--muted); flex-shrink: 0; }
+  .bib-loc  { font: 10px var(--font-code); color: var(--muted); flex-shrink: 0; }
+  .bib-empty { padding: 24px; text-align: center; color: var(--muted); font-size: 12px; }
+  .bib-empty.clean { color: var(--green); }
+
+  /* v4.9.2 — remove-unused (comment out) buttons + panel toast. */
+  .bib-rm {
+    flex-shrink: 0; font: 600 9px var(--font-ui); letter-spacing: .3px;
+    padding: 2px 7px; border-radius: 4px; cursor: pointer;
+    background: none; color: var(--muted);
+    border: 1px solid var(--border);
+    opacity: 0; transition: opacity .12s, color .12s, border-color .12s;
+  }
+  .bib-item:hover .bib-rm { opacity: 1; }
+  .bib-rm:hover { color: var(--yellow); border-color: var(--yellow); }
+  .bib-rm-all {
+    flex-shrink: 0; font: 600 9px var(--font-ui); letter-spacing: .3px;
+    padding: 2px 8px; border-radius: 4px; cursor: pointer;
+    background: none; color: var(--muted); border: 1px solid var(--border);
+    text-transform: none;
+  }
+  .bib-rm-all:hover { color: var(--yellow); border-color: var(--yellow); }
+  .bib-toast {
+    position: absolute; left: 12px; right: 12px; bottom: 10px;
+    background: var(--panel); border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    border-radius: 6px; padding: 8px 12px;
+    font: 11px var(--font-ui); color: var(--text);
+    box-shadow: 0 4px 16px rgba(0,0,0,.4);
+  }
+
   /* v3.2.3 — Recent compile log history panel. Lists last 10 runs, click
      to expand and view the full log. Skin matches todo / goals panels. */
   #history-panel {
@@ -892,7 +994,7 @@
   }
   .hp-row:last-child { border-bottom: none; }
   .hp-row:hover { background: var(--panel); border-left-color: var(--accent); }
-  .hp-row.active { background: rgba(91,156,246,.10); border-left-color: var(--accent); }
+  .hp-row.active { background: rgba(var(--accent-rgb),.10); border-left-color: var(--accent); }
   .hp-row.ok .hp-dot  { color: var(--green); }
   .hp-row.err .hp-dot { color: var(--red); }
   .hp-row .hp-dot     { font-size: 14px; line-height: 1; }
@@ -1012,8 +1114,8 @@
      Lives until the user Tabs out of the snippet session (then markers are
      cleared from JS — no CSS lifecycle here). */
   .cm-snippet-placeholder {
-    background: rgba(91,156,246,.18);
-    outline: 1px solid rgba(91,156,246,.45);
+    background: rgba(var(--accent-rgb),.18);
+    outline: 1px solid rgba(var(--accent-rgb),.45);
     border-radius: 2px;
   }
   [data-editor-theme="dark"] .cm-snippet-placeholder {
@@ -1115,14 +1217,14 @@
   .CodeMirror-search-hint { color: var(--muted) !important; font-size: 11px !important; }
   /* ── WORD COUNT (now in editor toolbar via .etb-wc) ── */
   /* upload drop zone */
-  .file-tree.upload-hover { background: rgba(91,156,246,.08); outline: 2px dashed var(--accent); outline-offset: -4px; }
+  .file-tree.upload-hover { background: rgba(var(--accent-rgb),.08); outline: 2px dashed var(--accent); outline-offset: -4px; }
   /* import zip modal extras */
   .zip-drop-zone {
     border: 2px dashed var(--border); border-radius: 8px; padding: 24px 16px;
     text-align: center; cursor: pointer; color: var(--muted); font-size: 12px;
     transition: all .2s; margin-bottom: 12px;
   }
-  .zip-drop-zone:hover, .zip-drop-zone.over { border-color: var(--accent); color: var(--accent); background: rgba(91,156,246,.06); }
+  .zip-drop-zone:hover, .zip-drop-zone.over { border-color: var(--accent); color: var(--accent); background: rgba(var(--accent-rgb),.06); }
   .zip-drop-zone .zip-icon { font-size: 28px; display: block; margin-bottom: 6px; }
   /* spinner */
   @keyframes spin { to { transform: rotate(360deg); } }
@@ -1164,8 +1266,8 @@
     flex-shrink: 0;        /* v4.2.2 — protect natural width of long-label buttons (\[…\], TT, env, …) */
     white-space: nowrap;
   }
-  .etb-btn:hover { color: var(--text); background: rgba(91,156,246,.1); }
-  .etb-btn.active { color: var(--accent) !important; background: rgba(91,156,246,.12) !important; }
+  .etb-btn:hover { color: var(--text); background: rgba(var(--accent-rgb),.1); }
+  .etb-btn.active { color: var(--accent) !important; background: rgba(var(--accent-rgb),.12) !important; }
   .etb-wc { font-size: 11px; color: var(--muted); padding: 0 4px; white-space: nowrap; }
   .etb-select {
     background: var(--panel); border: 1px solid var(--border); color: var(--muted);
@@ -1192,7 +1294,7 @@
   body.focus-mode #rh-sidebar,
   body.focus-mode .pdf-pane,
   body.focus-mode #rh-pdf { display: none !important; }
-  body.focus-mode #focus-mode-btn { color: var(--accent) !important; background: rgba(91,156,246,.12) !important; }
+  body.focus-mode #focus-mode-btn { color: var(--accent) !important; background: rgba(var(--accent-rgb),.12) !important; }
   /* ── Floating "Go to PDF" button ──────────────────────────────────
      Sits at the seam between the editor pane and the PDF pane, vertically
      centered. Half-overlaps the resize handle so it visually anchors the
@@ -1208,7 +1310,7 @@
     background: var(--accent);
     color: #fff;
     border: 2px solid var(--bg);        /* halo separates the button from the seam */
-    box-shadow: 0 4px 14px rgba(91,156,246,0.42),
+    box-shadow: 0 4px 14px rgba(var(--accent-rgb),0.42),
                 0 1px 4px rgba(0,0,0,0.32);
     font-size: 16px; font-weight: 600; line-height: 1;
     cursor: pointer;
@@ -1218,8 +1320,8 @@
     padding: 0;
   }
   #synctex-btn:hover {
-    background: #79b1f8;
-    box-shadow: 0 6px 20px rgba(91,156,246,0.6),
+    background: var(--accent-bright);
+    box-shadow: 0 6px 20px rgba(var(--accent-rgb),0.6),
                 0 2px 6px rgba(0,0,0,0.42);
     transform: translateY(-50%) scale(1.1);
   }
@@ -1234,17 +1336,17 @@
   }
   @keyframes stx-fab-pulse {
     0%, 100% {
-      box-shadow: 0 6px 18px rgba(91,156,246,0.45),
-                  0 0 0 0 rgba(91,156,246,0.55);
+      box-shadow: 0 6px 18px rgba(var(--accent-rgb),0.45),
+                  0 0 0 0 rgba(var(--accent-rgb),0.55);
     }
     50% {
-      box-shadow: 0 6px 18px rgba(91,156,246,0.45),
-                  0 0 0 8px rgba(91,156,246,0.0);
+      box-shadow: 0 6px 18px rgba(var(--accent-rgb),0.45),
+                  0 0 0 8px rgba(var(--accent-rgb),0.0);
     }
   }
   /* Light theme — keep contrast against the lighter background */
   [data-theme="light"] #synctex-btn {
-    box-shadow: 0 6px 16px rgba(91,156,246,0.35),
+    box-shadow: 0 6px 16px rgba(var(--accent-rgb),0.35),
                 0 2px 5px rgba(0,0,0,0.18);
   }
   /* Hide while focus-mode is on (the PDF pane is hidden anyway) */
@@ -1346,7 +1448,7 @@
     cursor: pointer; font-size: 17px; color: var(--text); transition: all .12s;
     position: relative; flex-shrink: 0;
   }
-  .sym-btn:hover { background: rgba(91,156,246,.15); border-color: var(--accent); transform: scale(1.1); }
+  .sym-btn:hover { background: rgba(var(--accent-rgb),.15); border-color: var(--accent); transform: scale(1.1); }
   .sym-btn::after {
     content: attr(data-cmd); position: absolute; bottom: calc(100% + 5px); left: 50%;
     transform: translateX(-50%); background: var(--surface); border: 1px solid var(--border);
@@ -1436,7 +1538,7 @@
   }
   .qo-item .qo-name { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .qo-item .qo-path { color: var(--muted); font-size: 11px; margin-left: auto; white-space: nowrap; }
-  .qo-item.active { background: rgba(91,156,246,.16); color: var(--accent); }
+  .qo-item.active { background: rgba(var(--accent-rgb),.16); color: var(--accent); }
   .qo-item.active .qo-path { color: var(--accent); opacity: .85; }
   .qo-item:hover { background: var(--panel); }
   .qo-hit { color: var(--accent); font-weight: 700; }
@@ -1452,13 +1554,70 @@
   }
 
   /* ── SETTINGS PANEL ── */
+  /* v4.8.0 — Settings is now a centered modal overlay (was a 256px toolbar
+     dropdown). Backdrop + centering via flexbox; the dialog is .settings-modal. */
   #settings-panel {
-    display: none; position: fixed; z-index: 200;
-    background: var(--surface); border: 1px solid var(--border);
-    border-radius: 10px; box-shadow: 0 8px 32px rgba(0,0,0,.45);
-    width: 256px; flex-direction: column; overflow: hidden;
+    position: fixed; inset: 0; background: rgba(0,0,0,.55);
+    display: none; align-items: center; justify-content: center; z-index: 230;
   }
   #settings-panel.open { display: flex; }
+  .settings-modal {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; width: 540px; max-width: 92vw; max-height: 82vh;
+    display: flex; flex-direction: column; overflow: hidden;
+    box-shadow: 0 12px 40px rgba(0,0,0,.5);
+    font: 12px var(--font-ui); color: var(--text);
+  }
+  .settings-cols { display: flex; flex: 1; min-height: 0; }
+  .settings-tabs {
+    width: 148px; flex-shrink: 0; border-right: 1px solid var(--border);
+    background: var(--panel); padding: 8px; display: flex; flex-direction: column; gap: 2px;
+  }
+  .settings-tab {
+    text-align: left; padding: 8px 11px; border-radius: 6px;
+    border: 1px solid transparent; background: none; cursor: pointer;
+    font: 12px var(--font-ui); color: var(--muted); transition: all .12s;
+  }
+  .settings-tab:hover { background: var(--bg); color: var(--text); }
+  .settings-tab.active { background: rgba(var(--accent-rgb),.15); color: var(--accent); border-color: var(--accent); font-weight: 600; }
+  .settings-panes { flex: 1; overflow-y: auto; padding: 16px; min-width: 0; }
+  .settings-pane { display: none; flex-direction: column; gap: 16px; }
+  .settings-pane.active { display: flex; }
+  .settings-kb-note { color: var(--muted); font-size: 12px; line-height: 1.6; }
+  /* v4.8.1 — Keyboard-shortcut cheat-sheet (read-only) inside the Keyboard tab. */
+  .kb-intro { color: var(--muted); font-size: 11px; line-height: 1.5; }
+  .kb-group { display: flex; flex-direction: column; gap: 2px; }
+  .kb-cat { font-size: 10px; font-weight: 700; letter-spacing: .6px; text-transform: uppercase; color: var(--muted); margin-bottom: 4px; }
+  .kb-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 5px 0; border-bottom: 1px solid var(--border); }
+  .kb-row:last-child { border-bottom: none; }
+  .kb-label { font-size: 12px; color: var(--text); }
+  .kb-keys { display: flex; align-items: center; gap: 3px; flex-shrink: 0; }
+  .kbd {
+    font-family: var(--font-code); font-size: 11px; color: var(--text);
+    background: var(--bg); border: 1px solid var(--border); border-bottom-width: 2px;
+    border-radius: 4px; padding: 1px 6px; min-width: 12px; text-align: center; line-height: 1.5;
+  }
+  .kbd-plus { color: var(--muted); font-size: 10px; }
+  .kb-or { color: var(--muted); font-size: 10px; margin: 0 3px; }
+  /* v4.8.2 — phase 3: interactive remap affordance in the Keyboard tab. */
+  .kb-toolbar { display: flex; justify-content: flex-end; margin-bottom: 4px; }
+  .kb-reset {
+    font-size: 11px; color: var(--muted); background: var(--bg);
+    border: 1px solid var(--border); border-radius: 5px; padding: 4px 10px; cursor: pointer;
+  }
+  .kb-reset:hover:not(:disabled) { color: var(--text); border-color: var(--accent); }
+  .kb-reset:disabled { opacity: .45; cursor: default; }
+  .kb-remap {
+    display: flex; align-items: center; gap: 3px; flex-shrink: 0;
+    background: transparent; border: 1px solid transparent; border-radius: 6px;
+    padding: 2px 6px; cursor: pointer;
+  }
+  .kb-remap:hover { border-color: var(--accent); background: rgba(var(--accent-rgb),.08); }
+  .kb-remap.kb-capturing { border-color: var(--accent); background: rgba(var(--accent-rgb),.15); }
+  .kb-remap.kb-changed .kbd { border-color: var(--accent); color: var(--accent); }
+  .kb-capture-hint { font-size: 11px; color: var(--accent); white-space: nowrap; }
+  .kb-capture-hint.kb-conflict { color: #e5534b; }
+  .kb-locked { opacity: .7; }
   .settings-hdr {
     padding: 10px 14px; background: var(--panel); border-bottom: 1px solid var(--border);
     display: flex; align-items: center; justify-content: space-between; flex-shrink: 0;
@@ -1471,12 +1630,12 @@
   .setting-label { font-size: 12px; color: var(--text); }
   .theme-opt-group { display: flex; gap: 4px; }
   .theme-opt {
-    padding: 4px 10px; font-size: 11px; font-weight: 600;
+    padding: 4px 7px; font-size: 11px; font-weight: 600;
     border-radius: 6px; border: 1px solid var(--border);
     background: var(--panel); color: var(--muted); cursor: pointer;
     font-family: var(--font-ui); transition: all .15s;
   }
-  .theme-opt.active { background: rgba(91,156,246,.15); color: var(--accent); border-color: var(--accent); }
+  .theme-opt.active { background: rgba(var(--accent-rgb),.15); color: var(--accent); border-color: var(--accent); }
   .settings-select {
     background: var(--bg); border: 1px solid var(--border); color: var(--text);
     font-family: var(--font-code); font-size: 12px; padding: 4px 8px;

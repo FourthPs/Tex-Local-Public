@@ -4,6 +4,80 @@ All notable changes to TexLocal are documented here.
 
 ---
 
+## v4.10.0 — 2026-07-02
+
+Milestone installer release — the first download since v4.7.10 — packaging all of the v4.8 and v4.9 improvements listed below into one build. No new changes of its own.
+
+## v4.9.10 — 2026-07-02
+
+### Fixes
+- Compile errors that carry a full Windows path now link to the correct file and line.
+
+## v4.9.9 — 2026-07-02
+
+### Fixes
+- List items whose path or citation key contains an apostrophe now click through correctly (e.g. a `\label{eq:d'alembert}` in the Bibliography panel).
+
+## v4.9.8 — 2026-07-02
+
+### Fixes
+- "Back up to GitHub" no longer fails when only the git e-mail address is unset.
+
+## v4.9.7 — 2026-07-02
+
+### Fixes
+- Live citation warnings now recognize all biblatex commands (`\parencite`, `\autocite`, `\textcite`, …), matching the Bibliography panel.
+
+## v4.9.6 — 2026-07-02
+
+### Speed
+- The bibliography check no longer runs twice on every compile — less overhead on large projects.
+
+## v4.9.5 — 2026-07-02
+
+### Speed
+- Faster compiles on documents without a bibliography: an unnecessary BibTeX pass is now skipped.
+
+## v4.9.4 — 2026-07-02
+
+### Fixes
+- Replace All and the bibliography clean-up no longer silently revert their change in the file you currently have open.
+
+## v4.9.3 — 2026-07-02
+
+### Fixes
+- Editor tabs no longer spill over into the PDF preview when enough files are open to overflow the tab row.
+
+## v4.9.2 — 2026-07-02
+
+### Bibliography
+- Unused `.bib` entries can be cleaned up with one click — "comment out" (fully reversible; your `.bib` is backed up first), individually or all at once.
+
+## v4.9.1 — 2026-07-02
+
+### Bibliography
+- A one-line citation-health summary now appears in the compile log after every build.
+
+## v4.9.0 — 2026-07-02
+
+### Bibliography (new)
+- A new Bibliography panel cross-checks your `\cite` commands against your `.bib` files and flags citations with no matching entry, duplicate keys, and entries that are never cited — each issue links straight to the file and line.
+
+## v4.8.2 — 2026-07-02
+
+### Keyboard
+- Editor keyboard shortcuts can now be remapped to keys you prefer (Settings → Keyboard).
+
+## v4.8.1 — 2026-07-02
+
+### Keyboard
+- New keyboard-shortcut cheat-sheet in Settings → Keyboard.
+
+## v4.8.0 — 2026-07-02
+
+### Settings
+- Settings has been reworked into a cleaner centered window with tabs: Appearance, Compile, Editor, and Keyboard.
+
 ## v4.7.10 — 2026-07-01
 
 ### Fixes

@@ -147,6 +147,66 @@ def _run_flask(port: int) -> None:
     app.run(host="127.0.0.1", port=port, debug=False, use_reloader=False)
 
 
+# -- v4.7.6: WebView2 download bridge ---------------------------------
+# The HTML5 download mechanism (`<a download>` and programmatic
+# `a.click()`) is a NO-OP inside the WebView2 host pywebview embeds: there
+# is no download UI/handler wired up, so clicking "Download PDF" or
+# "Export ZIP" did nothing in the desktop app while browser mode (real
+# browser handles the download) worked fine.
+#
+# Fix: expose a tiny Python API to JS via pywebview's `js_api`. The
+# frontend detects `window.pywebview` (same signal the GitHub device-flow
+# path already uses) and calls `window.pywebview.api.save_file(...)`. We
+# fetch the bytes from our own local Flask server and present a NATIVE
+# Save dialog, then write the file to wherever the user chooses. Browser
+# mode never touches this -- `window.pywebview` is undefined there.
+class _DownloadBridge:
+    """JS-exposed save helper for the WebView2 desktop build (v4.7.6)."""
+
+    def __init__(self) -> None:
+        # Filled in by main() once the port is picked and the window made.
+        self._port = None
+        self._window = None
+
+    def save_file(self, url_path, suggested_name):
+        """Fetch `url_path` from the local server and save it via a native
+        Save dialog. Returns a small status dict the frontend can act on.
+
+        `url_path` must be a server-relative path (e.g.
+        `/api/projects/Foo/pdf?file=main.pdf`). We hard-restrict to our own
+        localhost origin so this can't be coerced into an arbitrary fetcher.
+        """
+        if self._port is None or self._window is None:
+            return {"ok": False, "error": "Download bridge not ready."}
+        if not isinstance(url_path, str) or not url_path.startswith("/"):
+            return {"ok": False, "error": "Invalid download path."}
+        try:
+            full = f"http://127.0.0.1:{self._port}{url_path}"
+            with urllib.request.urlopen(full, timeout=60) as r:
+                data = r.read()
+        except Exception as e:  # network/HTTP error from our own server
+            return {"ok": False, "error": f"Could not fetch file: {e}"}
+
+        # create_file_dialog returns a str (older pywebview), a tuple/list
+        # (newer), or None/empty when the user cancels -- normalise all three.
+        try:
+            chosen = self._window.create_file_dialog(
+                webview.SAVE_DIALOG, save_filename=suggested_name
+            )
+        except Exception as e:
+            return {"ok": False, "error": f"Could not open Save dialog: {e}"}
+        if not chosen:
+            return {"ok": False, "cancelled": True}
+        dest = chosen[0] if isinstance(chosen, (list, tuple)) else chosen
+
+        try:
+            with open(dest, "wb") as f:
+                f.write(data)
+        except OSError as e:
+            return {"ok": False, "error": f"Could not write file: {e}"}
+        return {"ok": True, "path": dest}
+
+
 # -- Main -------------------------------------------------------------
 
 def main() -> None:
@@ -169,17 +229,25 @@ def main() -> None:
         )
         sys.exit(2)
 
+    # v4.7.6 -- download bridge so the WebView2 build can save PDF/ZIP files
+    # (HTML5 <a download> is inert in the embedded WebView2). js_api exposes
+    # its methods to JS as window.pywebview.api.*.
+    bridge = _DownloadBridge()
+    bridge._port = port
+
     # Window sizing: 1400x900 fits a typical thesis workflow (file tree +
     # editor + PDF preview side-by-side) on a 1080p+ display. min_size
     # prevents a too-small window from breaking the responsive layout.
-    webview.create_window(
+    window = webview.create_window(
         title="TexLocal",
         url=url,
         width=1400,
         height=900,
         min_size=(900, 600),
         confirm_close=False,  # PoL has Ctrl+S autosave habit; no nag needed
+        js_api=bridge,        # v4.7.6 -- exposes bridge.save_file to JS
     )
+    bridge._window = window  # the dialog needs a window handle to anchor to
     # Persist localStorage + cookies across app restarts. pywebview defaults to
     # private_mode=True (incognito), so every setting saved to localStorage —
     # per-project compiler choice (texlocal_compiler_<name>), theme, font size,

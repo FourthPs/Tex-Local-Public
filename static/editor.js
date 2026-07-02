@@ -92,6 +92,45 @@ CodeMirror.registerHelper("fold", "latex-section", function (cm, start) {
   };
 });
 
+// ── v4.8.2 — Editor keybinding registry (settings/keymap phase 3) ──────
+// EDITOR_ACTIONS is the single source of truth for the remappable, editor-scope
+// shortcuts. Each entry pairs a stable id (matching KEYBINDINGS below) with its
+// default key + the CM handler. The init extraKeys is BUILT from this map (see
+// _buildExtraKeys) rather than hand-written, so a user remap only rewrites one
+// localStorage entry and re-applies — the handler wiring never moves. Global
+// (document-level) and CM-default shortcuts are intentionally NOT here: phase 3
+// remaps editor scope only.
+const _KB_LS_KEY = "texlocal_keybindings"; // global overrides {id: "Canonical-Key"}
+const EDITOR_ACTIONS = {
+  snippet:     { defaultKey: "Tab",          handler: cm => _snippetTabHandler(cm) },
+  compile:     { defaultKey: "Ctrl-Enter",   handler: ()  => compile() },
+  find:        { defaultKey: "Ctrl-F",       handler: "findPersistent" },
+  replace:     { defaultKey: "Ctrl-H",       handler: "replace" },
+  "find-next": { defaultKey: "Ctrl-G",       handler: "findNext" },
+  // Shift-Ctrl-G is CM's canonical modifier order for Ctrl+Shift+G.
+  grammar:     { defaultKey: "Shift-Ctrl-G", handler: ()  => toggleGrammarMode() },
+  // fold + unfold share one toggle handler (foldCode toggles), different keys.
+  fold:        { defaultKey: "Ctrl-Shift-[", handler: cm => cm.foldCode(cm.getCursor(), { rangeFinder: CodeMirror.helpers.fold["latex-section"] }) },
+  unfold:      { defaultKey: "Ctrl-Shift-]", handler: cm => cm.foldCode(cm.getCursor(), { rangeFinder: CodeMirror.helpers.fold["latex-section"] }) },
+};
+// Saved overrides ({} on missing/corrupt). Global localStorage, matching
+// texlocal_theme / texlocal_font_size etc.
+function getSavedKeybindings() {
+  try { return JSON.parse(localStorage.getItem(_KB_LS_KEY)) || {}; }
+  catch (e) { return {}; }
+}
+// Build the CM extraKeys object: override key (if any) else default → handler.
+// CM normalises modifier order on setOption, so keys need no pre-normalising
+// here — normalisation matters only for conflict comparison (see _kbNorm).
+function _buildExtraKeys(overrides) {
+  const map = {};
+  for (const id in EDITOR_ACTIONS) {
+    const key = (overrides && overrides[id]) || EDITOR_ACTIONS[id].defaultKey;
+    map[key] = EDITOR_ACTIONS[id].handler;
+  }
+  return map;
+}
+
 const cmEditor = CodeMirror(document.getElementById("editor-host"), {
   mode: "stex",
   theme: "default",
@@ -113,24 +152,10 @@ const cmEditor = CodeMirror(document.getElementById("editor-host"), {
   // covered by this addon (it operates on single chars); they're typed
   // less often and `\[<Tab>` template via snippets covers that case.
   autoCloseBrackets: { pairs: "()[]{}\"\"''$$", explode: "[]{}", closeBefore: ")]}'\":;>$" },
-  extraKeys: {
-    // v3.3.0 — Snippet expansion + placeholder Tab-cycle. Falls back to
-    // the original "insert 2 spaces" if no snippet is matched and no active
-    // session is in flight. `_snippetTabHandler` is hoisted via function
-    // declaration further down — safe to reference here even though the
-    // body comes later in the file.
-    "Tab":        cm => _snippetTabHandler(cm),
-    "Ctrl-Enter": ()  => compile(),
-    "Ctrl-F":     "findPersistent",
-    "Ctrl-H":     "replace",
-    "Ctrl-G":     "findNext",
-    // v4.4.0 — Ctrl+Shift+G toggles Grammar mode (was findPrev; find-previous
-    // is still reachable from the search panel).
-    "Shift-Ctrl-G": ()  => toggleGrammarMode(),
-    // v3.2.3 — fold/unfold at cursor (mirror VSCode's Ctrl+Shift+[ / ])
-    "Ctrl-Shift-[": cm => cm.foldCode(cm.getCursor(), { rangeFinder: CodeMirror.helpers.fold["latex-section"] }),
-    "Ctrl-Shift-]": cm => cm.foldCode(cm.getCursor(), { rangeFinder: CodeMirror.helpers.fold["latex-section"] }),
-  }
+  // v4.8.2 — extraKeys is built from EDITOR_ACTIONS (defined above) merged with
+  // any saved remaps, so this is the only place the editor keymap is wired.
+  // Live remapping goes through applyEditorKeybindings(); see the Keyboard tab.
+  extraKeys: _buildExtraKeys(getSavedKeybindings())
 });
 let outlineTimer = null;
 cmEditor.on("change", () => {
@@ -473,7 +498,7 @@ async function loadIncludesUI() {
 const _TOOLBAR_PANEL_IDS = [
   "chapters-panel", "env-panel", "snippet-panel", "todo-panel",
   "goals-panel", "history-panel", "symbol-panel", "settings-panel",
-  "outline-panel", "package-panel"
+  "outline-panel", "package-panel", "bib-panel"   // v4.9.0
 ];
 function _closeOtherToolbarPanels(exceptId) {
   for (const id of _TOOLBAR_PANEL_IDS) {
@@ -534,6 +559,8 @@ async function loadCiteData() {
   }
   // v3.2.3 — refresh the cross-ref linter once the cache lands.
   lintCrossRefs();
+  // v4.9.0 — keep the bib-audit toolbar badge in sync with the same signal.
+  updateBibBadge();
 }
 
 // ── v3.2.3 — CROSS-REFERENCE LIVE LINTER ───────────────────────
@@ -545,7 +572,7 @@ async function loadCiteData() {
 // returned handle so we can clear() them before re-running. Underline only
 // the offending key, not the whole call, so a partially-wrong multi-cite
 // still surfaces the exact bad key.
-const _XREF_RE = /\\(cite|citep|citet|ref|eqref|autoref|cref|Cref)\{([^}]+)\}/g;
+const _XREF_RE = /\\([a-zA-Z]*cite[a-zA-Z]*|ref|eqref|autoref|cref|Cref)\{([^}]+)\}/g;   // v4.9.7 (B3) — cite branch widened to any *cite* command (biblatex \parencite/\autocite/\textcite/\footcite/…) so the live linter matches backend _CITE_CMD_RE + the audit
 let _xrefMarks = [];
 let _xrefLintTimer = null;
 function lintCrossRefs() {
@@ -564,7 +591,7 @@ function lintCrossRefs() {
   for (let lineNo = 0; lineNo < totalLines; lineNo++) {
     const text = cmEditor.getLine(lineNo);
     if (!text) continue;
-    if (text.indexOf("\\cite") < 0 && text.indexOf("\\ref") < 0
+    if (text.indexOf("cite") < 0 && text.indexOf("\\ref") < 0
         && text.indexOf("\\eqref") < 0 && text.indexOf("\\autoref") < 0
         && text.indexOf("\\cref") < 0 && text.indexOf("\\Cref") < 0) continue;
     _XREF_RE.lastIndex = 0;
@@ -572,7 +599,7 @@ function lintCrossRefs() {
     while ((m = _XREF_RE.exec(text)) !== null) {
       const cmd       = m[1];
       const inner     = m[2];
-      const isCite    = (cmd === "cite" || cmd === "citep" || cmd === "citet");
+      const isCite    = cmd.includes("cite");   // v4.9.7 (B3) — any *cite* command → bib-scope (ref-family contains no "cite")
       const targetSet = isCite ? bibSet : labelSet;
       const innerStart = m.index + cmd.length + 2;   // "\<cmd>{"
       // Each key may be separated by comma + optional whitespace.
@@ -776,6 +803,32 @@ async function createProject() {
 // ── FILES ─────────────────────────────────────────────────────
 const openFolders = new Set(); // เก็บ path ของ folder ที่ขยายอยู่
 
+// ── v4.7.11 — File-tree icons: inline SVG (Lucide-derived) replacing emoji.
+// WHY: emoji render differently per-OS, can't be recolored, and ignored the
+// Appearance theme. These use stroke/fill="currentColor" so the .file-icon /
+// .file-star / .file-ren / .file-del CSS colors (all theme --accent/--yellow/
+// --red driven) flow through automatically — Default & Cerulean, light & dark.
+function _svgIcon(inner, { size = 14, fill = false } = {}) {
+  return `<svg viewBox="0 0 24 24" width="${size}" height="${size}" `
+       + `fill="${fill ? "currentColor" : "none"}" stroke="currentColor" `
+       + `stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${inner}</svg>`;
+}
+const FILE_TREE_ICONS = {
+  // file types
+  tex:   `<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/>`,
+  bib:   `<path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/>`,
+  pdf:   `<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><text x="12" y="18.5" font-size="6.5" font-weight="700" text-anchor="middle" fill="currentColor" stroke="none" style="font-family:var(--font-ui,sans-serif)">PDF</text>`,
+  other: `<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/>`,
+  // folders + tree arrow
+  folder:     `<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>`,
+  folderOpen: `<path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"/>`,
+  arrow:      `<path d="m9 18 6-6-6-6"/>`,
+  // action glyphs (Lucide: star / pencil / trash-2)
+  star:   `<path d="M11.525 2.295a.53.53 0 0 1 .95 0l2.31 4.679a2.123 2.123 0 0 0 1.595 1.16l5.166.756a.53.53 0 0 1 .294.904l-3.736 3.638a2.123 2.123 0 0 0-.611 1.878l.882 5.14a.53.53 0 0 1-.771.56l-4.618-2.428a2.122 2.122 0 0 0-1.973 0L6.396 21.01a.53.53 0 0 1-.77-.56l.881-5.139a2.122 2.122 0 0 0-.611-1.879L2.16 9.795a.53.53 0 0 1 .294-.906l5.165-.755a2.122 2.122 0 0 0 1.597-1.16z"/>`,
+  rename: `<path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/><path d="m15 5 4 4"/>`,
+  del:    `<path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/>`,
+};
+
 function buildFileTree(files) {
   // แปลง flat list เป็น nested object
   // root = { __files: [...], folderName: { __files: [...], ... }, ... }
@@ -805,8 +858,8 @@ function renderFileTree(node, container, depth = 0, prefix = "") {
     div.className = "file-item folder-item";
     div.style.paddingLeft = indent + "px";
     div.innerHTML = `
-      <span class="folder-arrow ${isOpen ? "open" : ""}">▶</span>
-      <span class="file-icon">${isOpen ? "📂" : "📁"}</span>
+      <span class="folder-arrow ${isOpen ? "open" : ""}">${_svgIcon(FILE_TREE_ICONS.arrow, {size: 12})}</span>
+      <span class="file-icon">${_svgIcon(isOpen ? FILE_TREE_ICONS.folderOpen : FILE_TREE_ICONS.folder)}</span>
       <span style="overflow:hidden;text-overflow:ellipsis">${folder}</span>
     `;
     div.onclick = () => {
@@ -843,17 +896,17 @@ function renderFileTree(node, container, depth = 0, prefix = "") {
     const div = document.createElement("div");
     div.className = "file-item" + (filePath === currentFile ? " active" : "");
     div.style.paddingLeft = indent + "px";
-    const icon = filePath.endsWith(".tex") ? "📄"
-               : filePath.endsWith(".bib") ? "📚"
-               : filePath.endsWith(".pdf") ? "📕" : "📎";
+    const icon = filePath.endsWith(".tex") ? FILE_TREE_ICONS.tex
+               : filePath.endsWith(".bib") ? FILE_TREE_ICONS.bib
+               : filePath.endsWith(".pdf") ? FILE_TREE_ICONS.pdf : FILE_TREE_ICONS.other;
     const isMain = filePath === mainFile;
     const isTex  = filePath.endsWith(".tex");
     div.innerHTML = `
-      <span class="file-icon">${icon}</span>
+      <span class="file-icon">${_svgIcon(icon)}</span>
       <span class="file-label" style="overflow:hidden;text-overflow:ellipsis;flex:1">${filename}</span>
-      ${isTex ? `<span class="file-star${isMain ? " is-main" : ""}" title="${isMain ? "Main file" : "Set as main file"}">★</span>` : ""}
-      <span class="file-ren" title="Rename">✏</span>
-      <span class="file-del">✕</span>
+      ${isTex ? `<span class="file-star${isMain ? " is-main" : ""}" title="${isMain ? "Main file" : "Set as main file"}">${_svgIcon(FILE_TREE_ICONS.star, {size: 13})}</span>` : ""}
+      <span class="file-ren" title="Rename">${_svgIcon(FILE_TREE_ICONS.rename, {size: 13})}</span>
+      <span class="file-del" title="Delete">${_svgIcon(FILE_TREE_ICONS.del, {size: 13})}</span>
     `;
     if (isTex) {
       div.querySelector(".file-star").onclick = e => {
@@ -1406,11 +1459,11 @@ function parseLatexErrors(log) {
     }
 
     // Pattern A: ./file.tex:LINE: message
-    const mA = l.match(/^((?:\.\/)?[^:\n]+\.tex):(\d+):\s*(.+)$/);
+    const mA = l.match(/^((?:[A-Za-z]:)?(?:\.\/)?[^:\n]+\.tex):(\d+):\s*(.+)$/);   // v4.9.10 (B5) — optional drive prefix so a Windows absolute path (C:\...\ch.tex:42:) is attributed to a file/line, not skipped (the drive-letter colon used to defeat [^:\n]+)
     if (mA) {
       const msg = mA[3].trim();
       if (msg && !msg.startsWith("(")) {
-        errors.push({ file: mA[1].replace(/^\.\//, ""), line: parseInt(mA[2]) - 1, msg });
+        errors.push({ file: mA[1].replace(/^\.\//, "").replace(/\\/g, "/"), line: parseInt(mA[2]) - 1, msg });   // v4.9.10 (B5) — \ → / so an abs Windows path matches the app path style
       }
       continue;
     }
@@ -1937,7 +1990,14 @@ const compiler = document.getElementById("compiler-select").value;
     method:"POST", headers:{"Content-Type":"application/json"},
     body: JSON.stringify({
       main: mainFile,
-      bibtex: true,
+      // v4.9.5 — was hard-coded `true` (code-review B1). That forced a
+      // bibtex/biber run + the full 3-pass sequence (compile→bib→compile→compile)
+      // on EVERY compile whenever any .bib file existed in the project — even if
+      // the document never \bibliography/\addbibresource'd it — making the
+      // backend's has_bib_cmd auto-detection dead code and costing 2 extra
+      // pdflatex passes (+ a spurious "no \citation commands" warning) on the
+      // common path of the real thesis. Send false and let the backend decide.
+      bibtex: false,
       compiler,
       draft: draftMode,
       includeOnly: selectedIncludes,   // v3.2.2 — empty = full compile
@@ -1999,6 +2059,10 @@ const compiler = document.getElementById("compiler-select").value;
     showErrorMarkers(parsed);
     showErrorPanel(parsed);
   }
+  // v4.9.0 — prepend a one-line citation-health summary to the log so bib
+  // problems surface without opening the panel. Async, fire-and-forget; runs
+  // on success and failure alike (citation health is independent of compile).
+  _appendBibAuditBreadcrumb();
 }
 
 // v3.3.0 — Parse pdflatex's "Output written on <pdf> (N pages, M bytes)."
@@ -4125,21 +4189,34 @@ window.addEventListener("DOMContentLoaded", () => {
 });
 
 // ── SETTINGS PANEL ───────────────────────────────────────────
+let _settingsEsc = null; // v4.8.0 — bound Escape handler, removed on close
+
+// v4.8.0 — Settings moved from a 256px toolbar dropdown to a centered modal
+// dialog with a left tab rail (Appearance / Compile / Editor / Keyboard),
+// reusing the dict-manager overlay pattern. The rect-anchor positioning the
+// dropdown needed is gone — the overlay centers via flexbox. Backdrop click
+// closes it (inline onclick on #settings-panel); Esc closes via a listener
+// added on open / removed on close, matching openDictManager.
+function switchSettingsTab(name) {
+  for (const t of document.querySelectorAll(".settings-tab")) {
+    const on = t.id === `settings-tab-${name}`;
+    t.classList.toggle("active", on);
+    t.setAttribute("aria-selected", on ? "true" : "false");
+  }
+  for (const p of document.querySelectorAll(".settings-pane")) {
+    p.classList.toggle("active", p.id === `settings-pane-${name}`);
+  }
+  if (name === "keyboard") renderKeyboardShortcuts(); // v4.8.1 — lazy-render cheat-sheet
+}
+
 function toggleSettingsPanel(e) {
   const panel = document.getElementById("settings-panel");
   if (panel.classList.contains("open")) {
-    panel.classList.remove("open");
+    closeSettingsPanel();
     return;
   }
   _closeOtherToolbarPanels("settings-panel"); // v3.3.7
-  const btn  = document.getElementById("settings-btn");
-  const rect = btn.getBoundingClientRect();
-  const pw   = 256;
-  let left = rect.right - pw;
-  if (left < 4) left = 4;
-  panel.style.top  = (rect.bottom + 4) + "px";
-  panel.style.left = left + "px";
-  // sync current state into panel
+  // sync current state into panel controls
   const curTheme = document.documentElement.getAttribute("data-theme") === "light" ? "light" : "dark";
   document.getElementById("theme-dark-btn").classList.toggle("active", curTheme === "dark");
   document.getElementById("theme-light-btn").classList.toggle("active", curTheme === "light");
@@ -4157,12 +4234,197 @@ function toggleSettingsPanel(e) {
     const saved = localStorage.getItem(`texlocal_compiler_${currentProject}`) || "pdflatex";
     document.getElementById("compiler-select").value = saved;
   }
+  switchSettingsTab("appearance"); // always open on the first tab
   panel.classList.add("open");
+  // v4.8.0 — Esc closes the modal, but not while the dict-manager modal is
+  // stacked on top of it (opened from the Editor tab's "Manage…" button).
+  _settingsEsc = (ev) => {
+    if (ev.key !== "Escape") return;
+    const dm = document.getElementById("dict-mgr-overlay");
+    if (dm && dm.classList.contains("open")) return;
+    closeSettingsPanel();
+  };
+  document.addEventListener("keydown", _settingsEsc);
   if (e) e.stopPropagation();
 }
 
 function closeSettingsPanel() {
   document.getElementById("settings-panel").classList.remove("open");
+  if (_settingsEsc) {
+    document.removeEventListener("keydown", _settingsEsc);
+    _settingsEsc = null;
+  }
+}
+
+// ── KEYBOARD SHORTCUTS CHEAT-SHEET (v4.8.1 — phase 2) ────────
+// v4.8.1 — Single source of truth for keyboard shortcuts, consolidating the
+// three places bindings currently live: CodeMirror extraKeys (editor scope,
+// editor.js ~line 116), document-level keydown handlers (global scope), and
+// CM 5.65's built-in default keymap (cmdefault — listed for discoverability,
+// e.g. Ctrl-D deletes a line, which has surprised people). Rendered read-only
+// in the Keyboard tab for now; the `id`/`scope` fields are groundwork for the
+// phase-3 click-to-remap (editor-scope keys remap first). Keep this list in
+// sync when adding a new binding anywhere above.
+const KEYBINDINGS = [
+  { cat: "Compile & files", items: [
+    { id: "compile",        label: "Compile document",              keys: ["Ctrl-Enter"],             scope: "editor" },
+    { id: "quick-open",     label: "Quick open file",               keys: ["Ctrl-P"],                 scope: "global" },
+  ]},
+  { cat: "Search", items: [
+    { id: "find",           label: "Find in file",                  keys: ["Ctrl-F"],                 scope: "editor" },
+    { id: "replace",        label: "Replace in file",               keys: ["Ctrl-H"],                 scope: "editor" },
+    { id: "find-next",      label: "Find next",                     keys: ["Ctrl-G"],                 scope: "editor" },
+    { id: "project-search", label: "Search across project",         keys: ["Ctrl-Shift-F"],           scope: "global" },
+    { id: "escape",         label: "Close search / exit focus mode", keys: ["Esc"],                   scope: "global" },
+  ]},
+  { cat: "Editing", items: [
+    { id: "snippet",        label: "Expand snippet / indent",       keys: ["Tab"],                    scope: "editor" },
+    { id: "grammar",        label: "Toggle grammar mode",           keys: ["Ctrl-Shift-G"],           scope: "editor" },
+    { id: "add-cursor",     label: "Add cursor (multi-cursor)",     keys: ["Alt-Click"],              scope: "cmdefault" },
+    { id: "delete-line",    label: "Delete line",                   keys: ["Ctrl-D"],                 scope: "cmdefault" },
+    { id: "undo",           label: "Undo",                          keys: ["Ctrl-Z"],                 scope: "cmdefault" },
+    { id: "redo",           label: "Redo",                          keys: ["Ctrl-Y", "Ctrl-Shift-Z"], scope: "cmdefault" },
+  ]},
+  { cat: "Folding & view", items: [
+    { id: "fold",           label: "Fold section",                  keys: ["Ctrl-Shift-["],           scope: "editor" },
+    { id: "unfold",         label: "Unfold section",                keys: ["Ctrl-Shift-]"],           scope: "editor" },
+  ]},
+  { cat: "Navigation", items: [
+    { id: "synctex-fwd",    label: "Jump to PDF (SyncTeX forward)", keys: ["Ctrl-Alt-→"],             scope: "global" },
+  ]},
+];
+
+// Render the read-only cheat-sheet into the Keyboard tab (built once, guarded
+// by dataset.rendered so re-opening the tab is a no-op).
+// v4.8.2 (phase 3) — the cheat-sheet is now interactive for editor-scope
+// shortcuts: each editor row is a button that captures a new keystroke,
+// conflict-checks it against the other editor bindings + reserved global/
+// CM-default keys, persists to localStorage and re-applies live via
+// applyEditorKeybindings(). Global and CM-default rows stay read-only (locked)
+// — phase 3 is editor-scope only. Re-rendered on every open and after each
+// remap (the old dataset.rendered guard is gone — the pane is now stateful).
+function renderKeyboardShortcuts() {
+  const pane = document.getElementById("settings-pane-keyboard");
+  if (!pane) return;
+  const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  // split(/-(?!$)/) keeps a trailing "-" key intact (e.g. "Ctrl--").
+  const chip = (combo) => combo.split(/-(?!$)/).map(k => `<kbd class="kbd">${esc(k)}</kbd>`).join('<span class="kbd-plus">+</span>');
+  const overrides = getSavedKeybindings();
+  const hasOverrides = Object.keys(overrides).length > 0;
+  let html = '<div class="kb-intro">Click an editor shortcut to remap it. Global and built-in shortcuts are shown for reference.</div>';
+  html += `<div class="kb-toolbar"><button class="kb-reset" onclick="resetAllKeybindings()"${hasOverrides ? "" : " disabled"}>Reset all to defaults</button></div>`;
+  for (const group of KEYBINDINGS) {
+    html += `<div class="kb-group"><div class="kb-cat">${esc(group.cat)}</div>`;
+    for (const it of group.items) {
+      const remappable = it.scope === "editor" && (it.id in EDITOR_ACTIONS);
+      if (remappable) {
+        // Display the real binding source (EDITOR_ACTIONS default or override),
+        // not KEYBINDINGS.keys — so display can't drift from what actually fires.
+        const eff = overrides[it.id] || EDITOR_ACTIONS[it.id].defaultKey;
+        const changed = overrides[it.id] ? " kb-changed" : "";
+        html += `<div class="kb-row"><span class="kb-label">${esc(it.label)}</span>` +
+                `<button type="button" class="kb-remap${changed}" data-id="${it.id}" title="Click to remap">${chip(eff)}</button></div>`;
+      } else {
+        const keysHtml = it.keys.map(chip).join('<span class="kb-or">or</span>');
+        html += `<div class="kb-row"><span class="kb-label">${esc(it.label)}</span>` +
+                `<span class="kb-keys kb-locked" title="Not remappable in this version">${keysHtml}</span></div>`;
+      }
+    }
+    html += "</div>";
+  }
+  pane.innerHTML = html;
+  for (const btn of pane.querySelectorAll(".kb-remap")) {
+    btn.addEventListener("click", () => _kbBeginCapture(btn));
+  }
+}
+
+// Apply the current (default + override) editor keymap onto the live editor.
+// setOption("extraKeys", …) replaces the whole map, so a removed default key
+// stops firing — that's why remap rebuilds the full map rather than layering
+// an addKeyMap on top (which couldn't unbind the old default).
+function applyEditorKeybindings() {
+  cmEditor.setOption("extraKeys", _buildExtraKeys(getSavedKeybindings()));
+}
+
+// Normalise a key string to CM's canonical modifier order for conflict
+// comparison ("Ctrl-Shift-[" and "Shift-Ctrl-[" are the same binding).
+function _kbNorm(key) {
+  try { return Object.keys(CodeMirror.normalizeKeyMap({ [key]: "x" }))[0]; }
+  catch (e) { return key; }
+}
+// Accept a binding only if it has a real modifier (Ctrl/Alt/Cmd) or is a
+// standalone special key — a bare letter would hijack typing in the editor.
+const _KB_SPECIALS = new Set(["Tab","Enter","Esc","Backspace","Delete","Insert","Home","End","PageUp","PageDown","Up","Down","Left","Right","F1","F2","F3","F4","F5","F6","F7","F8","F9","F10","F11","F12"]);
+function _kbIsValidBinding(name) {
+  if (/(^|-)(Ctrl|Alt|Cmd)-/.test(name)) return true;
+  return _KB_SPECIALS.has(name.split(/-(?!$)/).pop());
+}
+
+let _kbCapturingId = null;
+let _kbCaptureBtn  = null;
+function _kbBeginCapture(btn) {
+  if (_kbCapturingId) return;                 // one capture at a time
+  _kbCapturingId = btn.dataset.id;
+  _kbCaptureBtn  = btn;
+  btn.classList.add("kb-capturing");
+  btn.innerHTML = '<span class="kb-capture-hint">Press keys… (Esc cancels)</span>';
+  // Capture phase so this fires before the Settings-modal Esc handler and
+  // before CodeMirror; preventDefault stops the keystroke doing its old job
+  // while we're recording it.
+  document.addEventListener("keydown", _kbCaptureKeydown, true);
+}
+function _kbEndCapture() {
+  document.removeEventListener("keydown", _kbCaptureKeydown, true);
+  _kbCapturingId = null;
+  _kbCaptureBtn  = null;
+  renderKeyboardShortcuts();
+}
+function _kbCaptureKeydown(e) {
+  if (["Control","Shift","Alt","Meta"].includes(e.key)) return; // wait for real key
+  e.preventDefault();
+  e.stopPropagation();
+  if (e.key === "Escape") { _kbEndCapture(); return; }
+  const name = CodeMirror.keyName(e);
+  if (!name || !_kbIsValidBinding(name)) {
+    _kbFlash("Needs a modifier (Ctrl/Alt) or a special key");
+    return;
+  }
+  const norm = _kbNorm(name);
+  const id = _kbCapturingId;
+  const overrides = getSavedKeybindings();
+  // Conflict 1: same key already bound to a DIFFERENT editor action.
+  for (const oid in EDITOR_ACTIONS) {
+    if (oid === id) continue;
+    if (_kbNorm(overrides[oid] || EDITOR_ACTIONS[oid].defaultKey) === norm) {
+      _kbFlash("Already used by another editor shortcut");
+      return;
+    }
+  }
+  // Conflict 2: reserved by a global / CM-default shortcut (shown locked).
+  for (const g of KEYBINDINGS) for (const it of g.items) {
+    if (it.scope === "editor") continue;
+    for (const k of it.keys) if (_kbNorm(k) === norm) { _kbFlash("Reserved by: " + it.label); return; }
+  }
+  // Persist. If the new key equals the default, drop the override so the row
+  // reads as unchanged and Reset-all can go fully clean.
+  if (_kbNorm(EDITOR_ACTIONS[id].defaultKey) === norm) delete overrides[id];
+  else overrides[id] = name;
+  localStorage.setItem(_KB_LS_KEY, JSON.stringify(overrides));
+  applyEditorKeybindings();
+  _kbEndCapture();
+}
+// Briefly show a rejection reason in the capturing button, then restore prompt.
+function _kbFlash(msg) {
+  if (_kbCaptureBtn) _kbCaptureBtn.innerHTML = `<span class="kb-capture-hint kb-conflict">${msg}</span>`;
+  setTimeout(() => {
+    if (_kbCapturingId && _kbCaptureBtn)
+      _kbCaptureBtn.innerHTML = '<span class="kb-capture-hint">Press keys… (Esc cancels)</span>';
+  }, 1500);
+}
+function resetAllKeybindings() {
+  localStorage.removeItem(_KB_LS_KEY);
+  applyEditorKeybindings();
+  renderKeyboardShortcuts();
 }
 
 document.addEventListener("click", e => {
@@ -4516,7 +4778,7 @@ function renderPackagePanel() {
           </div>
           <span class="pkg-state" data-pkg="${escapeHtml(n)}"></span>
           <button class="pkg-btn remove" title="Remove \\usepackage{${escapeHtml(n)}}"
-                  onclick="removePackage('${escapeHtml(n)}', event)">✕</button>
+                  data-pkg="${escapeHtml(n)}" onclick="removePackage(this.dataset.pkg, event)">✕</button>
         </div>`;
       }).join("")
     : `<div class="pkg-empty">No \\usepackage lines found in this file.</div>`;
@@ -4531,7 +4793,7 @@ function renderPackagePanel() {
           </div>
           <span class="pkg-state" data-pkg="${escapeHtml(p.name)}"></span>
           <button class="pkg-btn add" title="Add ${escapeHtml(p.line || ('\\usepackage{' + p.name + '}'))}"
-                  onclick="addPackage('${escapeHtml(p.name)}', event)">＋</button>
+                  data-pkg="${escapeHtml(p.name)}" onclick="addPackage(this.dataset.pkg, event)">＋</button>
         </div>`).join("")
     : `<div class="pkg-empty">You're already using all the suggested packages. 🎉</div>`;
 
@@ -4986,7 +5248,7 @@ async function loadTodosUI() {
     }
     count.textContent = `${todos.length} item${todos.length === 1 ? "" : "s"}`;
     list.innerHTML = todos.map(t =>
-      `<div class="td-item" onclick="jumpToTodo('${escapeAttr(t.file)}', ${t.line})">
+      `<div class="td-item" data-file="${escapeAttr(t.file)}" onclick="jumpToTodo(this.dataset.file, ${t.line})">
          <span class="td-tag ${t.kind}">${t.kind === "todo" ? "todo" : t.kind}</span>
          <span class="td-text">${escapeHtml(t.text || "(empty)")}</span>
          <span class="td-loc">${escapeHtml(t.file)}:${t.line}</span>
@@ -5008,6 +5270,256 @@ async function jumpToTodo(file, line) {
   }, file !== currentFile ? 200 : 0);
   document.getElementById("todo-panel").classList.remove("open");
 }
+
+// ── v4.9.0 — BIBLIOGRAPHY AUDIT ─────────────────────────────────────
+// Cross-checks \\cite usage vs .bib entries (backend /bib-audit) and lists:
+//   • unresolved — cited key with no .bib entry  (also underlined inline
+//                  by lintCrossRefs; listed here for a jump-to-fix workflow)
+//   • duplicate  — key defined 2+ times; BibTeX silently keeps the first
+//   • unused     — .bib entry no key ever cites  (informational)
+// The toolbar badge counts only unresolved + duplicate — the "broken"
+// classes. `unused` is often large for a Mendeley-exported library, so it's
+// shown in the panel but kept out of the alarming red badge.
+function toggleBibPanel(e) {
+  const panel = document.getElementById("bib-panel");
+  if (panel.classList.contains("open")) { panel.classList.remove("open"); return; }
+  _closeOtherToolbarPanels("bib-panel");
+  const btn  = document.getElementById("bib-toggle-btn");
+  const rect = btn.getBoundingClientRect();
+  const pw   = 440;
+  let left   = rect.right - pw;
+  if (left < 4) left = 4;
+  panel.style.top  = (rect.bottom + 4) + "px";
+  panel.style.left = left + "px";
+  loadBibAuditUI();
+  panel.classList.add("open");
+  if (e) e.stopPropagation();
+}
+document.addEventListener("click", e => {
+  const panel = document.getElementById("bib-panel");
+  if (!panel || !panel.classList.contains("open")) return;
+  if (panel.contains(e.target)) return;
+  if (e.target.closest("#bib-toggle-btn")) return;
+  panel.classList.remove("open");
+});
+
+let _bibAuditInFlight = null;   // v4.9.6 (B2) — coalesce concurrent audit fetches
+async function _fetchBibAudit() {
+  if (!currentProject) return null;
+  // v4.9.6 (B2) — a successful compile fires two audits back-to-back
+  // (updateBibBadge via loadCiteData, then _appendBibAuditBreadcrumb); if one
+  // is already in flight, share its promise instead of issuing a second
+  // identical request. The backend also mtime-caches /bib-audit now, so even
+  // staggered calls are cheap — this just kills the duplicate round-trip.
+  // Cleared the moment the request settles, so a later edit re-fetches fresh.
+  if (_bibAuditInFlight) return _bibAuditInFlight;
+  const proj = currentProject;
+  _bibAuditInFlight = (async () => {
+    try {
+      const r = await fetch(`/api/projects/${encodeURIComponent(proj)}/bib-audit`);
+      if (!r.ok) throw new Error("bib-audit " + r.status);
+      return await r.json();
+    } finally {
+      _bibAuditInFlight = null;
+    }
+  })();
+  return _bibAuditInFlight;
+}
+
+// Lightweight badge refresh — no panel needed. Counts only the "broken"
+// classes (unresolved + duplicate) so a big unused list doesn't cry wolf.
+async function updateBibBadge() {
+  const badge = document.getElementById("bib-badge");
+  if (!badge) return;
+  if (!currentProject) { badge.style.display = "none"; return; }
+  try {
+    const d = await _fetchBibAudit();
+    const c = (d && d.counts) || {};
+    const broken = (c.unresolved || 0) + (c.duplicate || 0);
+    if (broken > 0) {
+      badge.textContent = broken > 99 ? "99+" : String(broken);
+      badge.style.display = "block";
+    } else {
+      badge.style.display = "none";
+    }
+  } catch (_) {
+    badge.style.display = "none";
+  }
+}
+
+let _lastBibAudit = null;   // v4.9.2
+async function loadBibAuditUI() {
+  const list  = document.getElementById("bib-list");
+  const count = document.getElementById("bib-count");
+  if (!currentProject) {
+    list.innerHTML = '<div class="bib-empty">Open a project first</div>';
+    count.textContent = "";
+    return;
+  }
+  list.innerHTML = '<div class="bib-empty">Scanning…</div>';
+  count.textContent = "";
+  let d;
+  try {
+    d = await _fetchBibAudit();
+  } catch (e) {
+    list.innerHTML = `<div class="bib-empty" style="color:var(--red)">Load failed: ${escapeHtml(e.message)}</div>`;
+    return;
+  }
+  const unresolved = d.unresolved || [];
+  const duplicate  = d.duplicate  || [];
+  const unused     = d.unused     || [];
+  _lastBibAudit = d;   // v4.9.2 — remembered for the bulk "comment out all"
+  const total = unresolved.length + duplicate.length + unused.length;
+  if (total === 0) {
+    list.innerHTML = `<div class="bib-empty clean">✓ No citation issues found${
+      d.nocite_all ? " (\\nocite{*} in use — unused check skipped)" : ""}</div>`;
+    count.textContent = "";
+    return;
+  }
+  count.textContent = `${unresolved.length + duplicate.length} to fix`;
+
+  const rowsUnresolved = unresolved.map(u =>
+    `<div class="bib-item" data-file="${escapeAttr(u.file)}" onclick="jumpToBibIssue(this.dataset.file, ${u.line})">
+       <span class="bib-key">${escapeHtml(u.key)}</span>
+       <span class="bib-note">no .bib entry</span>
+       <span class="bib-loc">${escapeHtml(u.file)}:${u.line}</span>
+     </div>`).join("");
+
+  const rowsDuplicate = duplicate.map(dup =>
+    dup.locations.map((loc, idx) =>
+      `<div class="bib-item" data-file="${escapeAttr(loc.file)}" onclick="jumpToBibIssue(this.dataset.file, ${loc.line})">
+         <span class="bib-key">${escapeHtml(dup.key)}</span>
+         <span class="bib-note">${idx === 0 ? "kept" : "shadowed"} · ${dup.count}×</span>
+         <span class="bib-loc">${escapeHtml(loc.file)}:${loc.line}</span>
+       </div>`).join("")).join("");
+
+  const rowsUnused = unused.map(u =>
+    `<div class="bib-item" data-file="${escapeAttr(u.file)}" onclick="jumpToBibIssue(this.dataset.file, ${u.line})">
+       <span class="bib-key">${escapeHtml(u.key)}</span>
+       <span class="bib-note">never cited</span>
+       <span class="bib-loc">${escapeHtml(u.file)}:${u.line}</span>
+       <button class="bib-rm" title="Comment out this entry (reversible)"
+               data-key="${escapeAttr(u.key)}" onclick="event.stopPropagation();bibRemoveUnused([this.dataset.key])">comment out</button>
+     </div>`).join("");
+
+  let html = "";
+  if (unresolved.length)
+    html += `<div class="bib-section">Unresolved <span class="bib-sec-count unresolved">${unresolved.length}</span></div>` + rowsUnresolved;
+  if (duplicate.length)
+    html += `<div class="bib-section">Duplicate keys <span class="bib-sec-count duplicate">${duplicate.length}</span></div>` + rowsDuplicate;
+  if (unused.length)
+    html += `<div class="bib-section">Unused${d.nocite_all ? " (skipped)" : ""} <span class="bib-sec-count unused">${unused.length}</span>`
+          + (d.nocite_all ? "" : `<span style="flex:1"></span><button class="bib-rm-all" onclick="bibRemoveAllUnused()">Comment out all</button>`)
+          + `</div>` + rowsUnused;
+  list.innerHTML = html;
+}
+
+async function jumpToBibIssue(file, line) {
+  if (file !== currentFile) await openFile(file);
+  const lineNo = Math.max(0, (line | 0) - 1);
+  setTimeout(() => {
+    cmEditor.setCursor(lineNo, 0);
+    cmEditor.scrollIntoView({ line: lineNo, ch: 0 }, 120);
+    cmEditor.focus();
+    cmEditor.addLineClass(lineNo, "background", "cm-synctex-jump");
+    setTimeout(() => cmEditor.removeLineClass(lineNo, "background", "cm-synctex-jump"), 1200);
+  }, file !== currentFile ? 200 : 0);
+  document.getElementById("bib-panel").classList.remove("open");
+}
+
+// v4.9.2 — Remove-unused (bib-audit phase 2, piece 2). "Remove" = comment out
+// (prefix each line with %), reversible, and the backend backs up the .bib to
+// .texlocal-bibbak/ first. Both a bulk "Comment out all" and per-row buttons
+// route through bibRemoveUnused(keys); the backend re-verifies each key is
+// still uncited before touching it.
+function bibRemoveAllUnused() {
+  const keys = ((_lastBibAudit && _lastBibAudit.unused) || []).map(u => u.key);
+  bibRemoveUnused(keys);
+}
+async function bibRemoveUnused(keys) {
+  if (!currentProject || !keys || !keys.length) return;
+  const many = keys.length > 1;
+  const msg = many
+    ? `Comment out ${keys.length} unused entries?\n\nEach is prefixed with % in the .bib (reversible), and a backup is saved to .texlocal-bibbak/ first.`
+    : `Comment out "${keys[0]}"?\n\nIt's prefixed with % in the .bib (reversible); a backup is saved first.`;
+  if (!confirm(msg)) return;
+  // If a .bib is open in the editor, flush any pending edit and cancel the
+  // debounced autosave first — otherwise a stale buffer could re-save over the
+  // server-side comment-out.
+  const bibOpen = currentFile && currentFile.toLowerCase().endsWith(".bib");
+  if (bibOpen) { clearTimeout(saveTimer); await saveCurrentFile(); }
+  try {
+    const r = await fetch(`/api/projects/${encodeURIComponent(currentProject)}/bib-remove-unused`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ keys }),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || ("HTTP " + r.status));
+    if (d.reason === "nocite_all") {
+      _bibToast("\\nocite{*} in use — nothing is unused");
+    } else {
+      const n = d.commented_count || 0;
+      _bibToast(`Commented out ${n} entr${n === 1 ? "y" : "ies"} · backup in .texlocal-bibbak/`);
+    }
+    // Reload the open .bib so the editor shows the commented version, then
+    // refresh caches (autocomplete + linter + badge) and repaint the panel.
+    // v4.9.4 — was openFile(currentFile). openFile's first act is an
+    // unconditional saveCurrentFile(), which pushed the STALE (pre-comment)
+    // buffer back over the .bib the server had just commented — silently
+    // undoing the remove while the toast claimed success. Reload from disk
+    // WITHOUT saving instead (same trap githubPull already avoids).
+    if (bibOpen) await _reloadCurrentFileFromDisk();
+    await loadCiteData();
+    loadBibAuditUI();
+  } catch (e) {
+    _bibToast("Remove failed: " + e.message);
+  }
+}
+// Small transient toast inside the bib panel (no global toast helper exists).
+function _bibToast(msg) {
+  const panel = document.getElementById("bib-panel");
+  if (!panel) return;
+  panel.querySelectorAll(".bib-toast").forEach(n => n.remove());
+  const t = document.createElement("div");
+  t.className = "bib-toast";
+  t.textContent = msg;
+  panel.appendChild(t);
+  setTimeout(() => t.remove(), 2600);
+}
+
+// v4.9.0 — Compile-log breadcrumb (bib-audit phase 2, piece 1). Reuses the
+// same /bib-audit scan; prepends one line onto the already-rendered log. Cheap
+// enough to fetch per compile (same profile as the badge refresh). Failures
+// are swallowed silently — a breadcrumb is a nice-to-have, never a blocker.
+async function _appendBibAuditBreadcrumb() {
+  if (!currentProject) return;
+  const logEl = document.getElementById("log-content");
+  if (!logEl) return;
+  let d;
+  try { d = await _fetchBibAudit(); } catch (_) { return; }
+  if (!d) return;
+  const c = d.counts || {};
+  const parts = [];
+  if (c.unresolved) parts.push(`${c.unresolved} unresolved`);
+  if (c.duplicate)  parts.push(`${c.duplicate} duplicate`);
+  if (c.unused)     parts.push(`${c.unused} unused`);
+  let line;
+  if (parts.length) {
+    line = `[bib audit] ${parts.join(" \u00b7 ")}`;
+    if (c.unresolved || c.duplicate) line += "  \u2014 open the Bibliography panel to fix";
+    if (d.nocite_all)                line += "  (\\nocite{*}: unused check skipped)";
+  } else {
+    line = "[bib audit] \u2713 no citation issues";
+  }
+  // Prepend as its own top line. Guard against stacking if somehow re-run
+  // against a log we already annotated (belt-and-braces; compile() resets
+  // log-content from data.log each run, so this normally won't trigger).
+  const cur = logEl.textContent || "";
+  logEl.textContent = cur.startsWith("[bib audit]")
+    ? line + "\n" + cur.slice(cur.indexOf("\n") + 1)
+    : line + "\n" + cur;
+}
+
 // v4.4.0 — DOCUMENT OUTLINE ─────────────────────────────────────────
 function toggleOutlinePanel(e) {
   const panel = document.getElementById("outline-panel");
@@ -6245,6 +6757,11 @@ async function doReplaceAll() {
 
   // Cancel any pending auto-save so it can't race with the file rewrites.
   clearTimeout(saveTimer);
+  // v4.9.4 — flush the buffer BEFORE replacing: the backend replaces what's
+  // on disk, so edits typed within the autosave debounce window (<=800ms)
+  // must land first — otherwise they'd be missed by the replace and then
+  // clobbered by the reload below.
+  await saveCurrentFile();
 
   const resultsEl = document.getElementById("search-results");
   const countEl   = document.getElementById("search-count");
@@ -6278,7 +6795,7 @@ async function doReplaceAll() {
     return;
   }
   resultsEl.innerHTML = files.map(f =>
-    `<div class="search-result-item" onclick="openFile('${escapeAttr(f.path)}')">
+    `<div class="search-result-item" data-path="${escapeAttr(f.path)}" onclick="openFile(this.dataset.path)">
        <div class="search-result-header">
          <span class="search-result-file">${escapeHtml(f.path)}</span>
          <span class="search-result-line">×${f.count}</span>
@@ -6289,8 +6806,12 @@ async function doReplaceAll() {
 
   // If the currently-open file was rewritten, reload its contents from
   // disk so the editor doesn't keep displaying the pre-replace version.
+  // v4.9.4 — was openFile(currentFile), whose unconditional saveCurrentFile()
+  // wrote the pre-replace buffer back over the freshly-replaced file and
+  // silently reverted every replacement in the OPEN file (other files kept
+  // theirs, so the count message lied). Reload from disk without saving.
   if (currentFile && files.some(f => f.path === currentFile)) {
-    await openFile(currentFile);
+    await _reloadCurrentFileFromDisk();
   }
 }
 
