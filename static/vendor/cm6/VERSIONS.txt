@@ -1,0 +1,16 @@
+TexLocal CM6 vendor bundle — built 2026-07-03T13:36:50Z
+Single ESM (static/vendor/cm6/cm6.bundle.js), esbuild --bundle --format=esm --minify.
+Re-exports everything TexLocal needs from these pinned packages:
+
+@codemirror/state          6.7.0
+@codemirror/view           6.43.4
+@codemirror/commands       6.10.4
+@codemirror/language       6.12.4
+@codemirror/autocomplete   6.20.3
+@codemirror/lint           6.9.7
+@codemirror/search         6.7.1
+@codemirror/legacy-modes   (stex StreamLanguage)
+@lezer/highlight           (tags)
+
+Rebuild: see PHASE5_cm6-migration_2026-07-03.md §Bundle. Entry re-export list is the
+source of truth for what's available; add an export there + rebuild to expose more.

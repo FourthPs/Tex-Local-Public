@@ -4,6 +4,13 @@ All notable changes to TexLocal are documented here.
 
 ---
 
+## v5.0.0 — 2026-07-05
+
+Migrated the code editor from CodeMirror 5 to CodeMirror 6.
+
+- Adds multi-cursor editing (Alt-click / Alt-drag) and smoother handling of large documents.
+- The editor keeps the same look as before; the previous engine stays available via `?cm=5`.
+
 ## v4.10.0 — 2026-07-02
 
 Milestone installer release — the first download since v4.7.10 — packaging all of the v4.8 and v4.9 improvements listed below into one build. No new changes of its own.

@@ -1584,6 +1584,26 @@
   .settings-pane { display: none; flex-direction: column; gap: 16px; }
   .settings-pane.active { display: flex; }
   .settings-kb-note { color: var(--muted); font-size: 12px; line-height: 1.6; }
+  /* v-CM6 vp.2 — Settings ▸ Engine tab (read-only editor engine + package list). */
+  .engine-info-note { color: var(--muted); font-size: 12px; }
+  .engine-hero { display: flex; align-items: center; gap: 12px; padding: 4px 0 12px; border-bottom: 1px solid var(--border); }
+  .engine-badge {
+    flex-shrink: 0; width: 46px; height: 46px; border-radius: 10px;
+    display: flex; align-items: center; justify-content: center;
+    font-family: var(--font-code); font-weight: 700; font-size: 15px; letter-spacing: .5px;
+    color: #fff;
+  }
+  .engine-badge.is-cm6 { background: var(--accent); }
+  .engine-badge.is-cm5 { background: var(--muted); }
+  .engine-hero-name { font-size: 14px; font-weight: 600; color: var(--text); }
+  .engine-hero-note { font-size: 11.5px; color: var(--muted); line-height: 1.5; margin-top: 2px; }
+  .engine-hero-note code { font-family: var(--font-code); font-size: 10.5px; background: var(--panel); padding: 1px 4px; border-radius: 3px; color: var(--text); }
+  .engine-sec-title { font-size: 10px; font-weight: 700; letter-spacing: .6px; text-transform: uppercase; color: var(--muted); }
+  .engine-pkg-list { display: flex; flex-direction: column; gap: 1px; }
+  .engine-pkg { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 5px 0; border-bottom: 1px solid var(--border); }
+  .engine-pkg-name { font-family: var(--font-code); font-size: 11.5px; color: var(--text); }
+  .engine-pkg-ver  { font-family: var(--font-code); font-size: 11px; color: var(--muted); }
+  .engine-foot { font-size: 11px; color: var(--muted); line-height: 1.5; padding-top: 4px; }
   /* v4.8.1 — Keyboard-shortcut cheat-sheet (read-only) inside the Keyboard tab. */
   .kb-intro { color: var(--muted); font-size: 11px; line-height: 1.5; }
   .kb-group { display: flex; flex-direction: column; gap: 2px; }

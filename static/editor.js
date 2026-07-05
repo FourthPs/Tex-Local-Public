@@ -1,32 +1,43 @@
-let currentProject    = null;
-let currentFile       = null;
+import { _appendBibAuditBreadcrumb, _historyActiveIdx, _historyKey, _ssHistoryActiveIdx, loadCompileHistory, recordCompileToHistory, updateBibBadge } from "bibtools";
+import { _ssLastParsedLog, clearErrorMarkers, hideErrorPanel, parseLatexErrors, showErrorMarkers, showErrorPanel, showLogsPanel, updateLogsBadge } from "errors";
+import { _restoreLastFile, loadFiles, openFile, openFolders, renderTabs, saveCurrentFile, updateOutline } from "files";
+import { lintCrossRefs, scheduleCrossRefLint } from "linter";
+import { _snippetTabHandler, loadSnippets, renderSymbolPanel } from "panels";
+import { showPDF } from "pdfviewer";
+import { hideSearchPanel, toggleSearchPanel } from "search";
+import { loadCustomDict, scheduleSpellCheck } from "spell";
+import { syncForward } from "synctex";
+import { createCm6Editor } from "cm6-adapter"; // v-CM6 Phase 5 inc2 — only USED when CM6_ENGINE
+
+export let currentProject    = null;
+export let currentFile       = null;
 
 // ── IMAGE FILE DETECTION (ต้องประกาศก่อน saveCurrentFile) ──
 const IMAGE_EXTS = new Set(["png","jpg","jpeg","gif","bmp","svg","webp","tiff","tif","ico"]);
-function isImageFile(name) {
+export function isImageFile(name) {
   return name ? IMAGE_EXTS.has(name.split(".").pop().toLowerCase()) : false;
 }
-let mainFile          = "main.tex";   // ไฟล์หลักสำหรับ compile
-let openTabs          = [];   // [{name, content}]
-let saveTimer         = null;
+export let mainFile          = "main.tex";   // ไฟล์หลักสำหรับ compile
+export let openTabs          = [];   // [{name, content}]
+export let saveTimer         = null;
 let autoCompile       = false;
 let autoCompileTimer  = null;
 let wordCountTimer    = null;
-let draftMode         = false;   // v3.2.2 — skip figures during compile (per-project)
+export let draftMode         = false;   // v3.2.2 — skip figures during compile (per-project)
 
 // v3.2.2 — autocomplete sources for \cite{...} and \ref{...}
 // Both are populated by loadCiteData() (per-project) and refreshed after
 // every compile. The hint helper below filters on the typed prefix.
-let bibkeysCache      = [];   // [{key, type, author, year, title}]
-let labelsCache       = [];   // [{name, file, line}]
+export let bibkeysCache      = [];   // [{key, type, author, year, title}]
+export let labelsCache       = [];   // [{name, file, line}]
 // v4.4.0 — user-defined commands/environments (project-wide) for \cmd and
 // \begin{} autocomplete, populated by loadCiteData.
-let userCmdCache      = [];   // ["\\foo", ...]
-let userEnvCache      = [];   // ["mytheorem", ...]
+export let userCmdCache      = [];   // ["\\foo", ...]  // v5.0.0-beta.7.4 — export: autocomplete.js imports these (were ReferenceError under ESM → \begin/\cmd hint threw)
+export let userEnvCache      = [];   // ["mytheorem", ...]
 
 // v3.2.2 — \includeonly chapter switcher
-let availableIncludes = [];   // [{path, line}] from the project's main file
-let selectedIncludes  = [];   // subset of availableIncludes paths the user wants compiled
+export let availableIncludes = [];   // [{path, line}] from the project's main file
+export let selectedIncludes  = [];   // subset of availableIncludes paths the user wants compiled
 
 // v3.3.2 — Spell-check state.
 //  spellChecker       : Typo instance once en_US is loaded (null until first use)
@@ -40,26 +51,170 @@ let selectedIncludes  = [];   // subset of availableIncludes paths the user want
 //                       add Rydberg / Hubbard / bibkey author names without
 //                       polluting the global en_US dictionary.
 //  spellScanTimer     : debounce handle for on-change rescans.
-let spellChecker         = null;
-let spellLoadingPromise  = null;
-let spellEnabled         = false;
-let spellMarkers         = [];
-let customDict           = new Set();
-let spellScanTimer       = null;
+export let spellChecker         = null;
+export let spellLoadingPromise  = null;
+export let spellEnabled         = false;
+export let spellMarkers         = [];
+export let customDict           = new Set();
+export let spellScanTimer       = null;
 // v4.4.0 — Inline spell suggestions ("word suggestion"). When on, typing a
 // word the en_US dict rejects pops a CodeMirror dropdown of corrections — the
 // typing-time companion to the right-click "Replace with" menu. INDEPENDENT of
 // the red-underline spell check: it loads the same dictionary on demand, so it
 // works even with the underline toggle off. Mirrors localStorage
 // `texlocal_spellsuggest`; defaults OFF (opt-in, per documented intent).
-let spellSuggestEnabled  = false;
-let _spellHintTimer      = null;
+export let spellSuggestEnabled  = false;
+export let _spellHintTimer      = null;
 // v3.3.5 — Hot-reload state. customDictMtime is the file mtime returned by
 // the last successful /dict GET. On window focus we re-fetch and only swap
 // customDict if the mtime changed — keeps the disk read cheap and avoids
 // gratuitous rescans when Pol just alt-tabs back without editing the file.
-let customDictMtime      = 0;
+export let customDictMtime      = 0;
+// v5.0.0-beta.4.0 — Phase 4 ESM prep: shared-state setters. Cross-file writers call these
+// instead of reassigning a module-owned `let` directly, so next session's
+// `type=module` flip needs zero logic change (an imported binding is read-only;
+// mutating via the owner's setter is not). See PHASE4_esm-audit_2026-07-03.md.
+export function _ssCurrentFile(v){ currentFile = v; }
+export function _ssMainFile(v){ mainFile = v; }
+export function _ssOpenTabs(v){ openTabs = v; }
+export function _ssSaveTimer(v){ saveTimer = v; }
+export function _ssSpellChecker(v){ spellChecker = v; }
+export function _ssSpellEnabled(v){ spellEnabled = v; }
+export function _ssSpellLoadingPromise(v){ spellLoadingPromise = v; }
+export function _ssSpellMarkers(v){ spellMarkers = v; }
+export function _ssSpellScanTimer(v){ spellScanTimer = v; }
+export function _ssSpellSuggestEnabled(v){ spellSuggestEnabled = v; }
+export function _ssSpellHintTimer(v){ _spellHintTimer = v; }
+export function _ssCustomDict(v){ customDict = v; }
+export function _ssCustomDictMtime(v){ customDictMtime = v; }
 
+
+// ── CM ADAPTER FACADE (Phase 1 — v5.0.0-beta.1.0) ─────────────────
+// v5.0.0-beta.1.0 — Every CodeMirror touchpoint in this file now goes through `CM`
+// instead of the raw `cmEditor` instance or the `CodeMirror` static namespace.
+// Phase 1 of the editor.js → CodeMirror 6 groundwork (see
+// PLAN_editor-modularization_2026-07-02.md): the ~167 direct CM call sites
+// (151 cmEditor.* + 16 CodeMirror.*) are funnelled to this one object, so the
+// eventual CM5 → CM6 rewrite touches ONLY these wrapper bodies, not every
+// caller. After this, a grep for the raw instance/static refs returns only
+// lines inside this facade.
+//
+// Still in editor.js (not yet a separate cmadapter.js file): the `cmEditor`
+// instance is a script-scope const created just below, and classic <script>
+// files do not share lexical scope — extracting the facade to its own file
+// needs the CM init moved into it (or `cmEditor` promoted to a window global),
+// a later slice. The facade owns no state: instance methods delegate to the
+// `cmEditor` const (only ever CALLED after init runs, so its TDZ is a
+// non-issue), statics/getters delegate to the global CodeMirror. Arrow wrappers
+// preserve the correct receiver — do NOT swap them for bare method refs or
+// `this` unbinds. CM6 day = reimplement these bodies against EditorState /
+// EditorView + transactions; callers stay put.
+//
+// NOTE: handler-local cm.* calls (inside registerHelper / extraKeys handlers,
+// where CodeMirror passes the instance in as an argument) are deliberately NOT
+// routed here — they live inside the CM-heavy code (fold/hint/lint) that CM6
+// rewrites wholesale anyway.
+const _CM5 = {
+  // text / document
+  getValue:          (...a) => cmEditor.getValue(...a),
+  setValue:          (...a) => cmEditor.setValue(...a),
+  getLine:           (...a) => cmEditor.getLine(...a),
+  lineCount:         (...a) => cmEditor.lineCount(...a),
+  lastLine:          (...a) => cmEditor.lastLine(...a),
+  getRange:          (...a) => cmEditor.getRange(...a),
+  replaceRange:      (...a) => cmEditor.replaceRange(...a),
+  replaceSelection:  (...a) => cmEditor.replaceSelection(...a),
+  getSelection:      (...a) => cmEditor.getSelection(...a),
+  somethingSelected: (...a) => cmEditor.somethingSelected(...a),
+  eachLine:          (...a) => cmEditor.eachLine(...a),
+  // cursor / selection / scroll / coords
+  getCursor:         (...a) => cmEditor.getCursor(...a),
+  setCursor:         (...a) => cmEditor.setCursor(...a),
+  scrollIntoView:    (...a) => cmEditor.scrollIntoView(...a),
+  coordsChar:        (...a) => cmEditor.coordsChar(...a),
+  getViewport:       (...a) => cmEditor.getViewport(...a),
+  // focus / DOM
+  focus:             (...a) => cmEditor.focus(...a),
+  hasFocus:          (...a) => cmEditor.hasFocus(...a),
+  getWrapperElement: (...a) => cmEditor.getWrapperElement(...a),
+  refresh:           (...a) => cmEditor.refresh(...a),
+  // marks / line classes / gutters
+  markText:          (...a) => cmEditor.markText(...a),
+  addLineClass:      (...a) => cmEditor.addLineClass(...a),
+  removeLineClass:   (...a) => cmEditor.removeLineClass(...a),
+  setGutterMarker:   (...a) => cmEditor.setGutterMarker(...a),
+  clearGutter:       (...a) => cmEditor.clearGutter(...a),
+  // config / events / batching / history
+  setOption:         (...a) => cmEditor.setOption(...a),
+  on:                (...a) => cmEditor.on(...a),
+  off:               (...a) => cmEditor.off(...a),
+  operation:         (...a) => cmEditor.operation(...a),
+  clearHistory:      (...a) => cmEditor.clearHistory(...a),
+  changeGeneration:  (...a) => cmEditor.changeGeneration(...a),
+  // statics — delegate to the global CodeMirror namespace
+  registerHelper:    (...a) => CodeMirror.registerHelper(...a),
+  Pos:               (...a) => CodeMirror.Pos(...a),
+  normalizeKeyMap:   (...a) => CodeMirror.normalizeKeyMap(...a),
+  keyName:           (...a) => CodeMirror.keyName(...a),
+  get helpers() { return CodeMirror.helpers; },
+  get hint()    { return CodeMirror.hint; },
+};
+
+// v-CM6 (Phase 5 inc2) — engine switch. `?cm=6` opts in + persists to
+// localStorage; `?cm=5` opts out; otherwise the saved flag decides. CM5 remains
+// the default. Heavy features (lint/autocomplete/spell) are guarded off under
+// CM6 for this increment — see boot.js + linter.js. Full plan: PHASE5 doc.
+const CM6_ENGINE = (() => {
+  // v5.0.0-beta.8.0 — CM6 is now the DEFAULT engine. `?cm=5` opts into legacy CM5 (persists
+  // to localStorage as the escape hatch); `?cm=6` clears it back to default; with
+  // no param the default is CM6 unless the user explicitly parked on CM5.
+  try {
+    const q = new URLSearchParams(location.search).get("cm");
+    if (q === "5") { localStorage.setItem("texlocal_cm_engine", "5"); return false; }
+    if (q === "6") { localStorage.removeItem("texlocal_cm_engine"); return true; }
+    return localStorage.getItem("texlocal_cm_engine") !== "5";
+  } catch (_) { return true; }
+})();
+export { CM6_ENGINE };
+
+// v-CM6 (Phase 5) — the ?cm=6 flag PERSISTS to localStorage (so it survives
+// dashboard→editor navigation while testing). That created a trap: after visiting
+// ?cm=6 once, a later plain /editor is silently still CM6 — where autocomplete/
+// spell/lint are intentionally off this increment, so it LOOKS like CM5 broke.
+// This badge makes the active engine unmistakable + gives a one-click way back to
+// CM5 (clears the flag, preserves the current project in the URL). Remove when
+// CM6 is feature-complete and becomes the default.
+function _cm6Badge() {
+  // v5.0.0-beta.8.0 — CM6 is the default now, so no badge for it. Show a small badge ONLY
+  // when running the legacy CM5 engine (opted in via ?cm=5) so it's obvious you're
+  // off the default, with one click back to CM6 (project preserved).
+  if (CM6_ENGINE || document.getElementById("cm6-badge")) return;
+  const b = document.createElement("div");
+  b.id = "cm6-badge";
+  b.innerHTML = 'CM5 (legacy) \u00b7 <a href="#" id="cm6-exit" style="color:#fff;text-decoration:underline">Switch to CM6</a>';
+  b.style.cssText = "position:fixed;bottom:10px;right:12px;z-index:99999;background:#4b5563;color:#fff;font:12px/1.4 'Sora',system-ui,sans-serif;padding:6px 10px;border-radius:6px;box-shadow:0 2px 8px rgba(0,0,0,.35);max-width:300px";
+  document.body.appendChild(b);
+  document.getElementById("cm6-exit").addEventListener("click", (e) => {
+    e.preventDefault();
+    try { localStorage.removeItem("texlocal_cm_engine"); } catch (_) {}
+    const u = new URL(location.href);
+    u.searchParams.delete("cm");            // drop ?cm=5 so it can't re-arm the legacy flag
+    location.href = u.pathname + u.search;  // reload into default CM6, project preserved
+  });
+}
+
+// CM + cmEditor are engine-chosen. CM5 = the `_CM5` facade above + a real
+// CodeMirror instance (built in the INIT block below, guarded on !CM6_ENGINE).
+// CM6 = the adapter's facade + an EditorView, built now. `export let` so
+// importers get a live binding to whichever engine won.
+export let CM = _CM5;
+export let cmEditor;
+if (CM6_ENGINE) {
+  const _tab = parseInt(localStorage.getItem("texlocal_tab_size") || "2", 10) || 2;
+  const _cm6 = createCm6Editor(document.getElementById("editor-host"), { tabSize: _tab, lineWrapping: true });
+  CM = _cm6.CM;
+  cmEditor = _cm6.view;
+}
 
 // ── CODEMIRROR INIT ──────────────────────────────────────────
 // v3.2.3 — LaTeX heading folding. registerHelper runs once and is used by
@@ -71,7 +226,7 @@ let customDictMtime      = 0;
 //   - Optional argument [...] and starred form *  are allowed.
 const _LATEX_HEAD_RE = /^\s*\\(chapter|section|subsection|subsubsection|paragraph)\*?\s*(?:\[[^\]]*\])?\s*\{/;
 const _LATEX_HEAD_LVL = { chapter: 0, section: 1, subsection: 2, subsubsection: 3, paragraph: 4 };
-CodeMirror.registerHelper("fold", "latex-section", function (cm, start) {
+CM.registerHelper("fold", "latex-section", function (cm, start) {
   const lineStr = cm.getLine(start.line);
   const m = lineStr && lineStr.match(_LATEX_HEAD_RE);
   if (!m) return null;
@@ -87,8 +242,8 @@ CodeMirror.registerHelper("fold", "latex-section", function (cm, start) {
   }
   if (endLine <= start.line) return null;
   return {
-    from: CodeMirror.Pos(start.line, lineStr.length),
-    to:   CodeMirror.Pos(endLine, cm.getLine(endLine).length),
+    from: CM.Pos(start.line, lineStr.length),
+    to:   CM.Pos(endLine, cm.getLine(endLine).length),
   };
 });
 
@@ -110,8 +265,8 @@ const EDITOR_ACTIONS = {
   // Shift-Ctrl-G is CM's canonical modifier order for Ctrl+Shift+G.
   grammar:     { defaultKey: "Shift-Ctrl-G", handler: ()  => toggleGrammarMode() },
   // fold + unfold share one toggle handler (foldCode toggles), different keys.
-  fold:        { defaultKey: "Ctrl-Shift-[", handler: cm => cm.foldCode(cm.getCursor(), { rangeFinder: CodeMirror.helpers.fold["latex-section"] }) },
-  unfold:      { defaultKey: "Ctrl-Shift-]", handler: cm => cm.foldCode(cm.getCursor(), { rangeFinder: CodeMirror.helpers.fold["latex-section"] }) },
+  fold:        { defaultKey: "Ctrl-Shift-[", handler: cm => cm.foldCode(cm.getCursor(), { rangeFinder: CM.helpers.fold["latex-section"] }) },
+  unfold:      { defaultKey: "Ctrl-Shift-]", handler: cm => cm.foldCode(cm.getCursor(), { rangeFinder: CM.helpers.fold["latex-section"] }) },
 };
 // Saved overrides ({} on missing/corrupt). Global localStorage, matching
 // texlocal_theme / texlocal_font_size etc.
@@ -131,7 +286,7 @@ function _buildExtraKeys(overrides) {
   return map;
 }
 
-const cmEditor = CodeMirror(document.getElementById("editor-host"), {
+if (!CM6_ENGINE) cmEditor = CodeMirror(document.getElementById("editor-host"), {
   mode: "stex",
   theme: "default",
   lineNumbers: true,
@@ -142,7 +297,7 @@ const cmEditor = CodeMirror(document.getElementById("editor-host"), {
   // v3.2.3 — foldGutter added between linenumbers and error gutter.
   gutters: ["CodeMirror-linenumbers", "CodeMirror-foldgutter", "cm-errors-gutter"],
   foldGutter: {
-    rangeFinder: CodeMirror.helpers.fold["latex-section"],
+    rangeFinder: CM.helpers.fold["latex-section"],
   },
   // v3.2.2 — autopair brackets, quotes, and dollars. Pairs typed: ( [ { " ' $.
   // CodeMirror also handles "skip closer if cursor is right before it" and
@@ -158,7 +313,7 @@ const cmEditor = CodeMirror(document.getElementById("editor-host"), {
   extraKeys: _buildExtraKeys(getSavedKeybindings())
 });
 let outlineTimer = null;
-cmEditor.on("change", () => {
+CM.on("change", () => {
   clearTimeout(saveTimer);
   saveTimer = setTimeout(saveCurrentFile, 800);
   clearTimeout(outlineTimer);
@@ -176,8 +331,8 @@ cmEditor.on("change", () => {
   // when the user pauses. Only runs if Pol has enabled it in Settings.
   if ((spellEnabled || spellSuggestEnabled) && typeof scheduleSpellCheck === "function") scheduleSpellCheck();
 });
-cmEditor.on("cursorActivity", () => {
-  const cur = cmEditor.getCursor();
+CM.on("cursorActivity", () => {
+  const cur = CM.getCursor();
   document.getElementById("cursor-pos").textContent = `Ln ${cur.line + 1}, Col ${cur.ch + 1}`;
 });
 
@@ -233,13 +388,13 @@ function _hideImgPreview() {
 }
 
 (function bindImgHover() {
-  const wrap = cmEditor.getWrapperElement();
+  const wrap = CM.getWrapperElement();
   wrap.addEventListener("mousemove", e => {
     if (imgHoverTimer) clearTimeout(imgHoverTimer);
     imgHoverTimer = setTimeout(() => {
       // Map mouse → editor (line, ch)
-      const pos = cmEditor.coordsChar({ left: e.clientX, top: e.clientY });
-      const line = cmEditor.getLine(pos.line);
+      const pos = CM.coordsChar({ left: e.clientX, top: e.clientY });
+      const line = CM.getLine(pos.line);
       if (!line) return _hideImgPreview();
       _IMG_INC_RE.lastIndex = 0;
       let m;
@@ -261,7 +416,10 @@ function _hideImgPreview() {
 })();
 
 // ── INIT ─────────────────────────────────────────────────────
-async function init() {
+export async function init() {
+  console.info("[TexLocal] editor engine:", CM6_ENGINE ? "CM6" : "CM5 (legacy)");
+  _cm6Badge(); // v5.0.0-beta.8.0 — show a legacy badge only when running CM5
+  if (CM6_ENGINE) applyEditorKeybindings(); // v-CM6 inc3 — wire EDITOR_ACTIONS into the CM6 keymap (CM5 builds them inline at construction)
   // restore saved theme
   const savedTheme = localStorage.getItem("texlocal_theme") || "dark";
   setTheme(savedTheme, true);
@@ -304,7 +462,7 @@ async function init() {
 }
 
 // ── PROJECTS ─────────────────────────────────────────────────
-async function loadProjects() {
+export async function loadProjects() {
   const res = await fetch("/api/projects");
   const list = await res.json();
   const sel = document.getElementById("project-select");
@@ -317,7 +475,7 @@ async function loadProjects() {
   if (currentProject) sel.value = currentProject;
 }
 
-function saveCompilerPref(compiler) {
+export function saveCompilerPref(compiler) {
   if (!currentProject) return;
   localStorage.setItem(`texlocal_compiler_${currentProject}`, compiler);
 }
@@ -332,7 +490,7 @@ function loadCompilerPref(projectName) {
 // chapter-selector popup can render checkboxes. Updates `availableIncludes`
 // and reconciles `selectedIncludes` (drop entries that no longer exist —
 // e.g. user deleted a chapter file).
-async function loadIncludes() {
+export async function loadIncludes() {
   if (!currentProject) {
     availableIncludes = []; selectedIncludes = [];
     return;
@@ -433,17 +591,17 @@ function renderChaptersPanel() {
 }
 
 // Tiny helpers — used for safe HTML interpolation in the panel above.
-function escapeHtml(s) {
+export function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => (
     {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]
   ));
 }
-function escapeAttr(s) { return escapeHtml(s).replace(/'/g, "&#39;"); }
+export function escapeAttr(s) { return escapeHtml(s).replace(/'/g, "&#39;"); }
 
 // v3.3.0 — Hidden-textarea clipboard fallback. navigator.clipboard works on
 // https://localhost but some users open via http://<ip>:5000 (network access)
 // where the API is undefined; document.execCommand("copy") still works there.
-function _copyFallback(text, onSuccess) {
+export function _copyFallback(text, onSuccess) {
   try {
     const ta = document.createElement("textarea");
     ta.value = text;
@@ -456,7 +614,7 @@ function _copyFallback(text, onSuccess) {
   } catch (e) { /* swallow — the user can still drag-select the text */ }
 }
 
-function toggleInclude(path, checked) {
+export function toggleInclude(path, checked) {
   const idx = selectedIncludes.indexOf(path);
   if (checked && idx < 0) selectedIncludes.push(path);
   else if (!checked && idx >= 0) selectedIncludes.splice(idx, 1);
@@ -469,14 +627,14 @@ function toggleInclude(path, checked) {
   updateChaptersBadge();
 }
 
-function setAllIncludes(allOn) {
+export function setAllIncludes(allOn) {
   selectedIncludes = allOn ? availableIncludes.map(i => i.path) : [];
   saveIncludesPref();
   renderChaptersPanel();
   updateChaptersBadge();
 }
 
-async function loadIncludesUI() {
+export async function loadIncludesUI() {
   await loadIncludes();
   renderChaptersPanel();
 }
@@ -508,39 +666,63 @@ function _closeOtherToolbarPanels(exceptId) {
   }
 }
 
-function toggleChaptersPanel(e) {
-  const panel = document.getElementById("chapters-panel");
-  if (panel.classList.contains("open")) {
-    panel.classList.remove("open");
-    return;
-  }
-  _closeOtherToolbarPanels("chapters-panel"); // v3.3.7
-  // Position below the toolbar button, right-anchored.
-  const btn = document.getElementById("chapters-toggle-btn");
-  const rect = btn.getBoundingClientRect();
-  const pw   = 320;
-  let left   = rect.right - pw;
-  if (left < 4) left = 4;
-  panel.style.top  = (rect.bottom + 4) + "px";
+// v5.0.0-beta.0.0 — Popover helper (Phase 0 of the editor.js modularization; see
+// PLAN_editor-modularization). Every toolbar popover used to repeat the same
+// open -> _closeOtherToolbarPanels -> position-below-button -> clamp-left ->
+// onOpen -> add .open -> stopPropagation dance, PLUS a near-identical per-panel
+// document outside-click listener. That was ~10 copies of ~20 lines + 10
+// document listeners. This worker + one delegated listener replace all of it;
+// each toggle*Panel is now a one-line call passing {panelId, btnId, width, onOpen}.
+// Settings is deliberately NOT a Popover — it's a centered modal with its own
+// Esc handling + closeSettingsPanel() lifecycle (v4.8.0).
+export function _togglePopover(e, { panelId, btnId, width, onOpen }) {
+  const panel = document.getElementById(panelId);
+  if (panel.classList.contains("open")) { panel.classList.remove("open"); return; }
+  _closeOtherToolbarPanels(panelId);
+  const rect = document.getElementById(btnId).getBoundingClientRect();
+  let left = rect.right - width;
+  if (left < 4) left = 4;                        // clamp to viewport left edge
+  panel.style.top  = (rect.bottom + 4) + "px";   // right-anchored, below the button
   panel.style.left = left + "px";
-  // Always re-load on open — main file may have changed.
-  loadIncludesUI();
+  if (onOpen) onOpen();                          // panels re-render / re-fetch on open
   panel.classList.add("open");
-  if (e) e.stopPropagation();
+  if (e) e.stopPropagation();                    // don't let the delegated close fire
 }
 
-// Outside-click close — same pattern as the settings/symbol popups.
-document.addEventListener("click", e => {
-  const panel = document.getElementById("chapters-panel");
-  if (!panel || !panel.classList.contains("open")) return;
-  if (panel.contains(e.target)) return;
-  if (e.target.closest("#chapters-toggle-btn")) return;
-  panel.classList.remove("open");
+// v5.0.0-beta.0.0 — single delegated outside-click close for ALL toolbar popovers,
+// replacing the 10 duplicated per-panel document listeners. panelId -> its
+// toggle button, so a click on the button itself doesn't immediately re-close
+// the panel the toggle just opened. Only one popover is ever open at a time
+// (_closeOtherToolbarPanels), so the loop closes at most one per click.
+const _POPOVER_BTN = {
+  "chapters-panel": "chapters-toggle-btn",
+  "env-panel":      "env-toggle-btn",
+  "package-panel":  "package-toggle-btn",
+  "snippet-panel":  "snippet-toggle-btn",
+  "bib-panel":      "bib-toggle-btn",
+  "outline-panel":  "outline-toggle-btn",
+  "todo-panel":     "todo-toggle-btn",
+  "goals-panel":    "goals-toggle-btn",
+  "history-panel":  "history-btn",
+  "symbol-panel":   "sym-toggle-btn",
+};
+document.addEventListener("click", (e) => {
+  for (const panelId in _POPOVER_BTN) {
+    const panel = document.getElementById(panelId);
+    if (!panel || !panel.classList.contains("open")) continue;
+    if (panel.contains(e.target)) continue;
+    if (e.target.closest("#" + _POPOVER_BTN[panelId])) continue;
+    panel.classList.remove("open");
+  }
 });
+
+// v5.0.0-beta.0.0 — Popover (worker: _togglePopover). loadIncludesUI on open because
+// the main file may have changed since the panel was last opened.
+export function toggleChaptersPanel(e){ _togglePopover(e, { panelId: "chapters-panel", btnId: "chapters-toggle-btn", width: 320, onOpen: loadIncludesUI }); }
 
 // v3.2.2 — Pull aggregated bibkey + label data for autocomplete. Cached on
 // the server side, so frequent calls are cheap when nothing has changed.
-async function loadCiteData() {
+export async function loadCiteData() {
   if (!currentProject) {
     bibkeysCache = []; labelsCache = []; userCmdCache = []; userEnvCache = [];
     lintCrossRefs();   // clear any stale marks
@@ -563,78 +745,7 @@ async function loadCiteData() {
   updateBibBadge();
 }
 
-// ── v3.2.3 — CROSS-REFERENCE LIVE LINTER ───────────────────────
-// Walks the active document, finds every \cite{}, \ref{}, \eqref{},
-// \autoref{}, \cref{}, \Cref{} call and underlines individual keys (split
-// by comma) that aren't present in their respective caches.
-//
-// `markText` is the CodeMirror v5 API for inline highlights. We collect each
-// returned handle so we can clear() them before re-running. Underline only
-// the offending key, not the whole call, so a partially-wrong multi-cite
-// still surfaces the exact bad key.
-const _XREF_RE = /\\([a-zA-Z]*cite[a-zA-Z]*|ref|eqref|autoref|cref|Cref)\{([^}]+)\}/g;   // v4.9.7 (B3) — cite branch widened to any *cite* command (biblatex \parencite/\autocite/\textcite/\footcite/…) so the live linter matches backend _CITE_CMD_RE + the audit
-let _xrefMarks = [];
-let _xrefLintTimer = null;
-function lintCrossRefs() {
-  if (typeof cmEditor === "undefined" || !cmEditor) return;
-  // Clear old marks first — markText handles return objects with .clear()
-  for (const m of _xrefMarks) {
-    try { m.clear(); } catch (_) {}
-  }
-  _xrefMarks = [];
-  // Skip when both caches are empty (project just loaded, before /cite-data
-  // populates them). Otherwise every key would falsely flag as broken.
-  if (!bibkeysCache.length && !labelsCache.length) return;
-  const bibSet   = new Set(bibkeysCache.map(b => b.key));
-  const labelSet = new Set(labelsCache.map(l => l.name));
-  const totalLines = cmEditor.lineCount();
-  for (let lineNo = 0; lineNo < totalLines; lineNo++) {
-    const text = cmEditor.getLine(lineNo);
-    if (!text) continue;
-    if (text.indexOf("cite") < 0 && text.indexOf("\\ref") < 0
-        && text.indexOf("\\eqref") < 0 && text.indexOf("\\autoref") < 0
-        && text.indexOf("\\cref") < 0 && text.indexOf("\\Cref") < 0) continue;
-    _XREF_RE.lastIndex = 0;
-    let m;
-    while ((m = _XREF_RE.exec(text)) !== null) {
-      const cmd       = m[1];
-      const inner     = m[2];
-      const isCite    = cmd.includes("cite");   // v4.9.7 (B3) — any *cite* command → bib-scope (ref-family contains no "cite")
-      const targetSet = isCite ? bibSet : labelSet;
-      const innerStart = m.index + cmd.length + 2;   // "\<cmd>{"
-      // Each key may be separated by comma + optional whitespace.
-      let cursor = 0;
-      for (const part of inner.split(",")) {
-        const lead = part.match(/^\s*/)[0].length;
-        const trimmed = part.trim();
-        const keyStart = innerStart + cursor + lead;
-        cursor += part.length + 1;             // +1 for comma
-        if (!trimmed) continue;
-        if (targetSet.has(trimmed)) continue;
-        // Found a broken key — mark it with the wavy underline.
-        const mark = cmEditor.markText(
-          { line: lineNo, ch: keyStart },
-          { line: lineNo, ch: keyStart + trimmed.length },
-          {
-            className: "cm-xref-broken",
-            title: isCite
-              ? `Citation key not found: ${trimmed}`
-              : `Label not found: ${trimmed}`,
-          },
-        );
-        _xrefMarks.push(mark);
-      }
-    }
-  }
-}
-
-function scheduleCrossRefLint() {
-  // Debounced so it doesn't run on every keystroke. 400ms is fast enough that
-  // typing a citation key feels live but slow enough to skip the scan during
-  // burst-edits.
-  clearTimeout(_xrefLintTimer);
-  _xrefLintTimer = setTimeout(lintCrossRefs, 400);
-}
+// v5.0.0-beta.3.0 — CROSS-REFERENCE LIVE LINTER lifted to static/linter.js (Phase 3 CM-heavy split).
 
 // v3.2.2 — Draft mode: stored per-project so a thesis with heavy figures can
 // stay in draft while a presentation deck stays in full-render mode.
@@ -644,7 +755,7 @@ function loadDraftPref(projectName) {
   if (cb) cb.checked = draftMode;
   updateDraftBadge();
 }
-function onDraftModeToggle() {
+export function onDraftModeToggle() {
   draftMode = document.getElementById("draft-mode-toggle").checked;
   if (currentProject) {
     localStorage.setItem(`texlocal_draft_${currentProject}`, draftMode ? "1" : "0");
@@ -672,7 +783,7 @@ function updateDraftBadge() {
   badge.style.display = draftMode ? "inline-block" : "none";
 }
 
-async function switchProject(name, opts) {
+export async function switchProject(name, opts) {
   if (!name) return;
   // Cancel any pending auto-save from the previous project — otherwise it
   // could fire after `currentProject` flipped and write into the new project.
@@ -694,7 +805,7 @@ async function switchProject(name, opts) {
   clearErrorMarkers();
   hideErrorPanel();
   renderTabs();
-  cmEditor.setValue("");
+  CM.setValue("");
   document.getElementById("pdf-canvas-container").style.display = "none";
   document.getElementById("pdf-placeholder").style.display = "flex";
   document.getElementById("pdf-download").style.display = "none";
@@ -784,13 +895,13 @@ async function switchProject(name, opts) {
   await Promise.allSettled(_startupTasks);
 }
 
-function showNewProject() {
+export function showNewProject() {
   document.getElementById("input-project-name").value = "";
   openModal("modal-project");
   setTimeout(() => document.getElementById("input-project-name").focus(), 100);
 }
 
-async function createProject() {
+export async function createProject() {
   const name = document.getElementById("input-project-name").value.trim();
   if (!name) return;
   await fetch("/api/projects", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({name}) });
@@ -800,1177 +911,12 @@ async function createProject() {
   await switchProject(name);
 }
 
-// ── FILES ─────────────────────────────────────────────────────
-const openFolders = new Set(); // เก็บ path ของ folder ที่ขยายอยู่
-
-// ── v4.7.11 — File-tree icons: inline SVG (Lucide-derived) replacing emoji.
-// WHY: emoji render differently per-OS, can't be recolored, and ignored the
-// Appearance theme. These use stroke/fill="currentColor" so the .file-icon /
-// .file-star / .file-ren / .file-del CSS colors (all theme --accent/--yellow/
-// --red driven) flow through automatically — Default & Cerulean, light & dark.
-function _svgIcon(inner, { size = 14, fill = false } = {}) {
-  return `<svg viewBox="0 0 24 24" width="${size}" height="${size}" `
-       + `fill="${fill ? "currentColor" : "none"}" stroke="currentColor" `
-       + `stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${inner}</svg>`;
-}
-const FILE_TREE_ICONS = {
-  // file types
-  tex:   `<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/>`,
-  bib:   `<path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/>`,
-  pdf:   `<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><text x="12" y="18.5" font-size="6.5" font-weight="700" text-anchor="middle" fill="currentColor" stroke="none" style="font-family:var(--font-ui,sans-serif)">PDF</text>`,
-  other: `<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/>`,
-  // folders + tree arrow
-  folder:     `<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>`,
-  folderOpen: `<path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"/>`,
-  arrow:      `<path d="m9 18 6-6-6-6"/>`,
-  // action glyphs (Lucide: star / pencil / trash-2)
-  star:   `<path d="M11.525 2.295a.53.53 0 0 1 .95 0l2.31 4.679a2.123 2.123 0 0 0 1.595 1.16l5.166.756a.53.53 0 0 1 .294.904l-3.736 3.638a2.123 2.123 0 0 0-.611 1.878l.882 5.14a.53.53 0 0 1-.771.56l-4.618-2.428a2.122 2.122 0 0 0-1.973 0L6.396 21.01a.53.53 0 0 1-.77-.56l.881-5.139a2.122 2.122 0 0 0-.611-1.879L2.16 9.795a.53.53 0 0 1 .294-.906l5.165-.755a2.122 2.122 0 0 0 1.597-1.16z"/>`,
-  rename: `<path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/><path d="m15 5 4 4"/>`,
-  del:    `<path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/>`,
-};
-
-function buildFileTree(files) {
-  // แปลง flat list เป็น nested object
-  // root = { __files: [...], folderName: { __files: [...], ... }, ... }
-  const root = { __files: [] };
-  files.forEach(f => {
-    const parts = f.split("/");
-    let node = root;
-    for (let i = 0; i < parts.length - 1; i++) {
-      const dir = parts[i];
-      if (!node[dir]) node[dir] = { __files: [] };
-      node = node[dir];
-    }
-    node.__files.push(f);
-  });
-  return root;
-}
-
-function renderFileTree(node, container, depth = 0, prefix = "") {
-  const indent = 14 + depth * 16;
-  // โฟลเดอร์ก่อน (เรียง A-Z)
-  const folders = Object.keys(node).filter(k => k !== "__files").sort();
-  folders.forEach(folder => {
-    const fullPath = prefix ? `${prefix}/${folder}` : folder;
-    const isOpen = openFolders.has(fullPath);
-
-    const div = document.createElement("div");
-    div.className = "file-item folder-item";
-    div.style.paddingLeft = indent + "px";
-    div.innerHTML = `
-      <span class="folder-arrow ${isOpen ? "open" : ""}">${_svgIcon(FILE_TREE_ICONS.arrow, {size: 12})}</span>
-      <span class="file-icon">${_svgIcon(isOpen ? FILE_TREE_ICONS.folderOpen : FILE_TREE_ICONS.folder)}</span>
-      <span style="overflow:hidden;text-overflow:ellipsis">${folder}</span>
-    `;
-    div.onclick = () => {
-      if (openFolders.has(fullPath)) openFolders.delete(fullPath);
-      else openFolders.add(fullPath);
-      loadFiles();
-    };
-    // ── drop target: รับไฟล์มาวางใน folder นี้
-    div.addEventListener("dragover", e => {
-      e.preventDefault(); e.stopPropagation();
-      div.classList.add("drag-over");
-    });
-    div.addEventListener("dragleave", () => div.classList.remove("drag-over"));
-    div.addEventListener("drop", async e => {
-      e.preventDefault(); e.stopPropagation();
-      div.classList.remove("drag-over");
-      const src = e.dataTransfer.getData("text/plain");
-      if (!src) return;
-      const filename = src.split("/").pop();
-      await moveFile(src, `${fullPath}/${filename}`);
-      openFolders.add(fullPath); // auto-expand หลัง drop
-    });
-    container.appendChild(div);
-
-    if (isOpen) {
-      renderFileTree(node[folder], container, depth + 1, fullPath);
-    }
-  });
-
-  // ไฟล์ (เรียง A-Z)
-  const files = (node.__files || []).sort();
-  files.forEach(filePath => {
-    const filename = filePath.split("/").pop();
-    const div = document.createElement("div");
-    div.className = "file-item" + (filePath === currentFile ? " active" : "");
-    div.style.paddingLeft = indent + "px";
-    const icon = filePath.endsWith(".tex") ? FILE_TREE_ICONS.tex
-               : filePath.endsWith(".bib") ? FILE_TREE_ICONS.bib
-               : filePath.endsWith(".pdf") ? FILE_TREE_ICONS.pdf : FILE_TREE_ICONS.other;
-    const isMain = filePath === mainFile;
-    const isTex  = filePath.endsWith(".tex");
-    div.innerHTML = `
-      <span class="file-icon">${_svgIcon(icon)}</span>
-      <span class="file-label" style="overflow:hidden;text-overflow:ellipsis;flex:1">${filename}</span>
-      ${isTex ? `<span class="file-star${isMain ? " is-main" : ""}" title="${isMain ? "Main file" : "Set as main file"}">${_svgIcon(FILE_TREE_ICONS.star, {size: 13})}</span>` : ""}
-      <span class="file-ren" title="Rename">${_svgIcon(FILE_TREE_ICONS.rename, {size: 13})}</span>
-      <span class="file-del" title="Delete">${_svgIcon(FILE_TREE_ICONS.del, {size: 13})}</span>
-    `;
-    if (isTex) {
-      div.querySelector(".file-star").onclick = e => {
-        e.stopPropagation();
-        setMainFile(filePath);
-      };
-    }
-    div.querySelector(".file-ren").onclick = e => { e.stopPropagation(); startRenameFile(div, filePath); };
-    div.querySelector(".file-del").onclick = e => deleteFile(e, filePath);
-    div.ondblclick = e => { e.stopPropagation(); startRenameFile(div, filePath); };
-    div.onclick = () => openFile(filePath);
-    // ── draggable source
-    div.draggable = true;
-    div.addEventListener("dragstart", e => {
-      e.dataTransfer.setData("text/plain", filePath);
-      e.dataTransfer.effectAllowed = "move";
-      e.stopPropagation();
-      setTimeout(() => div.classList.add("dragging"), 0);
-    });
-    div.addEventListener("dragend", () => div.classList.remove("dragging"));
-    container.appendChild(div);
-  });
-}
-
-// ไฟล์ generated ที่ซ่อนจาก file tree
-const HIDDEN_EXTS = new Set([
-  "aux","log","toc","out","bbl","blg","fls","bcf",
-  "lof","lot","nav","snm","vrb","xdv","run.xml","fdb_latexmk",
-  "pdf"   // PDF output ดูได้จาก preview panel อยู่แล้ว
-]);
-function isGeneratedFile(path) {
-  const name = path.split("/").pop().toLowerCase();
-  if (name === ".keep") return true;
-  if (name.endsWith(".synctex.gz") || name.endsWith(".synctex(busy)")) return true;
-  const ext = name.includes(".") ? name.split(".").pop() : "";
-  return HIDDEN_EXTS.has(ext);
-}
-
-async function loadFiles() {
-  if (!currentProject) return;
-  const res = await fetch(`/api/projects/${currentProject}/files`);
-  const allFiles = await res.json();
-  const files = allFiles.filter(f => !isGeneratedFile(f));   // ซ่อนไฟล์ขยะ
-  // v3.2.3 — keep a flat cache for the Ctrl+P quick-open modal so it doesn't
-  // need its own fetch on every invocation.
-  setQuickOpenFiles(files);
-  const container = document.getElementById("file-tree");
-  container.innerHTML = "";
-  const treeData = buildFileTree(files);
-  renderFileTree(treeData, container);
-
-  // v4.7.4 — return the (filtered) file list so callers (e.g. _restoreLastFile)
-  // can reuse this fetch instead of issuing their own.
-  return files;
-}
-
-async function openFile(name) {
-  if (!currentProject) return;
-  // CRITICAL: cancel any pending auto-save BEFORE we change `currentFile`.
-  // Without this, a saveTimer queued for the OLD file can fire during the
-  // async fetch below, while currentFile already points to the NEW file but
-  // the editor still holds the OLD content — that writes the OLD content
-  // into the NEW file and corrupts it.
-  clearTimeout(saveTimer);
-  saveTimer = null;
-  await saveCurrentFile();
-  currentFile = name;
-  localStorage.setItem(`texlocal_last_file_${currentProject}`, name);
-
-  if (isImageFile(name)) {
-    // ── IMAGE VIEWER ──────────────────────────────────────
-    document.getElementById("editor-host").style.display  = "none";
-    const viewer = document.getElementById("image-viewer");
-    viewer.style.display = "flex";
-    const url  = `/api/projects/${encodeURIComponent(currentProject)}/raw?path=${encodeURIComponent(name)}`;
-    const ext  = name.split(".").pop().toLowerCase();
-    const fname = name.split("/").pop();
-    if (ext === "pdf") {
-      viewer.innerHTML = `
-        <div class="img-info">${fname} — เปิดดูได้ใน PDF Preview panel</div>
-        <iframe src="${url}" style="flex:1;width:100%;border:none;border-radius:4px;"></iframe>`;
-    } else {
-      const img = new Image();
-      img.src = url;
-      img.onload = () => {
-        viewer.innerHTML = `
-          <img src="${url}" alt="${fname}">
-          <div class="img-info">${fname} &nbsp;·&nbsp; ${img.naturalWidth} × ${img.naturalHeight} px</div>`;
-      };
-      img.onerror = () => {
-        viewer.innerHTML = `<div class="img-info" style="color:var(--red)">ไม่สามารถแสดงรูปภาพนี้ได้</div>`;
-      };
-      viewer.innerHTML = `<div class="img-info">⏳ Loading…</div>`;
-    }
-    if (!openTabs.find(t => t.name === name)) openTabs.push({ name, content: "" });
-    renderTabs();
-    loadFiles();
-    return;
-  }
-
-  // ── TEXT EDITOR ───────────────────────────────────────
-  document.getElementById("image-viewer").style.display  = "none";
-  document.getElementById("editor-host").style.display   = "";
-  const res  = await fetch(`/api/projects/${currentProject}/file?path=${encodeURIComponent(name)}`);
-  const data = await res.json();
-  // v4.7.3 — guard against a missing/unreadable file (e.g. detect-main fell back
-  // to "main.tex" but no such file exists → backend 404 → data.content undefined).
-  // setValue(undefined) throws and leaves the editor blank ("stuck"); show an
-  // empty buffer instead so the project at least opens.
-  const content = (typeof data.content === "string") ? data.content : "";
-  if (!openTabs.find(t => t.name === name)) openTabs.push({ name, content });
-  else openTabs.find(t => t.name === name).content = content;
-  cmEditor.setValue(content);
-  cmEditor.clearHistory();
-  clearErrorMarkers();
-  const ext = name.split(".").pop();
-  cmEditor.setOption("mode", ext === "bib" ? "bibtex" : "stex");
-  // v4.7.0beta (PR#2) — restore the last cursor line for this file so you reopen
-  // where you left off. Clamp to the current length in case the file shrank.
-  try {
-    const pos = JSON.parse(localStorage.getItem(`texlocal_pos_${currentProject}::${name}`) || "null");
-    if (pos && typeof pos.line === "number") {
-      const line = Math.min(Math.max(0, pos.line), cmEditor.lastLine());
-      cmEditor.setCursor({ line, ch: pos.ch || 0 });
-      cmEditor.scrollIntoView({ line, ch: pos.ch || 0 }, 140);
-    }
-  } catch (_) {}
-  renderTabs();
-  loadFiles();
-  updateOutline();
-  updateWordCount();
-}
-
-// v4.7.0beta (PR#2) — Persist the cursor line per (project, file), debounced,
-// so openFile can restore it. Keyed the same way openFile reads it.
-let _posSaveTimer = null;
-cmEditor.on("cursorActivity", () => {
-  if (!currentProject || !currentFile) return;
-  clearTimeout(_posSaveTimer);
-  _posSaveTimer = setTimeout(() => {
-    try {
-      const c = cmEditor.getCursor();
-      localStorage.setItem(`texlocal_pos_${currentProject}::${currentFile}`,
-                           JSON.stringify({ line: c.line, ch: c.ch }));
-    } catch (_) {}
-  }, 400);
-});
-
-// v4.7.0beta (PR#2) — reopen the last-visited file on project open (cursor
-// restored inside openFile); falls back to the detected main file. Used by
-// switchProject's parallel-startup batch.
-async function _restoreLastFile(project, filesP) {
-  const last = localStorage.getItem(`texlocal_last_file_${project}`);
-  if (last) {
-    try {
-      // v4.7.4 — reuse loadFiles()'s in-flight fetch (passed as filesP) instead
-      // of a second /files round-trip; fall back to a direct fetch if not given.
-      const files = filesP ? await filesP
-                           : await (await fetch(`/api/projects/${encodeURIComponent(project)}/files`)).json();
-      if (Array.isArray(files) && files.includes(last)) { await openFile(last); return; }
-    } catch (_) {}
-  }
-  if (mainFile) await openFile(mainFile);
-}
-
-function renderTabs() {
-  const container = document.getElementById("editor-tabs");
-  container.innerHTML = "";
-  openTabs.forEach(t => {
-    const div = document.createElement("div");
-    div.className = "tab" + (t.name === currentFile ? " active" : "");
-    div.title = t.name;
-    const label = document.createElement("span");
-    label.className   = "tab-label";
-    label.textContent = t.name.split("/").pop();
-    const close = document.createElement("span");
-    close.className   = "tab-close";
-    close.textContent = "×";
-    close.title       = "Close tab";
-    close.onclick     = (e) => closeTab(t.name, e);
-    div.appendChild(label);
-    div.appendChild(close);
-    div.onclick = () => openFile(t.name);
-    // Middle-click closes, like a browser tab.
-    div.onmousedown = (e) => { if (e.button === 1) { e.preventDefault(); closeTab(t.name, e); } };
-    container.appendChild(div);
-  });
-}
-
-// v4.7.0beta (PR#2) — Close an editor tab. If it's the active one, flush it and
-// switch to a neighbour (or clear the editor if it was the last tab).
-async function closeTab(name, e) {
-  if (e) e.stopPropagation();
-  const idx = openTabs.findIndex(t => t.name === name);
-  if (idx === -1) return;
-  const wasActive = (name === currentFile);
-  if (wasActive) { try { await saveCurrentFile(); } catch (_) {} }
-  openTabs.splice(idx, 1);
-  if (!wasActive) { renderTabs(); return; }
-  if (openTabs.length) {
-    await openFile(openTabs[Math.max(0, idx - 1)].name);   // neighbour to the left
-  } else {
-    currentFile = null;
-    cmEditor.setValue("");
-    clearErrorMarkers();
-    renderTabs();
-    updateOutline();
-    updateWordCount();
-  }
-}
-
-async function saveCurrentFile() {
-  if (!currentProject || !currentFile) return;
-  if (isImageFile(currentFile)) return;   // ห้าม save ทับไฟล์รูปภาพ
-  // Snapshot the path/project at call-time. If `currentFile` flips while the
-  // POST is in flight, we still write the editor's content to the file the
-  // editor was actually displaying — never to the next file we just opened.
-  const fileAtSave = currentFile;
-  const projAtSave = currentProject;
-  const content    = cmEditor.getValue();
-  await fetch(`/api/projects/${encodeURIComponent(projAtSave)}/file`, {
-    method: "POST",
-    headers: {"Content-Type":"application/json"},
-    body: JSON.stringify({ path: fileAtSave, content })
-  });
-}
-
-// auto-save และ tab key ถูก handle โดย CodeMirror แล้ว
-
-// ── OUTLINE ───────────────────────────────────────────────────
-function parseOutline(content) {
-  const pattern = /^[ \t]*\\(chapter|section|subsection|subsubsection)\*?\{([^}]+)\}/;
-  return content.split("\n").reduce((acc, line, i) => {
-    const m = line.match(pattern);
-    if (m) acc.push({ level: m[1], title: m[2], line: i });
-    return acc;
-  }, []);
-}
-
-function renderOutline(items) {
-  const el = document.getElementById("outline-tree");
-  if (!items.length) {
-    el.innerHTML = '<div class="outline-empty">No sections found</div>';
-    return;
-  }
-  el.innerHTML = "";
-  items.forEach(({ level, title, line }) => {
-    const div = document.createElement("div");
-    div.className = `outline-item lvl-${level}`;
-    div.textContent = title;
-    div.title = title;
-    div.onclick = () => {
-      cmEditor.setCursor(line, 0);
-      cmEditor.scrollIntoView({ line, ch: 0 }, 80);
-      cmEditor.focus();
-    };
-    el.appendChild(div);
-  });
-}
-
-function updateOutline() {
-  const ext = (currentFile || "").split(".").pop();
-  if (ext !== "tex") {
-    document.getElementById("outline-tree").innerHTML = '<div class="outline-empty">Only for .tex files</div>';
-    return;
-  }
-  renderOutline(parseOutline(cmEditor.getValue()));
-}
-
-function toggleOutline() {
-  const sec = document.getElementById("outline-section");
-  const btn = document.getElementById("outline-toggle");
-  sec.classList.toggle("collapsed");
-  btn.textContent = sec.classList.contains("collapsed") ? "+" : "−";
-}
-
-// ── MOVE FILE ─────────────────────────────────────────────────
-function startRenameFile(div, filePath) {
-  const labelEl = div.querySelector(".file-label");
-  const dir     = filePath.includes("/") ? filePath.substring(0, filePath.lastIndexOf("/") + 1) : "";
-  const oldName = filePath.split("/").pop();
-
-  const input = document.createElement("input");
-  input.className = "file-rename-input";
-  input.value = oldName;
-  labelEl.replaceWith(input);
-  div.onclick = null;
-  input.focus();
-  input.select();
-
-  const commit = async () => {
-    const newName = input.value.trim();
-    if (newName && newName !== oldName) {
-      await moveFile(filePath, dir + newName);
-    } else {
-      await loadFiles();
-    }
-  };
-  input.onkeydown = async e => {
-    if (e.key === "Enter")  { e.preventDefault(); await commit(); }
-    if (e.key === "Escape") { await loadFiles(); }
-  };
-  input.onblur = commit;
-}
-
-async function moveFile(src, dst) {
-  if (!src || !dst || src === dst) return;
-  const res = await fetch(`/api/projects/${currentProject}/movefile`, {
-    method: "POST",
-    headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({ src, dst })
-  });
-  const data = await res.json();
-  if (data.ok) {
-    // อัปเดต currentFile และ tabs ถ้าไฟล์ที่ย้ายกำลังเปิดอยู่
-    if (currentFile === src) currentFile = dst;
-    const tab = openTabs.find(t => t.name === src);
-    if (tab) tab.name = dst;
-    renderTabs();
-    await loadFiles();
-  }
-}
-
-// root drop zone (ลากออกมาวางในพื้นที่ว่าง = ย้ายไป root)
-;(function() {
-  const treeEl = document.getElementById("file-tree");
-  treeEl.addEventListener("dragover", e => {
-    e.preventDefault();
-    treeEl.classList.add("drag-over-root");
-  });
-  treeEl.addEventListener("dragleave", e => {
-    if (!treeEl.contains(e.relatedTarget))
-      treeEl.classList.remove("drag-over-root");
-  });
-  treeEl.addEventListener("drop", async e => {
-    e.preventDefault();
-    treeEl.classList.remove("drag-over-root");
-    const src = e.dataTransfer.getData("text/plain");
-    if (!src) return;
-    const filename = src.split("/").pop();
-    if (src === filename) return; // อยู่ root อยู่แล้ว
-    await moveFile(src, filename);
-  });
-})();
-
-// ── UPLOAD FILES ─────────────────────────────────────────────
-function triggerUpload() {
-  if (!currentProject) return alert("Select a project first.");
-  document.getElementById("upload-input").value = "";
-  document.getElementById("upload-input").click();
-}
-
-async function handleUpload(fileList) {
-  if (!fileList || !fileList.length || !currentProject) return;
-  const status = document.getElementById("compile-status");
-  status.textContent = `Uploading ${fileList.length} file(s)…`;
-  status.className = "compile-status";
-
-  const form = new FormData();
-  for (const f of fileList) form.append("files", f);
-
-  const res  = await fetch(`/api/projects/${currentProject}/upload`, { method: "POST", body: form });
-  const data = await res.json();
-  if (data.ok) {
-    status.textContent = `✓ Uploaded ${data.files.length} file(s)`;
-    status.className = "compile-status ok";
-    await loadFiles();
-  } else {
-    status.textContent = "✗ Upload failed";
-    status.className = "compile-status err";
-  }
-}
-
-// Drag-and-drop upload onto file tree
-;(function() {
-  const tree = document.getElementById("file-tree");
-  tree.addEventListener("dragenter", e => { if (e.dataTransfer.types.includes("Files")) { e.preventDefault(); tree.classList.add("upload-hover"); } });
-  tree.addEventListener("dragover",  e => { if (e.dataTransfer.types.includes("Files")) { e.preventDefault(); } });
-  tree.addEventListener("dragleave", e => { if (!tree.contains(e.relatedTarget)) tree.classList.remove("upload-hover"); });
-  tree.addEventListener("drop", async e => {
-    tree.classList.remove("upload-hover");
-    if (!e.dataTransfer.files.length) return;
-    // ถ้าเป็นไฟล์จากภายนอก (ไม่ใช่ drag-and-drop ไฟล์ภายใน)
-    const isExternal = !e.dataTransfer.getData("text/plain");
-    if (!isExternal) return;
-    e.preventDefault(); e.stopPropagation();
-    await handleUpload(e.dataTransfer.files);
-  });
-})();
-
-// ── IMPORT ZIP ────────────────────────────────────────────────
-function onZipSelected(input) {
-  const file = input.files[0];
-  if (!file) return;
-  document.getElementById("zip-drop-label").textContent = `📦 ${file.name}`;
-  const name = file.name.replace(/\.zip$/i, "").replace(/[^a-zA-Z0-9_\- ]/g, "_");
-  document.getElementById("input-zip-name").value = name;
-}
-
-;(function() {
-  const zone = document.getElementById("zip-drop-zone");
-  zone.addEventListener("dragover",  e => { e.preventDefault(); zone.classList.add("over"); });
-  zone.addEventListener("dragleave", () => zone.classList.remove("over"));
-  zone.addEventListener("drop", e => {
-    e.preventDefault(); zone.classList.remove("over");
-    const file = e.dataTransfer.files[0];
-    if (!file || !file.name.endsWith(".zip")) return alert("Please drop a .zip file");
-    document.getElementById("zip-file-input").files; // can't set directly
-    // manually set via DataTransfer trick
-    const dt = new DataTransfer(); dt.items.add(file);
-    document.getElementById("zip-file-input").files = dt.files;
-    onZipSelected(document.getElementById("zip-file-input"));
-  });
-})();
-
-async function importZip() {
-  const fileInput = document.getElementById("zip-file-input");
-  const name      = document.getElementById("input-zip-name").value.trim();
-  if (!fileInput.files[0]) return alert("Please select a ZIP file.");
-  if (!name)               return alert("Please enter a project name.");
-
-  const btn = document.getElementById("import-zip-btn");
-  btn.textContent = "Importing…"; btn.disabled = true;
-
-  const form = new FormData();
-  form.append("file", fileInput.files[0]);
-  form.append("name", name);
-
-  const res  = await fetch("/api/import-zip", { method: "POST", body: form });
-  const data = await res.json();
-  btn.textContent = "Import"; btn.disabled = false;
-
-  if (data.ok) {
-    closeModal("modal-import-zip");
-    await loadProjects();
-    document.getElementById("project-select").value = data.name;
-    await switchProject(data.name);
-  } else {
-    alert("Import failed: " + data.error);
-  }
-}
-
-function setMainFile(path) {
-  mainFile = path;
-  const status = document.getElementById("compile-status");
-  status.textContent = `Main: ${path.split("/").pop()}`;
-  status.className = "compile-status";
-  loadFiles();  // re-render stars
-  // v3.2.2 — \include{} list is keyed off the main file; if the user
-  // switches main, refresh availableIncludes (and reconcile the saved
-  // selection) so the popup reflects the new file's chapters.
-  loadIncludes();
-}
-
-function showNewFolder() {
-  if (!currentProject) return alert("Select a project first.");
-  document.getElementById("input-folder-name").value = "";
-  openModal("modal-folder");
-  setTimeout(() => document.getElementById("input-folder-name").focus(), 100);
-}
-
-async function createFolder() {
-  const name = document.getElementById("input-folder-name").value.trim();
-  if (!name) return;
-  await fetch(`/api/projects/${currentProject}/newfolder`, {
-    method: "POST", headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({ path: name })
-  });
-  closeModal("modal-folder");
-  openFolders.add(name);   // auto-expand folder ใหม่
-  await loadFiles();
-}
-
-function showNewFile() {
-  if (!currentProject) return alert("Select a project first.");
-  document.getElementById("input-file-name").value = "";
-  openModal("modal-file");
-  setTimeout(() => document.getElementById("input-file-name").focus(), 100);
-}
-
-async function createFile() {
-  const name = document.getElementById("input-file-name").value.trim();
-  if (!name) return;
-  await fetch(`/api/projects/${currentProject}/newfile`, {
-    method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({path:name})
-  });
-  closeModal("modal-file");
-  await loadFiles();
-  openFile(name);
-}
-
-async function deleteFile(e, name) {
-  e.stopPropagation();
-  if (!confirm(`Delete ${name}?`)) return;
-  // Cancel pending auto-save before nuking the file — otherwise the timer
-  // could re-create the file we just asked the server to delete.
-  if (currentFile === name) {
-    clearTimeout(saveTimer);
-    saveTimer = null;
-  }
-  await fetch(`/api/projects/${currentProject}/file?path=${encodeURIComponent(name)}`, { method:"DELETE" });
-  if (currentFile === name) {
-    currentFile = null;
-    openTabs = openTabs.filter(t => t.name !== name);
-    cmEditor.setValue("");
-    renderTabs();
-  }
-  loadFiles();
-}
-
-// ── ERROR MARKERS + PANEL ────────────────────────────────────
-let lastParsedLog = null;   // เก็บ parsed result ล่าสุดไว้เปิด Logs panel ได้เสมอ
-let logsActiveTab = "all";  // tab ที่เลือกอยู่ใน Logs panel
-
-function parseLatexErrors(log) {
-  const errors = [], warnings = [], infos = [];
-  const lines = log.split("\n");
-  // v3.3.0 — Missing-package detection. Tracks packages/classes the user
-  // doesn't have installed; surfaced as a dedicated card with an `mpm
-  // --install=<pkg>` copy button. Dedup by name so spam from a hundred
-  // re-runs doesn't compound. We deliberately collect AS WELL AS leaving
-  // the original error in `errors[]` — the user sees both "package missing"
-  // (with install hint) AND the raw "! LaTeX Error" message (for context).
-  const missingPackages = [];
-  const seenPkg = new Set();
-  const addPkg = (name, kind) => {
-    if (!name) return;
-    // Strip path prefix (rare; defensive) and extension.
-    const stem = name.replace(/^.*[\\\/]/, "").replace(/\.(sty|cls)$/i, "");
-    if (!stem || seenPkg.has(stem)) return;
-    seenPkg.add(stem);
-    missingPackages.push({ name: stem, kind });
-  };
-
-  for (let i = 0; i < lines.length; i++) {
-    const l = lines[i];
-
-    // v3.3.0 — Missing-package patterns. Three forms seen in the wild:
-    //   `! LaTeX Error: File `foo.sty' not found.`     (MiKTeX, TeX Live)
-    //   `! Package foo Error: ... bar.sty not found.`  (some packages)
-    //   `! I can't find file `foo'.`                   (older TeX, no ext)
-    // We scan separately from Patterns A/B so the missing-package card can
-    // still appear even if the surrounding message also matches one of those
-    // (it almost always does — the "! LaTeX Error" line is also Pattern B).
-    let mPkg = l.match(/^!\s*LaTeX\s+Error:\s*File\s+[`'"]([^'"`]+\.(?:sty|cls))['"`]\s+not\s+found/i);
-    if (mPkg) addPkg(mPkg[1], /\.cls$/i.test(mPkg[1]) ? "class" : "package");
-    else {
-      mPkg = l.match(/^!\s*I\s+can'?t\s+find\s+file\s+[`'"]([^'"`]+?)(?:\.(?:sty|cls))?['"`]/i);
-      if (mPkg) addPkg(mPkg[1], "package");
-    }
-
-    // Pattern A: ./file.tex:LINE: message
-    const mA = l.match(/^((?:[A-Za-z]:)?(?:\.\/)?[^:\n]+\.tex):(\d+):\s*(.+)$/);   // v4.9.10 (B5) — optional drive prefix so a Windows absolute path (C:\...\ch.tex:42:) is attributed to a file/line, not skipped (the drive-letter colon used to defeat [^:\n]+)
-    if (mA) {
-      const msg = mA[3].trim();
-      if (msg && !msg.startsWith("(")) {
-        errors.push({ file: mA[1].replace(/^\.\//, "").replace(/\\/g, "/"), line: parseInt(mA[2]) - 1, msg });   // v4.9.10 (B5) — \ → / so an abs Windows path matches the app path style
-      }
-      continue;
-    }
-
-    // Pattern B: ! Error → look ahead for l.N
-    const mB = l.match(/^! (.+)$/);
-    if (mB) {
-      let lineNo = -1;
-      for (let j = i + 1; j < Math.min(i + 15, lines.length); j++) {
-        const mL = lines[j].match(/^l\.(\d+)/);
-        if (mL) { lineNo = parseInt(mL[1]) - 1; break; }
-      }
-      errors.push({ file: null, line: lineNo, msg: mB[1].trim() });
-      continue;
-    }
-
-    // Pattern C: Overfull / Underfull \hbox
-    const mOF = l.match(/^((?:Over|Under)full \\[hv]box[^)]*\))\s+(?:detected at line (\d+)|in paragraph at lines (\d+))/i);
-    if (mOF) {
-      const lineNo = parseInt(mOF[2] || mOF[3]) - 1;
-      warnings.push({ file: null, line: lineNo, msg: mOF[0].trim() });
-      continue;
-    }
-
-    // Pattern D: LaTeX Warning / Package Warning ... on input line N
-    const mW = l.match(/(?:LaTeX|Package\s+\S+)\s+Warning[:\s]+(.*?)(?:\s+on input line (\d+))?\.?\s*$/i);
-    if (mW) {
-      const msg = mW[1].trim() || l.trim();
-      const lineNo = mW[2] ? parseInt(mW[2]) - 1 : -1;
-      warnings.push({ file: null, line: lineNo, msg });
-      continue;
-    }
-
-    // Pattern E: Info messages
-    const mI = l.match(/^(?:LaTeX|Package\s+\S+)\s+(?:Font\s+)?Info[:\s]+(.+)$/i);
-    if (mI) {
-      infos.push({ file: null, line: -1, msg: mI[1].trim() });
-      continue;
-    }
-  }
-
-  const dedup = arr => {
-    const seen = new Set();
-    return arr.filter(e => {
-      const key = `${e.file}:${e.line}:${e.msg.slice(0,60)}`;
-      if (seen.has(key)) return false; seen.add(key); return true;
-    });
-  };
-  return { errors: dedup(errors), warnings: dedup(warnings), infos: dedup(infos),
-           missingPackages };   // v3.3.0
-}
-
-function showErrorPanel({ errors, warnings }) {
-  const panel = document.getElementById("error-panel");
-  const title = document.getElementById("pdf-pane-title");
-
-  document.getElementById("pdf-canvas-container").style.display = "none";
-  document.getElementById("pdf-placeholder").style.display = "none";
-
-  const errCount  = errors.length;
-  const warnCount = warnings.length;
-
-  panel.innerHTML = `
-    <div class="err-panel-header" id="err-panel-hdr">
-      <span class="err-summary">
-        ${errCount  ? `<span style="color:var(--red)">✕ ${errCount} error${errCount>1?"s":""}</span>` : ""}
-        ${errCount && warnCount ? "<span style='color:var(--muted)'>&nbsp;·&nbsp;</span>" : ""}
-        ${warnCount ? `<span style="color:var(--yellow)">! ${warnCount} warning${warnCount>1?"s":""}</span>` : ""}
-      </span>
-    </div>
-    <div class="err-cards" id="err-cards"></div>
-  `;
-
-  // ใช้ position:absolute inset:0 ใน .pdf-content wrapper — ไม่ต้องวัด height เอง
-  panel.classList.add("visible");
-
-  title.textContent = "Compile Errors";
-
-  const cards = document.getElementById("err-cards");
-
-  // v3.3.0 — Missing-package install hints at the very top, before raw
-  // errors/warnings. These are the most actionable items in the panel:
-  // the rest of the cascade (Undefined control sequence, etc.) is almost
-  // always downstream of the missing .sty file, so once the user clicks
-  // Install the rest typically vanishes.
-  const missing = (lastParsedLog && lastParsedLog.missingPackages) || [];
-  missing.forEach(pkg => {
-    const card = document.createElement("div");
-    card.className = "err-card err-missing-pkg";
-    // MiKTeX users get `mpm --install=<pkg>`; TeX Live users get
-    // `tlmgr install <pkg>`. We show MiKTeX as the primary (Pol's setup)
-    // and TeX Live as the secondary tip. Class files (.cls) use the same
-    // commands — pkgname without extension is what the installers expect.
-    const cmdMiktex = `mpm --install=${pkg.name}`;
-    card.innerHTML = `
-      <div class="err-header">
-        <span class="err-icon">📦</span>
-        <span class="err-msg">Missing ${pkg.kind}: <b>${escapeHtml(pkg.name)}</b><br>
-          <span style="color:var(--muted);font-family:var(--font-ui);font-size:11px">
-            Install via MiKTeX Package Manager — or <code style="font-family:var(--font-code)">tlmgr install ${escapeHtml(pkg.name)}</code> on TeX Live.
-          </span>
-        </span>
-      </div>
-      <div class="err-mpkg-row">
-        <code class="err-mpkg-cmd">${escapeHtml(cmdMiktex)}</code>
-        <button class="err-mpkg-install" type="button" title="Open MiKTeX Console / TeX Live to install">📦 Open Manager</button>
-        <button class="err-mpkg-copy" type="button">Copy</button>
-      </div>
-    `;
-    // v4.4.0 — open the system package-manager GUI (MiKTeX Console / TeX Live)
-    // so the user installs there, rather than shelling the installer in-app.
-    card.querySelector(".err-mpkg-install").onclick = () => openPackageManager();
-    const btn = card.querySelector(".err-mpkg-copy");
-    btn.onclick = () => {
-      // navigator.clipboard fails over http on some browsers; fallback to
-      // a hidden textarea + execCommand("copy") which works everywhere.
-      const txt = cmdMiktex;
-      const ok = () => {
-        btn.textContent = "Copied!"; btn.classList.add("copied");
-        setTimeout(() => { btn.textContent = "Copy"; btn.classList.remove("copied"); }, 1500);
-      };
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(txt).then(ok, () => _copyFallback(txt, ok));
-      } else {
-        _copyFallback(txt, ok);
-      }
-    };
-    cards.appendChild(card);
-  });
-
-  const allItems = [
-    ...errors.map(e  => ({ ...e, isError: true  })),
-    ...warnings.map(w => ({ ...w, isError: false }))
-  ];
-
-  // v3.3.2 — Group repeated errors by shape. The same `\foo` typo in a macro
-  // cascades to "Undefined control sequence \foo" at every use site, producing
-  // 12+ identical cards in figure-heavy chapters. Grouping collapses them to
-  // one card with a ×N badge; clicking the badge/chevron expands the list of
-  // file:line occurrences. Order of cards is preserved by FIRST occurrence
-  // (so the topmost group is the first error to surface) — important because
-  // the root cause is almost always the first one chronologically.
-  const groups = _groupErrorItems(allItems);
-  groups.forEach(group => {
-    const rep = group.rep;
-    const n = group.occurrences.length;
-    const card = document.createElement("div");
-    card.className = `err-card ${rep.isError ? "err-error" : "err-warn"}`;
-    const locText = [rep.file, rep.line >= 0 ? `line ${rep.line + 1}` : null]
-      .filter(Boolean).join(", ");
-
-    // Singleton (n===1): same UX as v3.3.1 — just the .err-nav arrow.
-    // Multi (n>1): hide .err-nav, show ×N pill + chevron. Both pill and
-    // chevron toggle the .err-expanded class on the card to reveal the list.
-    let headerExtra = "";
-    if (n > 1) {
-      headerExtra = `<span class="err-count-badge" title="${n} occurrences — click to expand">×${n}</span>
-                     <button class="err-chev" title="Show all occurrences" aria-label="Expand occurrences">▶</button>`;
-    } else if (rep.line >= 0) {
-      headerExtra = `<button class="err-nav" title="Jump to line">↗</button>`;
-    }
-
-    card.innerHTML = `
-      <div class="err-header">
-        <span class="err-icon">${rep.isError ? "✕" : "!"}</span>
-        <span class="err-msg">${rep.msg}</span>
-        ${headerExtra}
-      </div>
-      ${locText ? `<div class="err-loc">${locText}${n > 1 ? ` · +${n - 1} more` : ""}</div>` : ""}
-      ${n > 1 ? `<div class="err-occurrences"></div>` : ""}
-    `;
-
-    if (n === 1 && rep.line >= 0) {
-      card.querySelector(".err-nav").onclick = () => {
-        cmEditor.setCursor(rep.line, 0);
-        cmEditor.scrollIntoView({ line: rep.line, ch: 0 }, 80);
-        cmEditor.focus();
-      };
-    } else if (n > 1) {
-      // Populate the occurrences list lazily — only build DOM rows when
-      // first expanded. For groups with 50+ occurrences (worst case: a
-      // missing \def cascade) this saves a chunk of init work.
-      const occList = card.querySelector(".err-occurrences");
-      const chev    = card.querySelector(".err-chev");
-      const badge   = card.querySelector(".err-count-badge");
-      let populated = false;
-      const populate = () => {
-        if (populated) return;
-        populated = true;
-        group.occurrences.forEach(occ => {
-          const row = document.createElement("button");
-          row.className = "err-occ-row";
-          row.type = "button";
-          const where = [occ.file, occ.line >= 0 ? `line ${occ.line + 1}` : "(no line)"]
-            .filter(Boolean).join(", ");
-          row.textContent = `↗  ${where}`;
-          if (occ.line >= 0) {
-            row.onclick = () => {
-              cmEditor.setCursor(occ.line, 0);
-              cmEditor.scrollIntoView({ line: occ.line, ch: 0 }, 80);
-              cmEditor.focus();
-            };
-          } else {
-            row.disabled = true;
-            row.style.cursor = "default";
-          }
-          occList.appendChild(row);
-        });
-      };
-      const toggle = (e) => {
-        e.stopPropagation();
-        populate();
-        card.classList.toggle("err-expanded");
-      };
-      if (chev)  chev.onclick  = toggle;
-      if (badge) badge.onclick = toggle;
-    }
-    cards.appendChild(card);
-  });
-}
-
-// v3.3.2 — Shape-based key generator for error grouping. Strips variable parts
-// (line numbers in trailing "on input line NNN" / "at lines XXX-YYY" /
-// "detected at line N") so two warnings with the same root cause at different
-// lines collapse. Keeps the meaningful token (e.g. \foo) intact — distinct
-// undefined sequences are different groups, not one mega-bucket.
-function _errorGroupKey(item) {
-  let key = (item.msg || "").trim();
-  // Drop trailing line-number tails that LaTeX appends to warnings.
-  key = key.replace(/\s+on input line\s+\d+\.?$/gi, "");
-  key = key.replace(/\s+(?:at|in paragraph at)\s+lines?\s+\d+(?:-{1,2}\d+)?\.?$/gi, "");
-  key = key.replace(/\s+detected at line\s+\d+\.?$/gi, "");
-  // v3.3.2 — Defensive: strip line refs even if NOT at end of string. Some
-  // pdflatex setups (and some package warnings) embed "l.NNN" or "line NNN"
-  // mid-message — without these stripped, the same root cause at different
-  // lines wouldn't collapse. We use \b boundaries so we don't eat actual
-  // words containing "line" (e.g. "lineart").
-  key = key.replace(/\s*\bl\.\d+\b/gi, "");
-  key = key.replace(/\s+\bline\s+\d+\b/gi, "");
-  key = key.replace(/\s+\blines?\s+\d+(?:[-–—]\d+)?\b/gi, "");
-  // Collapse repeated whitespace introduced by stripping.
-  key = key.replace(/\s+/g, " ").trim();
-  // Trailing period is decorative — strip so "Foo." and "Foo" merge.
-  key = key.replace(/\.+$/, "");
-  // Severity is part of the key so an error and a warning with identical text
-  // (rare but possible) stay separate.
-  return `${item.isError ? "E" : "W"}|${key.toLowerCase()}`;
-}
-
-function _groupErrorItems(items) {
-  // Map iteration is insertion-ordered so the first-seen group ends up first
-  // in the rendered list — matches users' "fix the first error first" mental
-  // model better than sorting by count.
-  const groups = new Map();
-  for (const item of items) {
-    const key = _errorGroupKey(item);
-    if (!groups.has(key)) {
-      groups.set(key, { rep: item, occurrences: [] });
-    }
-    groups.get(key).occurrences.push(item);
-  }
-  // v3.3.2 diagnostic — helps confirm grouping path is live after refresh.
-  // Console.debug is filtered out by default (won't spam regular browsing);
-  // visible only when DevTools "Verbose" log level is on. Leave permanently —
-  // tiny cost, big win for next-time-something-feels-off triage.
-  try {
-    const summary = [...groups.values()].map(g => `${g.occurrences.length}× "${(g.rep.msg||"").slice(0,32)}"`);
-    console.debug("[err-group]", items.length, "items →", groups.size, "groups", summary);
-  } catch (_) {}
-  return [...groups.values()];
-}
-
-function hideErrorPanel() {
-  const panel = document.getElementById("error-panel");
-  panel.classList.remove("visible");
-  panel.innerHTML = "";
-  document.getElementById("pdf-pane-title").textContent = "PDF Preview";
-}
-
-// ── LOGS PANEL ────────────────────────────────────────────────
-function updateLogsBadge(parsed) {
-  const badge = document.getElementById("logs-btn-badge");
-  if (!parsed) { badge.textContent = ""; badge.className = ""; return; }
-  const e = parsed.errors.length, w = parsed.warnings.length, n = parsed.infos.length;
-  const total = e + w + n;
-  if (!total) { badge.textContent = ""; badge.className = ""; return; }
-  if (e) {
-    badge.textContent = `${e}E ${w}W`;
-    badge.id = "logs-btn-badge"; badge.className = "b-err";
-  } else if (w) {
-    badge.textContent = `${w}W`;
-    badge.id = "logs-btn-badge"; badge.className = "b-warn";
-  } else {
-    badge.textContent = `${n}`;
-    badge.id = "logs-btn-badge"; badge.className = "";
-  }
-}
-
-function renderLogsCards(items) {
-  const cards = document.getElementById("logs-cards");
-  if (!cards) return;
-  cards.innerHTML = "";
-  if (!items.length) {
-    cards.innerHTML = '<div style="text-align:center;padding:32px;color:var(--muted);font-size:13px">No items</div>';
-    return;
-  }
-  // v3.3.2 — Apply error-grouping here too. Logs panel renders the same data
-  // as the Error panel but with All/Errors/Warnings/Info tabs; grouping logic
-  // is identical. _errorGroupKey reads `.isError`, so we synthesize that from
-  // `.kind` before grouping (an `info` kind counts as not-an-error so info
-  // items group separately from a same-text warning, which is the right
-  // behaviour because they have different severity colour anyway).
-  const normalized = items.map(it => ({ ...it, isError: it.kind === "error" }));
-  const groups = _groupErrorItems(normalized);
-  groups.forEach(group => {
-    const rep = group.rep;
-    const n   = group.occurrences.length;
-    const kind = rep.kind || (rep.isError ? "error" : "warn");
-    const cls  = kind === "error" ? "err-error" : kind === "info" ? "err-info" : "err-warn";
-    const icon = kind === "error" ? "✕" : kind === "info" ? "ℹ" : "!";
-    const card = document.createElement("div");
-    card.className = `err-card ${cls}`;
-    const locText = [rep.file, rep.line >= 0 ? `line ${rep.line + 1}` : null].filter(Boolean).join(", ");
-
-    let headerExtra = "";
-    if (n > 1) {
-      headerExtra = `<span class="err-count-badge" title="${n} occurrences — click to expand">×${n}</span>
-                     <button class="err-chev" title="Show all occurrences" aria-label="Expand occurrences">▶</button>`;
-    } else if (rep.line >= 0) {
-      headerExtra = `<button class="err-nav" title="Jump to line">↗</button>`;
-    }
-
-    card.innerHTML = `
-      <div class="err-header">
-        <span class="err-icon">${icon}</span>
-        <span class="err-msg">${rep.msg}</span>
-        ${headerExtra}
-      </div>
-      ${locText ? `<div class="err-loc">${locText}${n > 1 ? ` · +${n - 1} more` : ""}</div>` : ""}
-      ${n > 1 ? `<div class="err-occurrences"></div>` : ""}
-    `;
-
-    if (n === 1 && rep.line >= 0) {
-      card.querySelector(".err-nav").onclick = () => {
-        cmEditor.setCursor(rep.line, 0);
-        cmEditor.scrollIntoView({ line: rep.line, ch: 0 }, 80);
-        cmEditor.focus();
-      };
-    } else if (n > 1) {
-      const occList = card.querySelector(".err-occurrences");
-      const chev    = card.querySelector(".err-chev");
-      const badge   = card.querySelector(".err-count-badge");
-      let populated = false;
-      const populate = () => {
-        if (populated) return;
-        populated = true;
-        group.occurrences.forEach(occ => {
-          const row = document.createElement("button");
-          row.className = "err-occ-row";
-          row.type = "button";
-          const where = [occ.file, occ.line >= 0 ? `line ${occ.line + 1}` : "(no line)"]
-            .filter(Boolean).join(", ");
-          row.textContent = `↗  ${where}`;
-          if (occ.line >= 0) {
-            row.onclick = () => {
-              cmEditor.setCursor(occ.line, 0);
-              cmEditor.scrollIntoView({ line: occ.line, ch: 0 }, 80);
-              cmEditor.focus();
-            };
-          } else {
-            row.disabled = true;
-            row.style.cursor = "default";
-          }
-          occList.appendChild(row);
-        });
-      };
-      const toggle = (e) => {
-        e.stopPropagation();
-        populate();
-        card.classList.toggle("err-expanded");
-      };
-      if (chev)  chev.onclick  = toggle;
-      if (badge) badge.onclick = toggle;
-    }
-    cards.appendChild(card);
-  });
-}
-
-function showLogsPanel(parsed) {
-  const panel = document.getElementById("logs-panel");
-  const e = parsed.errors.map(x => ({ ...x, kind: "error" }));
-  const w = parsed.warnings.map(x => ({ ...x, kind: "warn" }));
-  const n = parsed.infos.map(x => ({ ...x, kind: "info" }));
-  const allItems = [...e, ...w, ...n];
-
-  const tabData = [
-    { id: "all",     label: "All logs", items: allItems,  bclass: "" },
-    { id: "errors",  label: "Errors",   items: e,         bclass: "b-err"  },
-    { id: "warnings",label: "Warnings", items: w,         bclass: "b-warn" },
-    { id: "infos",   label: "Info",     items: n,         bclass: "b-info" },
-  ];
-
-  panel.innerHTML = `
-    <div class="logs-tabs">
-      ${tabData.map(t => `
-        <button class="logs-tab${logsActiveTab === t.id ? " active" : ""}"
-                onclick="logsActiveTab='${t.id}'; showLogsPanel(lastParsedLog)">
-          ${t.label}
-          <span class="lbadge ${t.bclass}">${t.items.length}</span>
-        </button>`).join("")}
-      <button class="logs-close" onclick="hideLogsPanel()">✕</button>
-    </div>
-    <div class="logs-cards" id="logs-cards"></div>
-  `;
-  panel.classList.add("visible");
-
-  const activeTab = tabData.find(t => t.id === logsActiveTab) || tabData[0];
-  renderLogsCards(activeTab.items);
-}
-
-function hideLogsPanel() {
-  const panel = document.getElementById("logs-panel");
-  panel.classList.remove("visible");
-  panel.innerHTML = "";
-}
-
-function toggleLogsPanel() {
-  const panel = document.getElementById("logs-panel");
-  if (panel.classList.contains("visible")) {
-    hideLogsPanel();
-  } else {
-    if (!lastParsedLog) return;
-    showLogsPanel(lastParsedLog);
-  }
-}
-
-function clearErrorMarkers() {
-  cmEditor.clearGutter("cm-errors-gutter");
-  cmEditor.eachLine(lh => {
-    cmEditor.removeLineClass(lh, "background", "cm-error-line");
-    cmEditor.removeLineClass(lh, "background", "cm-warn-line");
-  });
-}
-
-// v3.2.3 — Singleton tooltip reused across every marker. Created lazily on
-// first hover so we don't add DOM nodes for users who never trigger a build.
-let _markerTipEl = null;
-function _ensureMarkerTip() {
-  if (_markerTipEl) return _markerTipEl;
-  _markerTipEl = document.createElement("div");
-  _markerTipEl.className = "cm-marker-tooltip";
-  document.body.appendChild(_markerTipEl);
-  return _markerTipEl;
-}
-function _showMarkerTip(el, msg, isError) {
-  const tip = _ensureMarkerTip();
-  tip.className = "cm-marker-tooltip " + (isError ? "error" : "warn");
-  tip.innerHTML = `<span class="tip-tag">${isError ? "ERROR" : "WARNING"}</span>${_esc(msg || "(no message)")}`;
-  // Make visible first so offsetWidth/Height are measurable
-  tip.style.display = "block";
-  tip.style.left = "0px"; tip.style.top = "0px";
-  const r = el.getBoundingClientRect();
-  // Prefer to the right of the marker, vertically centered. If it would
-  // overflow the right edge, flip to the left side.
-  let left = r.right + 8;
-  if (left + tip.offsetWidth + 8 > window.innerWidth) {
-    left = Math.max(4, r.left - tip.offsetWidth - 8);
-  }
-  let top = r.top + r.height / 2 - tip.offsetHeight / 2;
-  top = Math.max(4, Math.min(window.innerHeight - tip.offsetHeight - 4, top));
-  tip.style.left = left + "px";
-  tip.style.top  = top  + "px";
-}
-function _hideMarkerTip() {
-  if (_markerTipEl) _markerTipEl.style.display = "none";
-}
-
-function showErrorMarkers({ errors, warnings }) {
-  clearErrorMarkers();
-  const total = cmEditor.lineCount();
-
-  const addMarker = (lineNo, msg, isError) => {
-    if (lineNo < 0 || lineNo >= total) return;
-    const el = document.createElement("div");
-    el.className = isError ? "cm-error-marker" : "cm-warn-marker";
-    el.textContent = isError ? "✕" : "!";
-    // Kept as a fallback if our styled tooltip ever fails to mount (e.g.
-    // headless screenshot tooling). The custom tooltip below wins because
-    // it fires on mouseenter instantly while title needs ~1s delay.
-    el.title = msg || "";
-    el.addEventListener("mouseenter", () => _showMarkerTip(el, msg, isError));
-    el.addEventListener("mouseleave", _hideMarkerTip);
-    el.onclick = () => {
-      cmEditor.setCursor(lineNo, 0);
-      cmEditor.scrollIntoView({ line: lineNo, ch: 0 }, 80);
-      cmEditor.focus();
-    };
-    cmEditor.setGutterMarker(lineNo, "cm-errors-gutter", el);
-    cmEditor.addLineClass(lineNo, "background", isError ? "cm-error-line" : "cm-warn-line");
-  };
-
-  errors.forEach(e   => addMarker(e.line, e.msg, true));
-  warnings.forEach(w => addMarker(w.line, w.msg, false));
-}
+// v5.0.0-beta.2.0 — FILES lifted to static/files.js (Phase 2 CM-light split). Loaded via <script defer> after editor.js.
+// v5.0.0-beta.3.0 — ERROR MARKERS + PANEL + LOGS lifted to static/errors.js (Phase 3 CM-heavy split).
+//   Owns lastParsedLog / logsActiveTab / _markerTipEl (global, shared scope). Loaded via <script defer> after editor.js.
 
 // ── COMPILE ───────────────────────────────────────────────────
-async function compile() {
+export async function compile() {
   if (!currentProject) return alert("Select a project first.");
   // Cancel any pending auto-save so it can't race with our explicit save below
   // (otherwise an in-flight POST could clobber our save with a stale snapshot).
@@ -2012,7 +958,7 @@ const compiler = document.getElementById("compiler-select").value;
   document.getElementById("log-content").textContent = data.log || "";
 
   const parsed = parseLatexErrors(data.log || "");
-  lastParsedLog = parsed;
+  _ssLastParsedLog(parsed);
   updateLogsBadge(parsed);
   // v3.2.3 — Push this run into the compile history (last 10 per project).
   // Done before the ok/err branches so failed compiles are also remembered.
@@ -2104,715 +1050,13 @@ function _compileStatsTooltip(currentElapsed) {
   }
 }
 
-// ── PDF.js VIEWER ─────────────────────────────────────────────
-const PDFJS_CDN = "/static/vendor/pdfjs";  // v4.x — vendored (offline)
-pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_CDN + "/pdf.worker.min.js";
-
-let pdfJsDoc        = null;   // loaded PDFDocumentProxy
-let pdfJsScale      = 1.0;    // current zoom (start at 100%)
-let pdfJsPageHts    = [null]; // page heights in pt (1-indexed), for coordinate conversion
-let pdfJsUrl        = null;   // last loaded url (for zoom re-render)
-let pdfJsLastUrl    = null;   // url that pdfJsDoc was loaded from (skip refetch on zoom)
-let pdfJsRendering  = false;
-let pdfPendingScale = null;   // queued zoom request that hit the rendering lock
-let pdfTextCache    = {};     // page number → TextContent items cache (reused across zooms)
-let pdfZoomTimer    = null;   // debounce timer for zoom re-render
-let pdfMeasureCtx   = null;   // offscreen 2d ctx for fast text-width measurement
-let pdfRenderToken  = 0;      // monotonically incremented; cancels stale renders on rapid zoom
-
-// Offscreen canvas for measuring glyph widths during text-layer build.
-// Replaces the previous probe.getBoundingClientRect() approach — that call
-// forced a layout reflow for EVERY text item (could be thousands per page),
-// which was the main reason zoom felt sluggish on long documents.
-function getMeasureCtx() {
-  if (!pdfMeasureCtx) {
-    const c = document.createElement("canvas");
-    pdfMeasureCtx = c.getContext("2d");
-  }
-  return pdfMeasureCtx;
-}
-
-function showZoomControls(visible) {
-  ["pdf-zoom-out","pdf-zoom-in","pdf-zoom-label","pdf-zoom-sep2"].forEach(id => {
-    document.getElementById(id).style.display = visible ? "" : "none";
-  });
-  // v3.2.3 — also show/hide the page-jump input alongside zoom controls.
-  const pin = document.getElementById("pdf-page-input");
-  const ptl = document.getElementById("pdf-page-total");
-  if (pin) pin.style.display = visible ? "" : "none";
-  if (ptl) ptl.style.display = visible ? "" : "none";
-  if (visible && pdfJsDoc && ptl) ptl.textContent = "/ " + pdfJsDoc.numPages;
-}
-
-// v3.2.3 — Page jump. Scrolls #pdf-page-N into view in the scroll container,
-// then briefly tints the input border so the user sees their action landed.
-function pdfJumpToPage(p, inputEl) {
-  if (!pdfJsDoc) return;
-  const n = parseInt(p, 10);
-  if (!n || n < 1 || n > pdfJsDoc.numPages) {
-    if (inputEl) {
-      inputEl.style.borderColor = "var(--red)";
-      setTimeout(() => { inputEl.style.borderColor = ""; }, 600);
-    }
-    return;
-  }
-  const wrap = document.getElementById(`pdf-page-${n}`);
-  if (!wrap) return;
-  wrap.scrollIntoView({ behavior: "smooth", block: "start" });
-  // Move focus off the input so the IntersectionObserver can re-sync the
-  // value as the smooth-scroll progresses. Otherwise the value stays pinned
-  // to what the user typed even after they've landed on the target page.
-  if (inputEl) {
-    inputEl.style.borderColor = "var(--accent)";
-    setTimeout(() => { inputEl.style.borderColor = ""; inputEl.blur(); }, 600);
-  }
-}
-
-// v3.2.3 — Scroll-following page indicator. As the user scrolls the PDF the
-// page-input value tracks the most-visible page. The user can still type a
-// number + Enter (or just blur) to jump elsewhere — we suppress observer
-// writes while the input has focus so the typed value isn't clobbered.
-//
-// IntersectionObserver semantics: each callback receives only the entries
-// that changed. We maintain a running map of page-num → intersectionRatio
-// and after every callback recompute the argmax. That keeps the "current"
-// page sticky on slow scrolls and snappy on fast ones.
-let _pdfPageObserver = null;
-const _pdfPageVisibility = new Map();   // pageNum → ratio (0..1)
-function _attachPdfPageObserver() {
-  // Tear down any previous observer — pages are recreated on every re-render
-  // (compile / zoom) so the old nodes are now detached.
-  if (_pdfPageObserver) {
-    try { _pdfPageObserver.disconnect(); } catch (_) {}
-    _pdfPageObserver = null;
-  }
-  _pdfPageVisibility.clear();
-  const container = document.getElementById("pdf-canvas-container");
-  if (!container || !pdfJsDoc) return;
-  if (typeof IntersectionObserver === "undefined") return;   // very old browser
-  _pdfPageObserver = new IntersectionObserver((entries) => {
-    for (const e of entries) {
-      const m = e.target.id && e.target.id.match(/^pdf-page-(\d+)$/);
-      if (!m) continue;
-      const n = parseInt(m[1], 10);
-      if (e.isIntersecting && e.intersectionRatio > 0) {
-        _pdfPageVisibility.set(n, e.intersectionRatio);
-      } else {
-        _pdfPageVisibility.delete(n);
-      }
-    }
-    // Choose the page that occupies the most of the viewport right now.
-    // Tie-break by lower number (so when two pages straddle the seam we
-    // report the earlier one, which feels right on top-anchored scrolling).
-    let bestN = null, bestR = -1;
-    for (const [n, r] of _pdfPageVisibility) {
-      if (r > bestR || (r === bestR && (bestN === null || n < bestN))) {
-        bestR = r; bestN = n;
-      }
-    }
-    if (bestN === null) return;
-    const inp = document.getElementById("pdf-page-input");
-    if (!inp) return;
-    // Don't clobber the user's in-progress typing.
-    if (document.activeElement === inp) return;
-    if (inp.value !== String(bestN)) inp.value = String(bestN);
-  }, {
-    root: container,
-    // Multiple thresholds so the ratio re-computes as the page slides into
-    // and out of view, not just at the boundaries.
-    threshold: [0, 0.1, 0.25, 0.5, 0.75, 1.0],
-  });
-  container.querySelectorAll(".pdf-page-wrap").forEach(el => {
-    _pdfPageObserver.observe(el);
-  });
-}
-
-// v4.5.0 — Lazy page rasteriser (see renderPdfFromUrl). Renders ONE page's
-// canvas + text layer into its already-placed placeholder wrap, on demand.
-// Safe to call repeatedly: it no-ops if the page is already rendered or being
-// rendered, and aborts if a newer full render (compile / zoom) has started.
-async function _renderPdfPageContent(n) {
-  const wrap = document.getElementById(`pdf-page-${n}`);
-  if (!wrap || wrap.dataset.rendered !== "0") return;
-  if (!pdfJsDoc) return;
-  const tok = pdfRenderToken;            // newer full render → abandon this one
-  wrap.dataset.rendered = "rendering";
-  try {
-    const dpr  = window.devicePixelRatio || 1;
-    const page = await pdfJsDoc.getPage(n);
-    if (tok !== pdfRenderToken) { wrap.dataset.rendered = "0"; return; }
-
-    const vp1 = page.getViewport({ scale: 1 });
-    if (pdfJsPageHts[n] !== vp1.height) pdfJsPageHts[n] = vp1.height;   // fix estimate
-
-    const viewport = page.getViewport({ scale: pdfJsScale });
-    const cssW = Math.floor(viewport.width);
-    const cssH = Math.floor(viewport.height);
-    // Correct the placeholder size if this page isn't the uniform page-1 size.
-    if (wrap.style.width  !== cssW + "px") wrap.style.width  = cssW + "px";
-    if (wrap.style.height !== cssH + "px") wrap.style.height = cssH + "px";
-
-    const canvas = document.createElement("canvas");
-    canvas.width        = Math.floor(cssW * dpr);
-    canvas.height       = Math.floor(cssH * dpr);
-    canvas.style.width  = cssW + "px";
-    canvas.style.height = cssH + "px";
-    wrap.appendChild(canvas);
-
-    const renderTransform = dpr !== 1 ? [dpr, 0, 0, dpr, 0, 0] : null;
-    await page.render({
-      canvasContext: canvas.getContext("2d"),
-      viewport,
-      transform: renderTransform,
-    }).promise;
-    if (tok !== pdfRenderToken) return;
-
-    // Text layer — selection / I-beam. Same CSS-scale geometry as the canvas.
-    try {
-      const textViewport = page.getViewport({ scale: pdfJsScale });
-      let textContent = pdfTextCache[n];
-      if (!textContent) { textContent = await page.getTextContent(); pdfTextCache[n] = textContent; }
-      if (tok !== pdfRenderToken) return;
-
-      const textLayerDiv = document.createElement("div");
-      textLayerDiv.className    = "textLayer";
-      textLayerDiv.style.width  = cssW + "px";
-      textLayerDiv.style.height = cssH + "px";
-      wrap.appendChild(textLayerDiv);
-
-      const composeTransform = (m1, m2) => [
-        m1[0]*m2[0] + m1[2]*m2[1],
-        m1[1]*m2[0] + m1[3]*m2[1],
-        m1[0]*m2[2] + m1[2]*m2[3],
-        m1[1]*m2[2] + m1[3]*m2[3],
-        m1[0]*m2[4] + m1[2]*m2[5] + m1[4],
-        m1[1]*m2[4] + m1[3]*m2[5] + m1[5],
-      ];
-      const measureCtx = getMeasureCtx();
-      const frag       = document.createDocumentFragment();
-      for (const item of textContent.items || []) {
-        if (!item || !item.str) continue;
-        const tx       = composeTransform(textViewport.transform, item.transform);
-        const fontSize = Math.hypot(tx[2], tx[3]);
-        if (fontSize < 1) continue;
-        const angle = Math.atan2(tx[1], tx[0]);
-        const left  = tx[4];
-        const top   = tx[5] - fontSize;
-        const span  = document.createElement("span");
-        span.textContent      = item.str;
-        span.style.left       = left + "px";
-        span.style.top        = top  + "px";
-        span.style.fontSize   = fontSize + "px";
-        span.style.fontFamily = "sans-serif";
-        if (item.width && item.width > 0) {
-          const targetW  = item.width * textViewport.scale;
-          measureCtx.font = fontSize + "px sans-serif";
-          const naturalW = measureCtx.measureText(item.str).width || 1;
-          const ratio    = targetW / naturalW;
-          span.style.transform       = (angle !== 0 ? `rotate(${angle}rad) ` : "") + `scaleX(${ratio.toFixed(4)})`;
-          span.style.transformOrigin = "0% 0%";
-        } else if (angle !== 0) {
-          span.style.transform = `rotate(${angle}rad)`;
-        }
-        frag.appendChild(span);
-      }
-      textLayerDiv.appendChild(frag);
-    } catch (err) {
-      console.warn("[textLayer] render failed for page", n, err);
-    }
-
-    wrap.dataset.rendered = "1";
-  } catch (err) {
-    wrap.dataset.rendered = "0";   // allow a retry on the next intersection
-    console.warn("[pdf] page render failed", n, err);
-  }
-}
-
-// v4.5.0 — Triggers lazy rasterisation of pages as they approach the viewport.
-// Distinct from _pdfPageObserver (which only tracks the visible page NUMBER).
-// The generous rootMargin pre-renders ~1.5 screens ahead so scrolling feels
-// seamless rather than "blank, then pop".
-let _pdfLazyObserver = null;
-function _attachPdfLazyRenderObserver() {
-  if (_pdfLazyObserver) { try { _pdfLazyObserver.disconnect(); } catch (_) {} _pdfLazyObserver = null; }
-  const container = document.getElementById("pdf-canvas-container");
-  if (!container || !pdfJsDoc) return;
-  if (typeof IntersectionObserver === "undefined") {
-    // No observer support → render everything (old eager behaviour).
-    for (let n = 1; n <= pdfJsDoc.numPages; n++) _renderPdfPageContent(n);
-    return;
-  }
-  _pdfLazyObserver = new IntersectionObserver((entries) => {
-    for (const e of entries) {
-      if (!e.isIntersecting) continue;
-      const m = e.target.id && e.target.id.match(/^pdf-page-(\d+)$/);
-      if (m) _renderPdfPageContent(parseInt(m[1], 10));
-    }
-  }, { root: container, rootMargin: "1200px 0px" });
-  container.querySelectorAll(".pdf-page-wrap").forEach(el => _pdfLazyObserver.observe(el));
-}
-
-// v4.5.0 — Backward-search (double-click PDF → jump to editor line). Extracted
-// from the old per-page render loop so it can be attached to a placeholder
-// wrap before the page is rasterised.
-function _attachPdfBackwardSearch(wrap, pageNum) {
-  wrap.addEventListener("dblclick", async (e) => {
-    if (!currentProject) return;
-    const sel = window.getSelection && window.getSelection();
-    if (sel && sel.removeAllRanges) sel.removeAllRanges();
-    const rect   = wrap.getBoundingClientRect();
-    const clickX = e.clientX - rect.left;
-    const clickY = e.clientY - rect.top;
-    const pdf_x = clickX / pdfJsScale;
-    const pdf_y = clickY / pdfJsScale;
-    const pdfName = mainFile.replace(/\.tex$/, ".pdf");
-
-    const status = document.getElementById("compile-status");
-    status.textContent = "\u21a9 Searching\u2026";
-    status.className   = "compile-status";
-
-    try {
-      const res  = await fetch(
-        `/api/projects/${encodeURIComponent(currentProject)}/synctex/backward` +
-        `?page=${pageNum}&x=${Math.round(pdf_x)}&y=${Math.round(pdf_y)}&pdf=${encodeURIComponent(pdfName)}`
-      );
-      const data = await res.json();
-      if (!data.ok) {
-        status.textContent = data.error || "No match";
-        status.className   = "compile-status err";
-        setTimeout(() => { status.textContent = ""; status.className = "compile-status"; }, 2000);
-        return;
-      }
-      if (data.file && data.file !== currentFile) {
-        await openFile(data.file);
-      }
-      const targetLine = (data.line || 1) - 1;
-      setTimeout(() => {
-        cmEditor.setCursor(targetLine, 0);
-        cmEditor.scrollIntoView({ line: targetLine, ch: 0 }, 120);
-        cmEditor.focus();
-        cmEditor.addLineClass(targetLine, "background", "cm-synctex-jump");
-        setTimeout(() => cmEditor.removeLineClass(targetLine, "background", "cm-synctex-jump"), 1200);
-      }, data.file !== currentFile ? 200 : 0);
-
-      status.textContent = `\u21a9 Line ${data.line}`;
-      status.className   = "compile-status ok";
-      setTimeout(() => { status.textContent = ""; status.className = "compile-status"; }, 1500);
-    } catch (_) {
-      status.textContent = "Backward search failed";
-      status.className   = "compile-status err";
-      setTimeout(() => { status.textContent = ""; status.className = "compile-status"; }, 2000);
-    }
-  });
-}
-
-// v3.2.2 — PDF outline / TOC sidebar
-let pdfOutlineLoaded = false;   // last PDF load attempted to fetch outline
-let pdfOutlineData   = [];      // resolved tree: [{title, page, items: [...]}]
-
-// Resolve a pdf.js dest (named string OR array) to a 1-indexed page number.
-async function _resolveOutlineDest(dest) {
-  try {
-    let d = dest;
-    if (typeof d === "string") d = await pdfJsDoc.getDestination(d);
-    if (!Array.isArray(d) || !d[0]) return null;
-    return (await pdfJsDoc.getPageIndex(d[0])) + 1;
-  } catch (_) { return null; }
-}
-async function _walkOutline(items) {
-  const out = [];
-  for (const it of items) {
-    const page = await _resolveOutlineDest(it.dest);
-    const sub  = (it.items && it.items.length) ? await _walkOutline(it.items) : [];
-    out.push({ title: it.title || "(untitled)", page, items: sub });
-  }
-  return out;
-}
-async function loadPdfOutline() {
-  pdfOutlineLoaded = false;
-  pdfOutlineData   = [];
-  if (!pdfJsDoc) return;
-  try {
-    const raw = await pdfJsDoc.getOutline();
-    if (!raw || !raw.length) {
-      pdfOutlineLoaded = true;
-      return;
-    }
-    pdfOutlineData = await _walkOutline(raw);
-  } catch (_) {
-    pdfOutlineData = [];
-  }
-  pdfOutlineLoaded = true;
-}
-function renderPdfOutline() {
-  const list = document.getElementById("pdf-outline-list");
-  if (!pdfOutlineData.length) {
-    list.innerHTML = `<div class="po-empty">No outline / bookmarks in this PDF.<br><br>
-      Add <code>\\section{}</code>, <code>\\chapter{}</code>, or load
-      <code>hyperref</code> to generate them.</div>`;
-    return;
-  }
-  const renderItems = (items, depth) => items.map(it => {
-    const padLeft = 8 + depth * 12;
-    const pageStr = it.page ? `p.${it.page}` : "";
-    const titleEsc = escapeHtml(it.title);
-    const onClick = it.page
-      ? `onclick="pdfScrollToPage(${it.page})"`
-      : "";
-    return `<div class="po-item" ${onClick} style="padding-left:${padLeft}px">
-              <span class="po-title">${titleEsc}</span>
-              <span class="po-page">${pageStr}</span>
-            </div>`
-         + (it.items && it.items.length
-              ? `<div class="po-children">${renderItems(it.items, depth + 1)}</div>`
-              : "");
-  }).join("");
-  list.innerHTML = renderItems(pdfOutlineData, 0);
-}
-function togglePdfOutline() {
-  const content = document.querySelector(".pdf-content");
-  const isOpen  = content.classList.toggle("outline-open");
-  if (isOpen) {
-    if (!pdfOutlineLoaded) {
-      // Lazy-load on first open after a fresh PDF
-      loadPdfOutline().then(renderPdfOutline);
-    } else {
-      renderPdfOutline();
-    }
-  }
-}
-// Scroll the canvas container so the top of `pageNum` is at the top of view.
-function pdfScrollToPage(pageNum) {
-  const wrap = document.getElementById(`pdf-page-${pageNum}`);
-  if (!wrap) return;
-  const container = document.getElementById("pdf-canvas-container");
-  container.scrollTo({ top: Math.max(0, wrap.offsetTop - 16), behavior: "smooth" });
-}
-
-async function showPDF(filename) {
-  const ts  = Date.now();
-  const url = `/api/projects/${currentProject}/pdf?file=${encodeURIComponent(filename)}&t=${ts}`;
-  pdfJsUrl  = url;
-  pdfTextCache = {};  // clear text cache on new PDF load
-  pdfOutlineLoaded = false;
-  pdfOutlineData   = [];
-
-  const container = document.getElementById("pdf-canvas-container");
-  const ph        = document.getElementById("pdf-placeholder");
-  const dl        = document.getElementById("pdf-download");
-
-  ph.style.display        = "none";
-  container.style.display = "flex";
-  container.innerHTML     = '<div style="color:var(--muted);padding:32px;text-align:center;font-size:12px">Loading PDF…</div>';
-  showZoomControls(true);
-  document.getElementById("pdf-zoom-label").textContent = Math.round(pdfJsScale * 100) + "%";
-
-  dl.href = `/api/projects/${currentProject}/pdf?file=${encodeURIComponent(filename)}`;
-  dl.download = filename;
-  dl.style.display = "inline";
-  // v4.7.6 — the WebView2 desktop build ignores <a download> (no download
-  // handler in the embedded host), so the button did nothing there while
-  // browser mode worked. In desktop mode, route through the pywebview bridge
-  // (native Save dialog). Browser mode keeps the plain anchor behaviour.
-  dl.onclick = window.pywebview
-    ? (e) => { e.preventDefault(); desktopSave(dl.getAttribute("href"), filename); }
-    : null;
-
-  await renderPdfFromUrl(url, true);   // force reload — new compile output
-}
-
-// `forceReload`: re-fetch the PDF (called from showPDF after compile).
-// When false (zoom), skip getDocument() and reuse the loaded pdfJsDoc — saves
-// the network round-trip on each zoom step.
-async function renderPdfFromUrl(url, forceReload) {
-  if (pdfJsRendering) {
-    // Remember the most recent zoom request so it isn't dropped silently.
-    pdfPendingScale = pdfJsScale;
-    return;
-  }
-  pdfJsRendering = true;
-  // Bump the render token; any in-flight async work that finishes after a
-  // newer render started can detect cancellation and bail out early.
-  const myToken = ++pdfRenderToken;
-  const container = document.getElementById("pdf-canvas-container");
-  try {
-    if (forceReload || !pdfJsDoc || pdfJsLastUrl !== url) {
-      pdfJsDoc     = await pdfjsLib.getDocument(url).promise;
-      pdfJsLastUrl = url;
-      pdfTextCache = {};   // PDF changed → text content cache is now stale
-      // v3.2.3 — Refresh the page-jump total label NOW that we know numPages
-      // for the freshly-loaded document. showZoomControls() runs before this
-      // (so the toolbar can flip visible while "Loading PDF…" is showing),
-      // which would otherwise leave the "/ N" label stuck at the previous
-      // PDF's count — or at the HTML default "/ 0" on first load.
-      const _ptl = document.getElementById("pdf-page-total");
-      if (_ptl) _ptl.textContent = "/ " + pdfJsDoc.numPages;
-      const _pin = document.getElementById("pdf-page-input");
-      if (_pin) _pin.max = pdfJsDoc.numPages;
-    }
-    pdfJsPageHts = [null];   // index 0 unused
-    container.innerHTML = "";
-
-    // v4.5.0 — LAZY PDF rendering. Rasterising every page (canvas + text
-    // layer) up-front made opening a ~150-page thesis take several seconds
-    // before anything was usable. Instead we create correctly-SIZED page
-    // placeholders immediately — so total scroll height, page-jump offsets and
-    // synctex `pdf-page-N` targets are all valid right away — then rasterise
-    // each page only when it nears the viewport (see _renderPdfPageContent /
-    // _attachPdfLazyRenderObserver). First paint is now near-instant.
-    //
-    // Page size is read from page 1 and assumed uniform (true for A4/Letter
-    // theses). If a page differs when it actually renders, its wrap height and
-    // pdfJsPageHts entry are corrected then — a mixed-size doc just gets a
-    // small one-time scroll nudge on the odd page.
-    const _p1   = await pdfJsDoc.getPage(1);
-    if (myToken !== pdfRenderToken) return;
-    const _vp1  = _p1.getViewport({ scale: 1 });
-    const _vpS  = _p1.getViewport({ scale: pdfJsScale });
-    const cssW  = Math.floor(_vpS.width);
-    const cssH  = Math.floor(_vpS.height);
-    const uniH1 = _vp1.height;   // scale-1 height estimate used for jumps
-
-    for (let n = 1; n <= pdfJsDoc.numPages; n++) {
-      if (myToken !== pdfRenderToken) return;
-      pdfJsPageHts.push(uniH1);
-
-      const wrap = document.createElement("div");
-      wrap.className        = "pdf-page-wrap";
-      wrap.id               = `pdf-page-${n}`;
-      wrap.dataset.page     = String(n);
-      wrap.dataset.rendered = "0";          // "0" = not yet, "rendering", "1" = done
-      wrap.style.width      = cssW + "px";
-      wrap.style.height     = cssH + "px";
-      wrap.style.cursor     = "default";
-      _attachPdfBackwardSearch(wrap, n);    // dblclick → editor jump (no raster needed)
-      container.appendChild(wrap);
-    }
-
-    // Rasterise on-screen (and soon-to-be-on-screen) pages lazily.
-    _attachPdfLazyRenderObserver();
-  } catch (err) {
-    container.innerHTML = `<div style="color:var(--red);padding:24px;font-size:12px">PDF load error: ${err.message}</div>`;
-  } finally {
-    pdfJsRendering = false;
-    // v3.2.3 — Re-attach the page-visibility observer to the freshly-rendered
-    // pages. Done in `finally` so zoom re-renders also re-bind, and so the
-    // observer never lingers on detached nodes from a previous render.
-    _attachPdfPageObserver();
-    // Drain a queued zoom that arrived while we were busy. We re-render at
-    // whatever pdfJsScale currently holds — pdfZoom() updated it synchronously
-    // before queuing, so the latest user intent wins.
-    if (pdfPendingScale !== null) {
-      pdfPendingScale = null;
-      if (pdfJsUrl) setTimeout(() => renderPdfFromUrl(pdfJsUrl, false), 0);
-    }
-    // v3.2.2 — refresh PDF outline button visibility. We only show 🗂
-    // when the loaded PDF actually has bookmarks (most LaTeX docs with
-    // hyperref do; raw beamer or quick test docs may not).
-    if (pdfJsDoc && !pdfOutlineLoaded) {
-      loadPdfOutline().then(() => {
-        const btn = document.getElementById("pdf-outline-btn");
-        if (btn) btn.style.display = pdfOutlineData.length ? "inline-block" : "none";
-        // If user already has the panel open, render now that data is in.
-        if (document.querySelector(".pdf-content")?.classList.contains("outline-open")) {
-          renderPdfOutline();
-        }
-      });
-    }
-  }
-}
-
-// Zoom strategy:
-//   1. Update the label and apply a CSS transform on existing pages for
-//      INSTANT visual feedback — even on a 200-page thesis the user sees
-//      the new size within a frame, instead of waiting for a full re-render.
-//   2. Debounce the actual canvas re-render. Rapid +/+/+ clicks collapse
-//      into a single render at the final scale; the in-between scales never
-//      pay the rasterisation cost.
-//   3. Once the real render lands, the CSS transform is cleared and the
-//      page is sharp at its new resolution.
-//
-// `anchor` (optional, v3.2.2): {x, y} in container viewport CSS px. When
-// provided, scroll is adjusted so that the document point currently under
-// the anchor stays under the anchor after zoom — i.e. pinch-to-zoom locks
-// to the cursor instead of the centre of the page. Falls back to scroll-
-// fraction preservation when omitted (the +/- toolbar buttons).
-async function pdfZoom(delta, anchor) {
-  const newScale = Math.max(0.5, Math.min(4.0, pdfJsScale + delta));
-  if (newScale === pdfJsScale || !pdfJsUrl) return;
-
-  const container = document.getElementById("pdf-canvas-container");
-  const oldScale  = pdfJsScale;
-  const ratio     = newScale / oldScale;
-
-  // Snapshot scroll-restoration intent BEFORE any DOM mutation. We capture
-  // both representations so the debounced re-render can restore correctly
-  // even if many pinch ticks land in the same 140ms window.
-  let restore;
-  if (anchor) {
-    // Document point under the cursor at the OLD scale (in CSS px).
-    const docX = container.scrollLeft + anchor.x;
-    const docY = container.scrollTop  + anchor.y;
-    restore = { kind: "cursor", docX, docY, cx: anchor.x, cy: anchor.y, ratio };
-  } else {
-    restore = { kind: "frac", frac: container.scrollTop / (container.scrollHeight || 1) };
-  }
-
-  pdfJsScale = newScale;
-  document.getElementById("pdf-zoom-label").textContent = Math.round(pdfJsScale * 100) + "%";
-
-  // ── Instant CSS-resize preview ─────────────────────────────────────
-  // We resize wrap + canvas via CSS so the browser stretches the existing
-  // canvas bitmap to the new size immediately. The .textLayer spans are
-  // positioned at the OLD scale, so we apply a CSS transform on the layer
-  // itself — much cheaper than rebuilding it. The real re-render that
-  // lands ~140ms later replaces all of this with sharp pixels.
-  document.querySelectorAll(".pdf-page-wrap").forEach(wrap => {
-    const wPx = parseFloat(wrap.style.width)  || 0;
-    const hPx = parseFloat(wrap.style.height) || 0;
-    const newW = wPx * ratio;
-    const newH = hPx * ratio;
-    wrap.style.width  = newW + "px";
-    wrap.style.height = newH + "px";
-    const cv = wrap.querySelector("canvas");
-    if (cv) {
-      cv.style.width  = newW + "px";
-      cv.style.height = newH + "px";
-    }
-    const tl = wrap.querySelector(".textLayer");
-    if (tl) {
-      const prev = parseFloat(tl.dataset.previewScale || "1") * ratio;
-      tl.dataset.previewScale  = prev;
-      tl.style.transform       = `scale(${prev})`;
-      tl.style.transformOrigin = "0 0";
-    }
-  });
-
-  // Apply anchored scroll IMMEDIATELY so the cursor stays pinned to the
-  // same document point during the preview window. For frac-based zoom
-  // (toolbar buttons) we leave scroll alone here and restore in the
-  // timeout once the new scrollHeight is known.
-  if (restore.kind === "cursor") {
-    // After CSS scaling by `ratio`, the document point (docX, docY)
-    // is now at (docX*ratio, docY*ratio). To put it back under the
-    // cursor (cx, cy) we need scroll = docPoint*ratio − cursor.
-    container.scrollLeft = restore.docX * ratio - restore.cx;
-    container.scrollTop  = restore.docY * ratio - restore.cy;
-  }
-
-  // ── Debounced real render ──────────────────────────────────────────
-  if (pdfZoomTimer) clearTimeout(pdfZoomTimer);
-  pdfZoomTimer = setTimeout(async () => {
-    pdfZoomTimer = null;
-    // forceReload=false → reuse pdfJsDoc (no network refetch on zoom)
-    await renderPdfFromUrl(pdfJsUrl, false);
-    if (restore.kind === "frac") {
-      container.scrollTop = restore.frac * container.scrollHeight;
-    }
-    // For cursor-anchored zoom the preview already scrolled to the
-    // correct position; the rebuilt pages match those exact dims (modulo
-    // sub-pixel Math.floor rounding) so no further adjustment is needed.
-  }, 140);
-}
-
-// ── Trackpad pinch / Ctrl+wheel zoom ──────────────────────────────────
-// Browsers report two-finger trackpad pinch gestures as `wheel` events with
-// `e.ctrlKey === true` (the "ctrl" flag is synthetic for pinch — it isn't
-// the keyboard Ctrl key). The same convention covers Ctrl+wheel for mouse
-// users, so a single handler serves both inputs.
-//
-// We translate the wheel deltaY into a *multiplicative* scale factor via
-// exp(-deltaY · k). Multiplicative scaling keeps the perceived zoom rate
-// constant across the whole 50–400% range, unlike a flat additive step
-// which would feel coarse at 50% and sluggish at 400%.
-//
-// `passive: false` is required so that preventDefault() can stop the
-// browser's own page-zoom handler from also running.
-function attachPdfWheelZoom() {
-  const container = document.getElementById("pdf-canvas-container");
-  if (!container || container._wheelZoomBound) return;
-  container._wheelZoomBound = true;
-
-  container.addEventListener("wheel", (e) => {
-    // Only intercept pinch / Ctrl-wheel; let plain two-finger scroll pass.
-    if (!e.ctrlKey) return;
-    // Always block the browser-level page zoom over our container, even
-    // if there's no PDF loaded — otherwise an accidental pinch on the
-    // empty placeholder would zoom the whole TexLocal UI.
-    e.preventDefault();
-    if (!pdfJsDoc) return;
-
-    // Sensitivity: divide deltaY by 100 and exponentiate. Typical pinch
-    // tick is ±5–15 deltaY units → ±5–15% scale change per tick. The
-    // negative sign maps "fingers spreading apart" (pinch out, deltaY<0)
-    // to "zoom in" (factor>1).
-    const factor = Math.exp(-e.deltaY * 0.01);
-    const newScale = Math.max(0.5, Math.min(4.0, pdfJsScale * factor));
-    const delta    = newScale - pdfJsScale;
-    if (delta === 0) return;
-
-    // Cursor position relative to the container's viewport (CSS px).
-    const rect = container.getBoundingClientRect();
-    const anchor = { x: e.clientX - rect.left, y: e.clientY - rect.top };
-    pdfZoom(delta, anchor);
-  }, { passive: false });
-}
-// Bind once on first paint — and re-bind defensively if the element gets
-// recreated (it shouldn't, but cheap insurance).
-document.addEventListener("DOMContentLoaded", attachPdfWheelZoom);
-attachPdfWheelZoom();
-
-// page, x, y, h, w, y2 — all in PDF points, TeX/synctex convention:
-//   y  = top of topmost visual line (from TOP of page) = min(baseline - ascent) across records
-//   y2 = baseline of bottommost visual line (from TOP of page) = max(baseline) across records
-//   h  = glyph ascent of one line (~8-12pt), used for descent calculation
-// w — optional text width in pt (word-level highlight)
-function pdfScrollToPosition(page, x, y, h, w, y2) {
-  const wrap = document.getElementById(`pdf-page-${page}`);
-  if (!wrap) return;
-  // v4.5.0 — with lazy rendering the synctex target page may not be rasterised
-  // yet; kick it off now so the highlight lands on real content, not a blank.
-  _renderPdfPageContent(page);
-  document.querySelectorAll(".pdf-highlight").forEach(el => el.remove());
-
-  const glyphH  = (h && h > 2) ? h : 10;
-  const descent = glyphH * 0.3;         // small descent below last baseline
-  const yBot    = (y2 && y2 > y) ? y2 : (y + glyphH);  // last baseline
-
-  // y is already the top of the highlight (y_top = first-line top)
-  // bottom of highlight = last baseline + descent
-  const canvasYtop = Math.max(0, y * pdfJsScale);
-  const canvasHpx  = (yBot - y + descent) * pdfJsScale;
-
-  const hl = document.createElement("div");
-  hl.className = "pdf-highlight";
-  hl.style.top    = canvasYtop + "px";
-  hl.style.height = canvasHpx + "px";
-
-  if (w && w > 0) {
-    // word-level highlight: position and width from text item
-    hl.style.left  = (x * pdfJsScale) + "px";
-    hl.style.right = "auto";
-    hl.style.width = (w * pdfJsScale) + "px";
-  }
-  // else: full-width (left:0; right:0 from CSS)
-
-  wrap.appendChild(hl);
-  setTimeout(() => hl.remove(), 2500);
-
-  // scroll so the FIRST line of the highlight is in the upper-centre of the PDF pane
-  const container  = document.getElementById("pdf-canvas-container");
-  const firstLineY = canvasYtop + glyphH * pdfJsScale / 2;  // centre of first (topmost) line
-  const target     = wrap.offsetTop + firstLineY - container.clientHeight / 3;
-  container.scrollTo({ top: Math.max(0, target), behavior: "smooth" });
-}
-
-function toggleLog() {
+// v5.0.0-beta.2.0 — PDFVIEWER lifted to static/pdfviewer.js (Phase 2 CM-light split). Loaded via <script defer> after editor.js.
+export function toggleLog() {
   document.getElementById("log-panel").classList.toggle("open");
 }
 
 // ── PROJECT MANAGEMENT MODAL ─────────────────────────────────
-async function openProjectsModal() {
+export async function openProjectsModal() {
   await renderProjectList();
   openModal("modal-projects");
 }
@@ -2861,7 +1105,7 @@ async function renderProjectList() {
         currentFile    = null;
         openTabs       = [];
         mainFile       = "main.tex";
-        cmEditor.setValue("");
+        CM.setValue("");
         renderTabs();
         document.getElementById("pdf-canvas-container").style.display = "none";
         document.getElementById("pdf-placeholder").style.display = "flex";
@@ -2879,8 +1123,8 @@ async function renderProjectList() {
 }
 
 // ── MODALS ────────────────────────────────────────────────────
-function openModal(id)  { document.getElementById(id).classList.add("open"); }
-function closeModal(id) { document.getElementById(id).classList.remove("open"); }
+export function openModal(id)  { document.getElementById(id).classList.add("open"); }
+export function closeModal(id) { document.getElementById(id).classList.remove("open"); }
 document.querySelectorAll(".modal-overlay").forEach(o => {
   o.addEventListener("click", e => { if (e.target === o) o.classList.remove("open"); });
 });
@@ -2891,7 +1135,7 @@ document.querySelectorAll(".modal-overlay").forEach(o => {
 // silently failed in the desktop app though browser mode worked. desktopSave
 // hands the server-relative URL + a suggested filename to the Python js_api,
 // which fetches the bytes from the local server and shows a native Save dialog.
-async function desktopSave(urlPath, filename) {
+export async function desktopSave(urlPath, filename) {
   try {
     const res = await window.pywebview.api.save_file(urlPath, filename);
     if (res && res.ok) return;                    // saved — dialog already confirmed location
@@ -2934,549 +1178,21 @@ function stripLatexCommands(src) {
     .replace(/[{}$%&_^~]/g, " ")                // special chars
     .replace(/\s+/g, " ").trim();
 }
-function updateWordCount() {
+export function updateWordCount() {
   const el = document.getElementById("word-count");
   if (!currentFile || !currentFile.endsWith(".tex")) { el.textContent = ""; return; }
-  const plain = stripLatexCommands(cmEditor.getValue());
+  const plain = stripLatexCommands(CM.getValue());
   const words = plain ? plain.split(/\s+/).filter(w => w.length > 0).length : 0;
   el.textContent = `${words.toLocaleString()} words`;
 }
 
 // ── AUTO-COMPILE ──────────────────────────────────────────────
-function onAutoCompileToggle() {
+export function onAutoCompileToggle() {
   autoCompile = document.getElementById("auto-compile-toggle").checked;
   if (!autoCompile) clearTimeout(autoCompileTimer);
 }
 
-// ── LATEX AUTOCOMPLETE ────────────────────────────────────────
-// v4.4.0 — Scan the CURRENT buffer for command/environment definitions so a
-// macro you just typed (\newcommand{\foo}) autocompletes immediately, before
-// the project-wide cache (userCmdCache/userEnvCache) refreshes on next compile.
-// Cached by changeGeneration so it only re-scans when the buffer changes.
-let _bufDefs = { gen: null, cmds: [], envs: [] };
-function _bufferDefs() {
-  const gen = cmEditor.changeGeneration();
-  if (gen !== _bufDefs.gen) {
-    const text = cmEditor.getValue();
-    const cmds = new Set(), envs = new Set();
-    const cmdRe = /\\(?:newcommand|renewcommand|providecommand)\*?\s*\{?\\([a-zA-Z@]+)\}?|\\DeclareMathOperator\*?\s*\{\\([a-zA-Z@]+)\}|\\DeclarePairedDelimiter\*?\s*\{?\\([a-zA-Z@]+)\}?|\\(?:def|let)\s*\\([a-zA-Z@]+)/g;
-    const envRe = /\\(?:re)?newenvironment\s*\{([^}]+)\}|\\newtheorem\*?\s*\{([^}]+)\}/g;
-    let m;
-    while ((m = cmdRe.exec(text))) { const n = m[1]||m[2]||m[3]||m[4]; if (n) cmds.add("\\"+n); }
-    while ((m = envRe.exec(text))) { const e = (m[1]||m[2]||"").trim(); if (e) envs.add(e); }
-    _bufDefs = { gen, cmds: [...cmds], envs: [...envs] };
-  }
-  return _bufDefs;
-}
-
-// v4.4.0 — Picking an environment from the \begin{…} autocomplete inserts the
-// whole block: \begin{env} / indented body (cursor here) / \end{env}. List
-// environments get an \item on the body line.
-// v4.4.0 — Commands whose completion should append {} (cursor placed inside);
-// _CMD_TWO_BRACE ones take two args → {}{}. Symbols/spacing/structure-only
-// commands are NOT listed and insert as-is.
-const _CMD_BRACE = new Set([
-  "begin","end",
-  "textbf","textit","texttt","textsc","textrm","textsf","emph","underline","footnote","text",
-  "section","subsection","subsubsection","paragraph","subparagraph","chapter","part",
-  "title","author","date","documentclass","usepackage","input","include",
-  "label","caption","includegraphics","url","hspace","vspace",
-  "cite","ref","pageref","eqref","autoref","cref","Cref","nameref",
-  "bibliography","bibliographystyle","addbibresource",
-  "sqrt","mathbb","mathcal","mathbf","hat","tilde","bar","vec","dot","ddot",
-  "overline","overbrace","underbrace","widehat","widetilde","bm",
-  "newcommand","renewcommand","providecommand","DeclareMathOperator",
-]);
-const _CMD_TWO_BRACE = new Set(["frac","dfrac","href"]);
-// Commands whose {} content has its own autocomplete — after inserting the
-// braces, reopen the dropdown so you can pick the env / cite key / ref.
-const _CMD_OPEN_HINT = new Set([
-  "begin","end","cite","ref","pageref","eqref","autoref","cref","Cref","nameref",
-]);
-
-// Insert "\cmd{}" (or "{}{}") replacing the typed token, cursor inside the
-// first braces. If an argument brace already follows, just complete the name.
-function _insertCmdWithBraces(cm, data, cmd, n) {
-  const lineText = cm.getLine(data.from.line) || "";
-  const alreadyBraced = lineText[data.to.ch] === "{";
-  const text = alreadyBraced ? cmd : cmd + (n === 2 ? "{}{}" : "{}");
-  cm.replaceRange(text, data.from, data.to);
-  // cursor just inside the first "{"
-  cm.setCursor({ line: data.from.line, ch: data.from.ch + cmd.length + 1 });
-  cm.focus();
-  // Chain: \begin{|} → env list, \cite{|} → bib keys, \ref{|} → labels.
-  if (_CMD_OPEN_HINT.has(cmd.slice(1))) {
-    setTimeout(() => cm.showHint({ hint: CodeMirror.hint.latex, completeSingle: false }), 0);
-  }
-}
-
-const _LIST_ENVS = new Set(["itemize", "enumerate", "description"]);
-// Per-environment skeletons. _CUR () marks where the cursor lands; it is
-// stripped on insert. opt = text appended to the \begin{env} line (e.g. [H]).
-// body = lines between \begin and \end (each gets the body indent prepended;
-// deeper nesting carries explicit leading spaces). Envs with no template fall
-// back to a single blank body line.
-const _CUR = "@@CURSOR@@";
-const _ENV_TEMPLATES = {
-  figure: { opt: "[H]", body:
-    "\\centering\n" +
-    "\\includegraphics[width=0.8\\textwidth]{" + _CUR + "}\n" +
-    "\\caption{}\n\\label{fig:}" },
-  table: { opt: "[H]", body:
-    "\\centering\n\\caption{" + _CUR + "}\n\\label{tab:}\n" +
-    "\\begin{tabular}{|c|c|}\n  \\hline\n   &  \\\\\n  \\hline\n\\end{tabular}" },
-  itemize:     { body: "\\item " + _CUR },
-  enumerate:   { body: "\\item " + _CUR },
-  description: { body: "\\item[" + _CUR + "] " },
-  equation:    { body: _CUR + "\n\\label{eq:}" },
-  align:       { body: _CUR + " &= \n\\label{eq:}" },
-};
-_ENV_TEMPLATES["figure*"] = _ENV_TEMPLATES.figure;
-_ENV_TEMPLATES["table*"]  = _ENV_TEMPLATES.table;
-_ENV_TEMPLATES["equation*"] = { body: _CUR };
-_ENV_TEMPLATES["align*"]    = { body: _CUR + " &= " };
-
-function _insertEnvBlock(cm, data, env) {
-  const lineNo   = data.from.line;
-  const lineText = cm.getLine(lineNo) || "";
-  const beginStart = Math.max(0, data.from.ch - "\\begin{".length);  // back over "\begin{"
-  let closeCh = data.to.ch;
-  if (lineText[closeCh] === "}") closeCh++;            // consume the auto-closed "}"
-  const indent = (lineText.match(/^[ \t]*/) || [""])[0];
-  const unit   = cm.getOption("indentWithTabs") ? "\t" : " ".repeat(cm.getOption("indentUnit") || 2);
-  const inner  = indent + unit;
-
-  const tpl = _ENV_TEMPLATES[env];
-  const opt = tpl && tpl.opt ? tpl.opt : "";
-  let bodyRaw;
-  if (tpl)                       bodyRaw = tpl.body;
-  else if (_LIST_ENVS.has(env))  bodyRaw = "\\item " + _CUR;
-  else                           bodyRaw = _CUR;            // blank body line
-  const bodyLines = bodyRaw.split("\n").map(l => inner + l);
-
-  let block = "\\begin{" + env + "}" + opt + "\n" + bodyLines.join("\n") +
-              "\n" + indent + "\\end{" + env + "}";
-
-  // Resolve the cursor marker → {line, ch}; strip it. Fall back to the first
-  // body line if (somehow) absent.
-  let curLine = lineNo + 1, curCh = inner.length;
-  const idx = block.indexOf(_CUR);
-  if (idx >= 0) {
-    const before = block.slice(0, idx);
-    const nl = (before.match(/\n/g) || []).length;
-    curLine = lineNo + nl;
-    curCh   = (nl === 0 ? beginStart : 0) + (idx - before.lastIndexOf("\n") - 1);
-    block   = block.slice(0, idx) + block.slice(idx + _CUR.length);
-  }
-
-  cm.replaceRange(block, { line: lineNo, ch: beginStart }, { line: lineNo, ch: closeCh });
-  cm.setCursor({ line: curLine, ch: curCh });
-  cm.focus();
-}
-
-const LATEX_COMMANDS = [
-  // document structure
-  "\\documentclass","\\usepackage","\\begin","\\end","\\input","\\include",
-  "\\title","\\author","\\date","\\maketitle","\\tableofcontents",
-  "\\section","\\subsection","\\subsubsection","\\paragraph","\\subparagraph",
-  "\\chapter","\\part","\\appendix","\\bibliography","\\bibliographystyle",
-  "\\addbibresource","\\printbibliography","\\cite","\\ref","\\label","\\pageref",
-  // text formatting
-  "\\textbf","\\textit","\\texttt","\\textsc","\\textrm","\\textsf",
-  "\\emph","\\underline","\\footnote","\\text",
-  // math
-  "\\frac","\\sqrt","\\sum","\\prod","\\int","\\oint","\\lim","\\infty",
-  "\\alpha","\\beta","\\gamma","\\delta","\\epsilon","\\varepsilon",
-  "\\zeta","\\eta","\\theta","\\vartheta","\\iota","\\kappa","\\lambda",
-  "\\mu","\\nu","\\xi","\\pi","\\varpi","\\rho","\\varrho",
-  "\\sigma","\\varsigma","\\tau","\\upsilon","\\phi","\\varphi","\\chi",
-  "\\psi","\\omega","\\Gamma","\\Delta","\\Theta","\\Lambda","\\Xi",
-  "\\Pi","\\Sigma","\\Upsilon","\\Phi","\\Psi","\\Omega",
-  "\\forall","\\exists","\\nabla","\\partial","\\hbar","\\ell","\\Re","\\Im",
-  "\\leq","\\geq","\\neq","\\approx","\\equiv","\\sim","\\simeq",
-  "\\subset","\\supset","\\subseteq","\\supseteq","\\in","\\notin",
-  "\\cup","\\cap","\\setminus","\\emptyset","\\mathbb","\\mathcal","\\mathbf",
-  "\\left","\\right","\\big","\\Big","\\bigg","\\Bigg",
-  "\\cdot","\\cdots","\\ldots","\\vdots","\\ddots","\\times","\\div","\\pm","\\mp",
-  "\\to","\\rightarrow","\\leftarrow","\\Rightarrow","\\Leftarrow",
-  "\\Leftrightarrow","\\leftrightarrow","\\mapsto",
-  "\\hat","\\tilde","\\bar","\\vec","\\dot","\\ddot","\\overline","\\underline",
-  "\\overbrace","\\underbrace","\\widehat","\\widetilde",
-  // environments (for \begin{ autocomplete)
-  "equation","equation*","align","align*","gather","gather*","multline",
-  "itemize","enumerate","description","figure","table","tabular",
-  "minipage","center","flushleft","flushright","verbatim","lstlisting",
-  "theorem","lemma","proof","definition","remark","corollary","example",
-  "abstract","titlepage","document",
-  // spacing
-  "\\hspace","\\vspace","\\hfill","\\vfill","\\newline","\\newpage","\\clearpage",
-  "\\noindent","\\indent","\\quad","\\qquad","\\,","\\;","\\:",
-  // misc
-  "\\item","\\href","\\url","\\includegraphics","\\caption","\\label",
-  "\\multicolumn","\\multirow","\\hline","\\cline","\\toprule","\\midrule","\\bottomrule",
-  "\\newcommand","\\renewcommand","\\DeclareMathOperator",
-];
-
-// v3.2.2 — context regexes for \cite{ and \ref{ autocomplete.
-//   _CITE_CTX matches the typed prefix of the LAST key inside any
-//   `\xxxcite[...]{a, b, partia|}` (cite, citep, citet, nocite, textcite,
-//   parencite, autocite, footcite, fullcite, etc.).
-//   _REF_CTX  matches inside `\ref{`, `\eqref{`, `\autoref{`, `\cref{`,
-//   `\Cref{`, `\nameref{`, `\vref{`, etc. — but NOT `\label{` (that's a
-//   definition site, not a usage).
-const _CITE_CTX = /\\[a-zA-Z]*cite[a-zA-Z]*\*?(?:\[[^\]]*\])*\{(?:[^}]*,\s*)?([^},\s]*)$/i;
-const _REF_CTX  = /\\(?:ref|eqref|pageref|autoref|cref|Cref|nameref|vref|vpageref|crefrange|Crefrange|labelcref)\*?\{([^}]*?)$/;
-
-// Custom renderer: bibkey/label in accent colour, dimmed metadata next to it.
-// v3.2.3 — Now optionally renders a second row with the paper title when
-// `item.title` is present (only set for \cite entries; label hints don't
-// have a sensible title to show).
-function _renderCiteHint(elt, _data, item) {
-  const row1 = document.createElement("div");
-  row1.className = "cite-hint-row1";
-  const k = document.createElement("span");
-  k.className   = "cite-hint-key";
-  k.textContent = item.text;
-  row1.appendChild(k);
-  if (item.meta) {
-    const m = document.createElement("span");
-    m.className   = "cite-hint-meta";
-    m.textContent = item.meta;
-    row1.appendChild(m);
-  }
-  elt.appendChild(row1);
-  if (item.title) {
-    const t = document.createElement("span");
-    t.className   = "cite-hint-title";
-    t.textContent = item.title;
-    // Native title on hover gives the full untruncated title if it overflows.
-    t.title       = item.title;
-    elt.appendChild(t);
-  }
-}
-
-CodeMirror.registerHelper("hint","latex", function(cm) {
-  const cur  = cm.getCursor();
-  const line = cm.getLine(cur.line);
-  const end  = cur.ch;
-  const pre  = line.slice(0, end);
-
-  // ── \cite{...} context ───────────────────────────────────────────
-  const mCite = _CITE_CTX.exec(pre);
-  if (mCite) {
-    const typed = mCite[1] || "";
-    const tlow  = typed.toLowerCase();
-    // v3.2.3 — Match against key OR title so typing "rydberg" surfaces
-    // every paper with "Rydberg" in the title, not just those whose key
-    // contains "rydberg".
-    const list  = bibkeysCache
-      .filter(b => !typed
-                 || b.key.toLowerCase().includes(tlow)
-                 || (b.title || "").toLowerCase().includes(tlow))
-      .slice(0, 80)
-      .map(b => ({
-        text:        b.key,
-        displayText: b.key,
-        meta:        b.author
-                       ? (b.author + (b.year ? ` (${b.year})` : ""))
-                       : (b.year ? `(${b.year})` : ""),
-        title:       b.title || "",
-        render:      _renderCiteHint,
-      }));
-    if (list.length) {
-      return { list,
-               from: { line: cur.line, ch: end - typed.length },
-               to:   cur };
-    }
-    // fallthrough to generic command hints if cache empty / no match
-  }
-
-  // ── \ref{...} context ────────────────────────────────────────────
-  const mRef = _REF_CTX.exec(pre);
-  if (mRef) {
-    const typed = mRef[1] || "";
-    const tlow  = typed.toLowerCase();
-    const list  = labelsCache
-      .filter(l => !typed || l.name.toLowerCase().includes(tlow))
-      .slice(0, 80)
-      .map(l => ({
-        text:        l.name,
-        displayText: l.name,
-        meta:        `${l.file}:${l.line}`,
-        render:      _renderCiteHint,
-      }));
-    if (list.length) {
-      return { list,
-               from: { line: cur.line, ch: end - typed.length },
-               to:   cur };
-    }
-  }
-
-  // ── \begin{...} / \end{...} environment autocomplete ─────────────
-  // Detect this BEFORE the \cmd guard below: the typed env name has no leading
-  // backslash, so the guard would otherwise return early and block it.
-  const buf = _bufferDefs();
-  const envMatch = pre.match(/\\(begin|end)\{([^}]*)$/);
-  if (envMatch) {
-    const which = envMatch[1];          // "begin" or "end"
-    const typed = envMatch[2];
-    // built-in envs + user-defined (project-wide + current buffer)
-    const all  = [...new Set([
-      ...LATEX_COMMANDS.filter(c => !c.startsWith("\\")),
-      ...userEnvCache, ...buf.envs,
-    ])];
-    const names = all.filter(c => c.startsWith(typed));
-    const from  = { line: cur.line, ch: end - typed.length };
-    if (which === "end") {
-      return { list: names, from, to: cur };   // \end{ → just complete the name
-    }
-    // \begin{ → insert the FULL block: \begin{env} … \end{env}
-    const list = names.map(env => ({
-      text: env,
-      displayText: "\\begin{" + env + "}",
-      hint: (cm, data) => _insertEnvBlock(cm, data, env),
-    }));
-    return { list, from, to: cur };
-  }
-
-  // ── \cmd autocomplete ────────────────────────────────────────────
-  // ดึง token ปัจจุบันย้อนหลัง
-  let start = end;
-  while (start > 0 && /[\\\w*]/.test(line[start-1])) start--;
-  const token = line.slice(start, end);
-  if (!token.startsWith("\\") && !pre.match(/\\[a-zA-Z]*$/)) return;
-
-  // suggest commands — built-ins + user-defined macros
-  const cmdMatch = pre.match(/\\[a-zA-Z*]*$/);
-  if (!cmdMatch) return;
-  const typed = cmdMatch[0];
-  const all   = [...new Set([
-    ...LATEX_COMMANDS.filter(c => c.startsWith("\\")),
-    ...userCmdCache, ...buf.cmds,
-  ])];
-  const from  = { line: cur.line, ch: end - typed.length };
-  // Commands that take an argument get {} inserted with the cursor inside;
-  // symbols (\alpha, \ldots, …) insert as-is.
-  const list  = all.filter(c => c.startsWith(typed)).map(cmd => {
-    const name = cmd.slice(1);
-    const two  = _CMD_TWO_BRACE.has(name);
-    if (!_CMD_BRACE.has(name) && !two) return cmd;  // symbol/no-arg → plain insert
-    const n = two ? 2 : 1;
-    return { text: cmd, displayText: cmd + (n === 2 ? "{}{}" : "{}"),
-             hint: (cm, data) => _insertCmdWithBraces(cm, data, cmd, n) };
-  });
-  return { list, from, to: cur };
-});
-
-// Trigger autocomplete on backslash, on letters within \cmd, AND on `{` /
-// letters inside \cite{...} or \ref{...} so the dropdown shows up the
-// moment the user opens the brace or starts typing a key.
-cmEditor.on("keyup", (cm, e) => {
-  if (!e.key) return;
-  const cur = cm.getCursor();
-  const pre = cm.getLine(cur.line).slice(0, cur.ch);
-  const inCiteOrRef = _CITE_CTX.test(pre) || _REF_CTX.test(pre);
-  // v4.4.0 — also pop the dropdown while typing the env name in \begin{…}/\end{…}
-  const inEnv = /\\(?:begin|end)\{[^}]*$/.test(pre);
-
-  // `{` is special: it TRANSITIONS context from \cmd → \cite{ / \ref{ / \begin{,
-  // so we must force a fresh dropdown even if a stale completion is still
-  // active. showHint replaces the active dropdown internally.
-  if (e.key === "{" && (inCiteOrRef || inEnv)) {
-    cm.showHint({ hint: CodeMirror.hint.latex, completeSingle: false });
-    return;
-  }
-
-  if (cm.state.completionActive) return;
-
-  // Inside a cite/ref/env brace — fire on any printable key (incl. comma for
-  // multi-key `\cite{a, b, c|}`) or Backspace to refresh the filter.
-  if ((inCiteOrRef || inEnv) && (e.key.length === 1 || e.key === "Backspace")) {
-    cm.showHint({ hint: CodeMirror.hint.latex, completeSingle: false });
-    return;
-  }
-
-  // \cmd context (existing behaviour)
-  if (e.key === "\\" || (e.key.length === 1 && pre.match(/\\[a-zA-Z]{1,}$/))) {
-    cm.showHint({ hint: CodeMirror.hint.latex, completeSingle: false });
-  }
-});
-
-// ── PROSE WORD SUGGESTIONS (v4.4.0) ───────────────────────────
-// One typing-time dropdown over plain prose that does two jobs:
-//   1. AUTOCOMPLETE — as you type a word prefix, offer longer words that begin
-//      with it, drawn from (a) words already in this document (domain terms
-//      like "Rydberg", "polyglossia") and (b) the en_US dictionary. Tab OR
-//      Enter inserts the highlighted word.
-//   2. CORRECT — when there's nothing to complete AND the typed word is a
-//      complete misspelling (e.g. "recieve"), fall back to spelling fixes (the
-//      typing-time twin of the right-click "Replace with" menu).
-// Both reuse the same dictionary the wavy-underline pass loads, and the same
-// skip-mask, so the dropdown never fires inside \commands, math, comments, or
-// citation braces. Gated on the "Word suggestions" toggle (spellSuggestEnabled).
-
-// Walk back over letters/apostrophes to find the word ending at the cursor.
-function _proseWordAt(cm, cur) {
-  const line = cm.getLine(cur.line) || "";
-  let start = cur.ch;
-  while (start > 0 && /[A-Za-z']/.test(line[start - 1])) start--;
-  return { word: line.slice(start, cur.ch), start, end: cur.ch, line };
-}
-
-// Sorted, lower-cased, de-duped dictionary word list — built once (lazily) from
-// Typo's internal table so we can prefix-search by binary lower-bound. ~150k
-// entries incl. inflections; the one-time filter+sort (~150ms) happens on the
-// first completion, then it's cached for the session.
-let _dictWords = null;
-function _dictWordList() {
-  if (_dictWords) return _dictWords;
-  const table = spellChecker && spellChecker.dictionaryTable;
-  if (!table) return null;
-  const seen = new Set();
-  for (const w of Object.keys(table)) {
-    if (!/^[A-Za-z][A-Za-z']*$/.test(w)) continue;   // skip "0th", numbers, symbol-laced
-    seen.add(w.toLowerCase());
-  }
-  _dictWords = Array.from(seen).sort();
-  return _dictWords;
-}
-
-// Lower-bound binary search → contiguous run of words starting with `prefix`,
-// strictly longer than it (a completion must add something). Sorted input.
-function _dictPrefix(prefix, limit) {
-  const words = _dictWordList();
-  if (!words) return [];
-  let lo = 0, hi = words.length;
-  while (lo < hi) { const mid = (lo + hi) >> 1; if (words[mid] < prefix) lo = mid + 1; else hi = mid; }
-  const out = [];
-  for (let i = lo; i < words.length && out.length < limit; i++) {
-    if (!words[i].startsWith(prefix)) break;
-    if (words[i].length > prefix.length) out.push(words[i]);
-  }
-  return out;
-}
-
-// Document words, cached and rebuilt only when the buffer actually changes
-// (cm.changeGeneration() bumps on every edit). Preserves original casing so
-// "Rydberg" completes capitalised. Capped so a huge thesis file stays cheap.
-let _docWordCache = { gen: null, words: [] };
-function _docWords() {
-  const gen = cmEditor.changeGeneration();
-  if (gen !== _docWordCache.gen) {
-    const seen = new Map();   // lower → original (first-seen wins)
-    const re = /[A-Za-z][A-Za-z']{1,}/g;
-    const text = cmEditor.getValue();
-    let m;
-    while ((m = re.exec(text))) {
-      const lw = m[0].toLowerCase();
-      if (!seen.has(lw)) seen.set(lw, m[0]);
-      if (seen.size > 6000) break;
-    }
-    _docWordCache = { gen, words: Array.from(seen.values()) };
-  }
-  return _docWordCache.words;
-}
-
-CodeMirror.registerHelper("hint", "proseword", function(cm) {
-  if (!spellSuggestEnabled || !spellChecker) return;
-  const cur = cm.getCursor();
-  const { word, start, end, line } = _proseWordAt(cm, cur);
-  if (word.length < 2) return;                              // too short → noisy
-  if (/'(?:s|t|re|ve|ll|d|m)$/i.test(word)) return;         // contraction/possessive
-  // Don't fire inside math / comments / \command regions / citation braces.
-  const mask = _buildSkipMask(line);
-  for (let j = start; j < end; j++) if (mask[j]) return;
-
-  const lw = word.toLowerCase();
-  const upperFirst = /^[A-Z]/.test(word);
-  const seen = new Set([lw]);
-  const out = [];
-  const cap = 9;
-
-  // 1) AUTOCOMPLETE — document words first (most relevant), then dictionary.
-  for (const dw of _docWords()) {
-    if (out.length >= cap) break;
-    const dlw = dw.toLowerCase();
-    if (dlw.length > lw.length && dlw.startsWith(lw) && !seen.has(dlw)) {
-      seen.add(dlw); out.push(dw);
-    }
-  }
-  for (const m of _dictPrefix(lw, cap)) {
-    if (out.length >= cap) break;
-    if (!seen.has(m)) { seen.add(m); out.push(upperFirst ? m.charAt(0).toUpperCase() + m.slice(1) : m); }
-  }
-
-  // 2) CORRECT — only when there's nothing to complete AND the whole word is a
-  //    misspelling (e.g. "recieve"): offer spelling fixes instead.
-  if (!out.length) {
-    if (word.length < 3) return;
-    if (word.length <= 5 && word === word.toUpperCase()) return;   // acronym
-    if (customDict.has(lw)) return;
-    if (spellChecker.check(word)) return;                          // correct & complete → nothing to add
-    let suggestions;
-    if (_suggestCache.has(lw)) suggestions = _suggestCache.get(lw);
-    else {
-      try { suggestions = spellChecker.suggest(word, 7) || []; } catch (_) { suggestions = []; }
-      _suggestCache.set(lw, suggestions);
-    }
-    // Drop the input echo and Typo.js's occasional digit-laced junk ("vegab02nd").
-    suggestions = (suggestions || []).filter(s => s && s.toLowerCase() !== lw && !/\d/.test(s));
-    for (const s of suggestions) {
-      if (out.length >= cap) break;
-      if (!seen.has(s.toLowerCase())) { seen.add(s.toLowerCase()); out.push(s); }
-    }
-  }
-
-  if (!out.length) return;
-  return {
-    list: out.map(s => ({ text: s, displayText: s })),
-    from: { line: cur.line, ch: start },
-    to:   { line: cur.line, ch: end },
-  };
-});
-
-// Tab (and the default Enter) insert the highlighted word. extraKeys here bind
-// ONLY while the dropdown is open, so the editor's normal Tab (snippet expand /
-// indent) is untouched whenever the dropdown isn't showing.
-const _PROSE_HINT_OPTS = {
-  hint: CodeMirror.hint.proseword,
-  completeSingle: false,
-  extraKeys: { Tab: (cm, h) => h.pick() },
-};
-
-// Trigger. Separate keyup listener so it can't perturb the LaTeX-autocomplete
-// logic above. Lightly debounced.
-cmEditor.on("keyup", (cm, e) => {
-  if (!spellSuggestEnabled) return;
-  if (!e.key || cm.state.completionActive) return;   // a dropdown is already up
-  // React only to prose typing / corrective backspace — not arrows, modifiers,
-  // Enter, etc. (those would re-pop the menu the user just dismissed).
-  const typing = (e.key.length === 1 && /[A-Za-z']/.test(e.key)) || e.key === "Backspace";
-  if (!typing) return;
-  const cur = cm.getCursor();
-  const pre = cm.getLine(cur.line).slice(0, cur.ch);
-  // Never compete with the LaTeX/cite/ref dropdowns — those own these contexts.
-  if (_CITE_CTX.test(pre) || _REF_CTX.test(pre) || /\\[a-zA-Z]*$/.test(pre)) return;
-  // Lazy-load the dictionary on first prose typing — no upfront 1.7MB for users
-  // who only read or only write \commands. The load takes ~1-2s, by which time
-  // the user has usually stopped typing, so we must re-fire the hint when it
-  // resolves — otherwise the very FIRST word never gets a dropdown.
-  if (!spellChecker) {
-    _ensureSpellDict().then(d => {
-      if (!d || !spellSuggestEnabled) return;
-      _runSpellCheck();   // underline the wrong words now that the dict is here
-      if (!cm.state.completionActive) cm.showHint(_PROSE_HINT_OPTS);
-    });
-    return;
-  }
-  clearTimeout(_spellHintTimer);
-  _spellHintTimer = setTimeout(() => {
-    if (cm.state.completionActive) return;
-    // showHint quietly does nothing if the helper returns no list.
-    cm.showHint(_PROSE_HINT_OPTS);
-  }, 250);
-});
-
+// v5.0.0-beta.3.0 — LATEX AUTOCOMPLETE + PROSE WORD SUGGESTIONS lifted to static/autocomplete.js (Phase 3 CM-heavy split).
 // ── RESIZE PANELS ────────────────────────────────────────────
 ;(function() {
   // `active` is the data-resize value of the handle being dragged. Three
@@ -3524,7 +1240,7 @@ cmEditor.on("keyup", (cm, e) => {
       pdfPane.style.width = w + "px";
     }
     // refresh CodeMirror เมื่อ editor ขนาดเปลี่ยน
-    cmEditor.refresh();
+    CM.refresh();
     // update error panel height ถ้ากำลังแสดงอยู่
     const ep = document.getElementById("error-panel");
     if (ep && ep.style.display === "flex") {
@@ -3548,30 +1264,32 @@ cmEditor.on("keyup", (cm, e) => {
 })();
 
 // ── FONT SIZE & TAB SIZE ─────────────────────────────────────
-function setFontSize(px) {
-  document.querySelector(".CodeMirror").style.fontSize = px + "px";
-  cmEditor.refresh();
+export function setFontSize(px) {
+  // v-CM6 — .CodeMirror exists only in CM5; CM6 uses .cm-editor. Guard both.
+  const _fsEl = document.querySelector(".CodeMirror") || document.querySelector(".cm-editor");
+  if (_fsEl) _fsEl.style.fontSize = px + "px";
+  CM.refresh();
   localStorage.setItem("texlocal_font_size", px);
 }
 
-function setTabSize(n) {
+export function setTabSize(n) {
   n = parseInt(n);
-  cmEditor.setOption("tabSize", n);
-  cmEditor.setOption("indentUnit", n);
+  CM.setOption("tabSize", n);
+  CM.setOption("indentUnit", n);
   localStorage.setItem("texlocal_tab_size", n);
 }
 
 // ── EDITOR TOOLBAR ACTIONS ───────────────────────────────────
-function wrapSel(before, after) {
-  const sel = cmEditor.getSelection();
+export function wrapSel(before, after) {
+  const sel = CM.getSelection();
   if (sel) {
-    cmEditor.replaceSelection(before + sel + after);
+    CM.replaceSelection(before + sel + after);
   } else {
-    const cur = cmEditor.getCursor();
-    cmEditor.replaceSelection(before + after);
-    cmEditor.setCursor({ line: cur.line, ch: cur.ch + before.length });
+    const cur = CM.getCursor();
+    CM.replaceSelection(before + after);
+    CM.setCursor({ line: cur.line, ch: cur.ch + before.length });
   }
-  cmEditor.focus();
+  CM.focus();
 }
 
 // ── GRAMMAR MODE (v4.4.0) ─────────────────────────────────────
@@ -3587,42 +1305,42 @@ let _grammarRange = null;
 
 function _currentParagraphRange() {
   // Block bounded by blank lines (or document edges) around the cursor.
-  const cur  = cmEditor.getCursor();
-  const last = cmEditor.lastLine();
-  const blank = (ln) => !(cmEditor.getLine(ln) || "").trim();
+  const cur  = CM.getCursor();
+  const last = CM.lastLine();
+  const blank = (ln) => !(CM.getLine(ln) || "").trim();
   if (blank(cur.line)) {
-    const len = (cmEditor.getLine(cur.line) || "").length;
+    const len = (CM.getLine(cur.line) || "").length;
     return { from: { line: cur.line, ch: 0 }, to: { line: cur.line, ch: len } };
   }
   let top = cur.line, bot = cur.line;
   while (top > 0    && !blank(top - 1)) top--;
   while (bot < last && !blank(bot + 1)) bot++;
-  return { from: { line: top, ch: 0 }, to: { line: bot, ch: (cmEditor.getLine(bot) || "").length } };
+  return { from: { line: top, ch: 0 }, to: { line: bot, ch: (CM.getLine(bot) || "").length } };
 }
 
-function openGrammarMode() {
+export function openGrammarMode() {
   if (!cmEditor) return;
-  const range = cmEditor.somethingSelected()
-    ? { from: cmEditor.getCursor("from"), to: cmEditor.getCursor("to") }
+  const range = CM.somethingSelected()
+    ? { from: CM.getCursor("from"), to: CM.getCursor("to") }
     : _currentParagraphRange();
   _grammarRange = range;
   const ta = document.getElementById("grammar-textarea");
   if (!ta) return;
-  ta.value = cmEditor.getRange(range.from, range.to);
+  ta.value = CM.getRange(range.from, range.to);
   openModal("modal-grammar");
   // Focus + caret at end so the extension activates and typing starts cleanly.
   setTimeout(() => { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }, 30);
 }
 
-function applyGrammarText() {
+export function applyGrammarText() {
   const ta = document.getElementById("grammar-textarea");
   if (ta && _grammarRange) {
     // Modal blocks editing while open, so the stored range is still valid.
-    cmEditor.replaceRange(ta.value, _grammarRange.from, _grammarRange.to);
+    CM.replaceRange(ta.value, _grammarRange.from, _grammarRange.to);
   }
   _grammarRange = null;
   closeModal("modal-grammar");
-  cmEditor.focus();
+  CM.focus();
 }
 
 // v4.4.0 — Ctrl-G toggle: open Grammar mode, or close it if already open.
@@ -3638,294 +1356,37 @@ function toggleGrammarMode() {
 document.addEventListener("keydown", e => {
   if (!((e.ctrlKey || e.metaKey) && e.shiftKey && !e.altKey
         && (e.key === "g" || e.key === "G"))) return;
-  if (cmEditor && cmEditor.hasFocus && cmEditor.hasFocus()) return;  // CM keymap handles it
+  if (cmEditor && CM.hasFocus && CM.hasFocus()) return;  // CM keymap handles it
   e.preventDefault();
   toggleGrammarMode();
 });
 
-// ── GITHUB BACKUP (v4.4.0) ────────────────────────────────────
-// Per-project "Backup to GitHub": commit & push via the backend. The modal
-// shows sign-in status and a device-flow login/logout; backup flushes the
-// open file first so on-disk state matches.
-// showLogin / showLogout toggle the two auth-row buttons independently.
-function _ghSetStatus(text, showLogin, showLogout) {
-  const t  = document.getElementById("gh-auth-text");
-  const bi = document.getElementById("gh-login-btn");
-  const bo = document.getElementById("gh-logout-btn");
-  if (t)  t.textContent = text;
-  if (bi) bi.style.display = showLogin  ? "" : "none";
-  if (bo) bo.style.display = showLogout ? "" : "none";
-}
-
-async function _ghRefreshStatus() {
-  try {
-    const st = await (await fetch("/api/github/status")).json();
-    if (st.logged_in) {
-      const viaGh = st.mode === "gh";   // gh CLI session — our Log out can't end it
-      _ghSetStatus("Signed in as " + (st.account || "GitHub") + (viaGh ? " (gh CLI) ✓" : " ✓"),
-                   false, !viaGh);
-    } else {
-      _ghSetStatus("Not signed in to GitHub.", true, false);
-    }
-    return st;
-  } catch (_) {
-    _ghSetStatus("Could not reach the server.", false, false);
-    return null;
-  }
-}
-
-function openGitHubModal() {
-  if (!currentProject) { alert("Open a project first."); return; }
-  const nameInput = document.getElementById("gh-repo-name");
-  if (nameInput && !nameInput.value.trim()) nameInput.value = currentProject;
-  const res = document.getElementById("gh-result");
-  if (res) { res.style.display = "none"; res.textContent = ""; }
-  const sync = document.getElementById("gh-sync-row");
-  if (sync) sync.style.display = "none";
-  openModal("modal-github");
-  _ghRefreshStatus();
-  _ghCheckSync();
-}
-
-let _ghPollTimer = null;
-async function githubLogin() {
-  _ghSetStatus("Starting GitHub sign-in…", false, false);
-  try {
-    const r = await fetch("/api/github/login", { method: "POST" });
-    const d = await r.json();
-    if (!r.ok) { _ghSetStatus(d.error || "Sign-in failed.", true, false); return; }
-    if (d.already) { _ghRefreshStatus(); return; }
-    const uri  = d.verification_uri || "https://github.com/login/device";
-    const code = d.user_code || "";
-    // v4.7.0 — open the verify page in a REAL browser. The WebView2 desktop
-    // build (pywebview injects window.pywebview) can't window.open a system tab,
-    // so ask the backend to launch the OS browser; plain browser mode uses
-    // window.open as before.
-    if (window.pywebview) {
-      try { await fetch("/api/github/open-verify", { method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ url: uri }) }); } catch (_) {}
-    } else {
-      try { window.open(uri, "_blank", "noopener"); } catch (_) {}
-    }
-    _ghSetStatus("Enter code " + code + " at " + uri + " — waiting for you to authorise…", false, false);
-    clearInterval(_ghPollTimer);
-    const interval = Math.max(2, (d.interval || 5)) * 1000;
-    _ghPollTimer = setInterval(async () => {
-      let p;
-      try { p = await (await fetch("/api/github/login/poll", { method: "POST" })).json(); }
-      catch (_) { return; }
-      if (p.status === "authorized") {
-        clearInterval(_ghPollTimer);
-        _ghSetStatus("Signed in as " + (p.account || "GitHub") + " ✓", false, true);
-      } else if (p.status === "error") {
-        clearInterval(_ghPollTimer);
-        _ghSetStatus(p.error || "Sign-in failed.", true, false);
-      }
-    }, interval);
-  } catch (_) {
-    _ghSetStatus("Sign-in request failed.", true, false);
-  }
-}
-
-async function githubLogout() {
-  clearInterval(_ghPollTimer);
-  _ghSetStatus("Signing out…", false, false);
-  try { await fetch("/api/github/logout", { method: "POST" }); } catch (_) {}
-  _ghRefreshStatus();
-}
-
-async function githubBackup() {
-  if (!currentProject) { alert("Open a project first."); return; }
-  const btn = document.getElementById("gh-backup-btn");
-  const res = document.getElementById("gh-result");
-  const repo = (document.getElementById("gh-repo-name").value || currentProject).trim();
-  const priv = document.getElementById("gh-visibility").value !== "public";
-  const msg  = (document.getElementById("gh-commit-msg").value || "Backup from TexLocal").trim();
-  if (btn) { btn.disabled = true; btn.textContent = "⏳ Backing up…"; }
-  if (res) { res.style.display = "block"; res.textContent = "Working…"; }
-  try { await saveCurrentFile(); } catch (_) {}
-  try {
-    const r = await fetch(`/api/projects/${encodeURIComponent(currentProject)}/github/backup`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ repo, private: priv, message: msg }),
-    });
-    const d = await r.json();
-    const lines = (d.steps || []).map(s =>
-      (s.ok ? "✓ " : "✗ ") + s.step + (!s.ok && s.err ? "\n   " + s.err : ""));
-    if (d.ok) lines.push("", d.repo_url ? ("Done → " + d.repo_url) : "Done.");
-    else if (d.error) lines.push((lines.length ? "\n" : "") + "Error: " + d.error);
-    if (res) res.textContent = lines.join("\n");
-    if (r.status === 401) _ghRefreshStatus();
-    if (d.ok) _ghCheckSync();   // refresh ahead/behind after pushing
-  } catch (e) {
-    if (res) res.textContent = "Request failed: " + e;
-  } finally {
-    if (btn) { btn.disabled = false; btn.textContent = "⬆ Commit & push"; }
-  }
-}
-
-// v4.4.0 — Check how local compares to the GitHub remote (fetch + ahead/behind)
-// and offer Pull when the remote is ahead.
-async function _ghCheckSync() {
-  const row  = document.getElementById("gh-sync-row");
-  const txt  = document.getElementById("gh-sync-text");
-  const pull = document.getElementById("gh-pull-btn");
-  if (!row || !currentProject) { if (row) row.style.display = "none"; return; }
-  row.style.display = "flex";
-  txt.textContent = "Checking for remote changes…";
-  pull.style.display = "none";
-  let d;
-  try {
-    d = await (await fetch(`/api/projects/${encodeURIComponent(currentProject)}/github/sync`)).json();
-  } catch (_) { row.style.display = "none"; return; }
-  if (!d.repo || !d.remote) { row.style.display = "none"; return; }   // nothing connected yet
-  if (!d.fetched) {
-    txt.textContent = "Couldn't reach the remote" + (d.fetch_error ? ": " + d.fetch_error : ".");
-    return;
-  }
-  const parts = [];
-  if (d.behind) parts.push(`↓ ${d.behind} behind`);
-  if (d.ahead)  parts.push(`↑ ${d.ahead} ahead`);
-  txt.textContent = parts.length
-    ? `${parts.join(" · ")} origin/${d.branch}` + (d.dirty ? " · local edits" : "")
-    : `Up to date with origin/${d.branch} ✓`;
-  pull.style.display = d.behind ? "" : "none";
-  pull.disabled = false; pull.textContent = "⬇ Pull";
-}
-
-async function githubPull() {
-  const pull = document.getElementById("gh-pull-btn");
-  const res  = document.getElementById("gh-result");
-  pull.disabled = true; pull.textContent = "⏳ Pulling…";
-  try {
-    const d = await (await fetch(`/api/projects/${encodeURIComponent(currentProject)}/github/pull`,
-                                 { method: "POST" })).json();
-    if (res) res.style.display = "block";
-    if (d.ok) {
-      await _reloadCurrentFileFromDisk();   // bring pulled content into the editor
-      await loadFiles();                    // newly-pulled files show in the tree
-      if (res) res.textContent = "Pulled from GitHub:\n" + (d.out || "done");
-      _ghCheckSync();
-    } else {
-      // Reload so any conflict markers / merged content show in the editor.
-      await _reloadCurrentFileFromDisk();
-      await loadFiles();
-      let head;
-      if (d.conflict)     head = "Merge conflict — open the file(s), fix the <<<<< ===== >>>>> markers, then back up:\n";
-      else if (d.blocked) head = "Couldn't merge automatically — back up (Commit & push) first, then Pull:\n";
-      else                head = "Pull failed:\n";
-      if (res) res.textContent = head + (d.error || "");
-      pull.disabled = false; pull.textContent = "⬇ Pull";
-      _ghCheckSync();
-    }
-  } catch (e) {
-    if (res) { res.style.display = "block"; res.textContent = "Pull request failed: " + e; }
-    pull.disabled = false; pull.textContent = "⬇ Pull";
-  }
-}
-
+// v5.0.0-beta.2.0 — GITHUB lifted to static/github.js (Phase 2 CM-light split). Loaded via <script defer> after editor.js.
 // Reload the open file's content from disk WITHOUT saving the editor buffer
 // first — used after a pull, where saving would push the stale buffer back
 // over the freshly-pulled changes.
-async function _reloadCurrentFileFromDisk() {
+export async function _reloadCurrentFileFromDisk() {
   if (!currentProject || !currentFile || isImageFile(currentFile)) return;
   try {
     const data = await (await fetch(`/api/projects/${encodeURIComponent(currentProject)}/file?path=${encodeURIComponent(currentFile)}`)).json();
     const tab = openTabs.find(t => t.name === currentFile);
     if (tab) tab.content = data.content;
-    cmEditor.setValue(data.content || "");
-    cmEditor.clearHistory();
+    CM.setValue(data.content || "");
+    CM.clearHistory();
     updateOutline(); updateWordCount();
   } catch (_) { /* leave the editor as-is on failure */ }
 }
 
-function insertDisplayMath() {
-  const cur = cmEditor.getCursor();
-  cmEditor.replaceSelection('\\[\n\n\\]');
-  cmEditor.setCursor({ line: cur.line + 1, ch: 0 });
-  cmEditor.focus();
+export function insertDisplayMath() {
+  const cur = CM.getCursor();
+  CM.replaceSelection('\\[\n\n\\]');
+  CM.setCursor({ line: cur.line + 1, ch: 0 });
+  CM.focus();
 }
 
-// ── SYNCTEX FORWARD SEARCH ───────────────────────────────────
-// Forward search: editor cursor → scroll PDF to the right page.
-// (Exact line highlighting is unreliable with MiKTeX synctex on paragraph text;
-//  use backward search — click PDF → editor — for precise navigation instead.)
-
-// shared timer so a fresh syncForward result isn't wiped by a stale 15s timeout
-let _syncForwardStatusTimer = null;
-async function syncForward() {
-  if (!currentProject || !currentFile) return;
-  if (!currentFile.endsWith(".tex")) return;
-
-  // Cancel any auto-clear left over from a previous syncForward call
-  if (_syncForwardStatusTimer) {
-    clearTimeout(_syncForwardStatusTimer);
-    _syncForwardStatusTimer = null;
-  }
-
-  const btn  = document.getElementById("synctex-btn");
-  const cur  = cmEditor.getCursor();
-  const line = cur.line + 1;
-  const col  = cur.ch  + 1;
-  const pdfName = mainFile.replace(/\.tex$/, ".pdf");
-
-  const container = document.getElementById("pdf-canvas-container");
-  if (container.style.display === "none") {
-    document.getElementById("compile-status").textContent = "Compile first";
-    document.getElementById("compile-status").className = "compile-status err";
-    return;
-  }
-
-  btn.classList.add("syncing");
-  btn.classList.remove("error");
-
-  try {
-    const res  = await fetch(
-      `/api/projects/${encodeURIComponent(currentProject)}/synctex/forward` +
-      `?file=${encodeURIComponent(currentFile)}&line=${line}&col=${col}&pdf=${encodeURIComponent(pdfName)}`
-    );
-    const data = await res.json();
-
-    if (!data.ok) {
-      btn.classList.remove("syncing"); btn.classList.add("error");
-      setTimeout(() => btn.classList.remove("error"), 2000);
-      document.getElementById("compile-status").textContent = data.error || "SyncTeX failed";
-      document.getElementById("compile-status").className = "compile-status err";
-      return;
-    }
-
-    // Scroll to the correct page + highlight full wrapped paragraph range
-    // data.y  = top of first visual line (from TOP of page)
-    // data.y2 = baseline of last visual line (from TOP of page)
-    // data.h  = glyph ascent (~10pt) for descent calc
-    pdfScrollToPosition(data.page, data.x, data.y, data.h || 10, 0, data.y2 || 0);
-
-    btn.classList.remove("syncing");
-    btn.style.color = "var(--green)";
-    setTimeout(() => { btn.style.color = ""; }, 800);
-
-    // Brief confirmation — auto-clears after a couple seconds.
-    const dbg = data.debug || {};
-    const matchedNote = (dbg.matched_line && dbg.matched_line !== (cmEditor.getCursor().line + 1))
-                          ? ` (matched line ${dbg.matched_line})` : "";
-    document.getElementById("compile-status").textContent = `⇢ Page ${data.page}${matchedNote}`;
-    document.getElementById("compile-status").className   = "compile-status ok";
-    _syncForwardStatusTimer = setTimeout(() => {
-      document.getElementById("compile-status").textContent = "";
-      document.getElementById("compile-status").className = "compile-status";
-      _syncForwardStatusTimer = null;
-    }, 2000);
-
-  } catch (e) {
-    btn.classList.remove("syncing"); btn.classList.add("error");
-    setTimeout(() => btn.classList.remove("error"), 2000);
-  }
-}
-
+// v5.0.0-beta.3.0 — SYNCTEX FORWARD SEARCH lifted to static/synctex.js (Phase 3 CM-heavy split).
 // ── THEME ────────────────────────────────────────────────────
-function setTheme(theme, skipSave) {
+export function setTheme(theme, skipSave) {
   if (theme === "light") {
     document.documentElement.setAttribute("data-theme", "light");
   } else {
@@ -3940,7 +1401,7 @@ function setTheme(theme, skipSave) {
 // v3.2.3 — Editor theme (independent of UI theme). "dark" applies the
 // dark-bg / light-ink palette to the CodeMirror pane only. "light" reverts
 // to the default white-bg look. Persisted globally (not per-project).
-function setEditorTheme(theme, skipSave) {
+export function setEditorTheme(theme, skipSave) {
   if (theme === "dark") {
     document.documentElement.setAttribute("data-editor-theme", "dark");
   } else {
@@ -3960,7 +1421,7 @@ function setEditorTheme(theme, skipSave) {
 // "cerulean" applies the SchemeColor "Cerulean Gradient" palette via the
 // [data-appearance="cerulean"] block in editor.css. The app icon is NOT
 // affected. Persisted globally (not per-project), shared with dashboard.html.
-function setAppearance(name, skipSave) {
+export function setAppearance(name, skipSave) {
   if (name === "cerulean") {
     document.documentElement.setAttribute("data-appearance", "cerulean");
   } else {
@@ -3983,7 +1444,7 @@ let quickOpenFiles  = [];   // current project's file list (filtered)
 let qoActiveIdx     = 0;
 let qoCurrentMatches = [];
 
-function setQuickOpenFiles(files) {
+export function setQuickOpenFiles(files) {
   // Called from loadFiles after fetching. We keep all non-generated files
   // (images included — quick-open is a navigator, not a tex-only switcher).
   quickOpenFiles = (files || []).slice();
@@ -4033,7 +1494,7 @@ function _qoRenderHits(text, hits) {
   return out;
 }
 
-function _esc(s) {
+export function _esc(s) {
   return String(s).replace(/[&<>"']/g, c => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;",
   })[c]);
@@ -4111,10 +1572,10 @@ function openQuickOpen() {
   setTimeout(() => input.focus(), 0);
 }
 
-function closeQuickOpen() {
+export function closeQuickOpen() {
   document.getElementById("quick-open-overlay").classList.remove("open");
   // Return focus to the editor so typing resumes naturally.
-  if (cmEditor) cmEditor.focus();
+  if (cmEditor) CM.focus();
 }
 
 // Single keydown handler on the input drives navigation. Bound once via
@@ -4145,15 +1606,15 @@ function _qoOnInputKey(e) {
 }
 
 // ── FOCUS MODE ────────────────────────────────────────────────
-function toggleFocusMode() {
+export function toggleFocusMode() {
   document.body.classList.toggle("focus-mode");
-  setTimeout(() => cmEditor.refresh(), 50);
+  setTimeout(() => CM.refresh(), 50);
 }
 document.addEventListener("keydown", e => {
   if (e.key === "Escape") {
     if (document.body.classList.contains("focus-mode")) {
       document.body.classList.remove("focus-mode");
-      setTimeout(() => cmEditor.refresh(), 50);
+      setTimeout(() => CM.refresh(), 50);
     }
     hideSearchPanel();
   }
@@ -4197,7 +1658,7 @@ let _settingsEsc = null; // v4.8.0 — bound Escape handler, removed on close
 // dropdown needed is gone — the overlay centers via flexbox. Backdrop click
 // closes it (inline onclick on #settings-panel); Esc closes via a listener
 // added on open / removed on close, matching openDictManager.
-function switchSettingsTab(name) {
+export function switchSettingsTab(name) {
   for (const t of document.querySelectorAll(".settings-tab")) {
     const on = t.id === `settings-tab-${name}`;
     t.classList.toggle("active", on);
@@ -4207,9 +1668,49 @@ function switchSettingsTab(name) {
     p.classList.toggle("active", p.id === `settings-pane-${name}`);
   }
   if (name === "keyboard") renderKeyboardShortcuts(); // v4.8.1 — lazy-render cheat-sheet
+  if (name === "engine") renderEditorEngineInfo();   // v-CM6 vp.2 — engine + packages
 }
 
-function toggleSettingsPanel(e) {
+// v-CM6 vp.2 — Settings ▸ Engine tab. Shows which editor engine is live (CM6
+// default / CM5 legacy) and the CM6 package versions vendored in the offline
+// bundle (static/vendor/cm6/, pins mirrored from VERSIONS.txt). Read-only info;
+// package names/versions are trusted constants, so no escaping needed.
+const CM6_PACKAGES = [
+  ["@codemirror/state", "6.7.0"],
+  ["@codemirror/view", "6.43.4"],
+  ["@codemirror/commands", "6.10.4"],
+  ["@codemirror/language", "6.12.4"],
+  ["@codemirror/autocomplete", "6.20.3"],
+  ["@codemirror/lint", "6.9.7"],
+  ["@codemirror/search", "6.7.1"],
+  ["@codemirror/legacy-modes", "stex"],
+  ["@lezer/highlight", "tags"],
+];
+function renderEditorEngineInfo() {
+  const pane = document.getElementById("settings-pane-engine");
+  if (!pane) return;
+  const cm6 = CM6_ENGINE;
+  const engineName = cm6 ? "CodeMirror 6" : "CodeMirror 5.65.16 (legacy)";
+  const engineNote = cm6
+    ? "The modern engine (default). Multi-cursor, incremental parsing, stronger Thai/IME handling."
+    : "The classic engine, kept as a reversible fallback. Add <code>?cm=6</code> to the URL to switch back to CM6.";
+  const rows = cm6
+    ? CM6_PACKAGES.map(([n, v]) =>
+        `<div class="engine-pkg"><span class="engine-pkg-name">${n}</span><span class="engine-pkg-ver">${v}</span></div>`).join("")
+    : `<div class="engine-pkg"><span class="engine-pkg-name">codemirror</span><span class="engine-pkg-ver">5.65.16</span></div>` +
+      `<div class="engine-pkg"><span class="engine-pkg-name">+ mode / addon</span><span class="engine-pkg-ver">stex, fold, hint, lint, search…</span></div>`;
+  pane.innerHTML =
+    `<div class="engine-hero">` +
+      `<span class="engine-badge ${cm6 ? "is-cm6" : "is-cm5"}">${cm6 ? "CM6" : "CM5"}</span>` +
+      `<div class="engine-hero-txt"><div class="engine-hero-name">${engineName}</div>` +
+        `<div class="engine-hero-note">${engineNote}</div></div>` +
+    `</div>` +
+    `<div class="engine-sec-title">Editor packages</div>` +
+    `<div class="engine-pkg-list">${rows}</div>` +
+    `<div class="engine-foot">Also bundled: pdf.js 3.11.174 · KaTeX (math preview) · Typo.js (spell check)</div>`;
+}
+
+export function toggleSettingsPanel(e) {
   const panel = document.getElementById("settings-panel");
   if (panel.classList.contains("open")) {
     closeSettingsPanel();
@@ -4248,7 +1749,7 @@ function toggleSettingsPanel(e) {
   if (e) e.stopPropagation();
 }
 
-function closeSettingsPanel() {
+export function closeSettingsPanel() {
   document.getElementById("settings-panel").classList.remove("open");
   if (_settingsEsc) {
     document.removeEventListener("keydown", _settingsEsc);
@@ -4343,13 +1844,13 @@ function renderKeyboardShortcuts() {
 // stops firing — that's why remap rebuilds the full map rather than layering
 // an addKeyMap on top (which couldn't unbind the old default).
 function applyEditorKeybindings() {
-  cmEditor.setOption("extraKeys", _buildExtraKeys(getSavedKeybindings()));
+  CM.setOption("extraKeys", _buildExtraKeys(getSavedKeybindings()));
 }
 
 // Normalise a key string to CM's canonical modifier order for conflict
 // comparison ("Ctrl-Shift-[" and "Shift-Ctrl-[" are the same binding).
 function _kbNorm(key) {
-  try { return Object.keys(CodeMirror.normalizeKeyMap({ [key]: "x" }))[0]; }
+  try { return Object.keys(CM.normalizeKeyMap({ [key]: "x" }))[0]; }
   catch (e) { return key; }
 }
 // Accept a binding only if it has a real modifier (Ctrl/Alt/Cmd) or is a
@@ -4384,7 +1885,7 @@ function _kbCaptureKeydown(e) {
   e.preventDefault();
   e.stopPropagation();
   if (e.key === "Escape") { _kbEndCapture(); return; }
-  const name = CodeMirror.keyName(e);
+  const name = CM.keyName(e);
   if (!name || !_kbIsValidBinding(name)) {
     _kbFlash("Needs a modifier (Ctrl/Alt) or a special key");
     return;
@@ -4421,7 +1922,7 @@ function _kbFlash(msg) {
       _kbCaptureBtn.innerHTML = '<span class="kb-capture-hint">Press keys… (Esc cancels)</span>';
   }, 1500);
 }
-function resetAllKeybindings() {
+export function resetAllKeybindings() {
   localStorage.removeItem(_KB_LS_KEY);
   applyEditorKeybindings();
   renderKeyboardShortcuts();
@@ -4435,2167 +1936,9 @@ document.addEventListener("click", e => {
   panel.classList.remove("open");
 });
 
-// ── SYMBOL PANEL ──────────────────────────────────────────────
-const SYMBOL_CATEGORIES = [
-  { name: "Greek α–ω", syms: [
-    ["α","\\alpha"],["β","\\beta"],["γ","\\gamma"],["δ","\\delta"],
-    ["ε","\\varepsilon"],["ζ","\\zeta"],["η","\\eta"],["θ","\\theta"],
-    ["ι","\\iota"],["κ","\\kappa"],["λ","\\lambda"],["μ","\\mu"],
-    ["ν","\\nu"],["ξ","\\xi"],["π","\\pi"],["ρ","\\rho"],
-    ["σ","\\sigma"],["τ","\\tau"],["υ","\\upsilon"],["φ","\\varphi"],
-    ["χ","\\chi"],["ψ","\\psi"],["ω","\\omega"],
-  ]},
-  { name: "Greek Γ–Ω", syms: [
-    ["Γ","\\Gamma"],["Δ","\\Delta"],["Θ","\\Theta"],["Λ","\\Lambda"],
-    ["Ξ","\\Xi"],["Π","\\Pi"],["Σ","\\Sigma"],["Υ","\\Upsilon"],
-    ["Φ","\\Phi"],["Ψ","\\Psi"],["Ω","\\Omega"],
-  ]},
-  { name: "Operators", syms: [
-    ["±","\\pm"],["∓","\\mp"],["×","\\times"],["÷","\\div"],
-    ["·","\\cdot"],["∘","\\circ"],["∑","\\sum"],["∏","\\prod"],
-    ["∫","\\int"],["∮","\\oint"],["√","\\sqrt{}"],["∂","\\partial"],
-    ["∇","\\nabla"],["∞","\\infty"],["ℏ","\\hbar"],["ℓ","\\ell"],
-  ]},
-  { name: "Relations", syms: [
-    ["≤","\\leq"],["≥","\\geq"],["≠","\\neq"],["≈","\\approx"],
-    ["≡","\\equiv"],["∼","\\sim"],["≃","\\simeq"],["≅","\\cong"],
-    ["∈","\\in"],["∉","\\notin"],["⊂","\\subset"],["⊃","\\supset"],
-    ["⊆","\\subseteq"],["⊇","\\supseteq"],
-    ["∀","\\forall"],["∃","\\exists"],
-    ["∪","\\cup"],["∩","\\cap"],["∅","\\emptyset"],
-  ]},
-  { name: "Arrows", syms: [
-    ["→","\\to"],["←","\\leftarrow"],["↔","\\leftrightarrow"],
-    ["⇒","\\Rightarrow"],["⇐","\\Leftarrow"],["⇔","\\Leftrightarrow"],
-    ["↦","\\mapsto"],["↑","\\uparrow"],["↓","\\downarrow"],
-    ["↗","\\nearrow"],["↘","\\searrow"],["↙","\\swarrow"],["↖","\\nwarrow"],
-    ["⇑","\\Uparrow"],["⇓","\\Downarrow"],["↕","\\updownarrow"],
-  ]},
-  { name: "Brackets", syms: [
-    ["⌈","\\lceil"],["⌉","\\rceil"],["⌊","\\lfloor"],["⌋","\\rfloor"],
-    ["〈","\\langle"],["〉","\\rangle"],
-    ["|","\\|"],["‖","\\Vert"],
-    ["(","\\left("],[")",  "\\right)"],
-    ["{","\\{"],["}", "\\}"],
-  ]},
-  { name: "Misc", syms: [
-    ["…","\\ldots"],["⋯","\\cdots"],["⋮","\\vdots"],["⋱","\\ddots"],
-    ["ℜ","\\Re"],["ℑ","\\Im"],
-    ["†","\\dagger"],["‡","\\ddagger"],
-    ["§","\\S"],["¶","\\P"],["©","\\copyright"],
-    ["°","^{\\circ}"],["′","^{\\prime}"],["″","^{\\prime\\prime}"],
-    ["½","\\frac{1}{2}"],["⅓","\\frac{1}{3}"],
-  ]},
-];
-
-let symActiveCat = 0;
-
-// Build the inner grid only — used both for the initial render and for
-// switching categories. The `#sym-cats` row of category buttons is
-// rendered ONCE (in renderSymbolPanel) and never wiped, so a click on a
-// cat button doesn't detach itself from the DOM mid-event. (See bugfix
-// note below.)
-function renderSymGrid() {
-  const cat = SYMBOL_CATEGORIES[symActiveCat];
-  document.getElementById("sym-grid").innerHTML = cat.syms.map(([s, c]) =>
-    `<button class="sym-btn" data-cmd="${c.replace(/&/g,'&amp;').replace(/"/g,'&quot;')}" onclick="insertSymbol(this.dataset.cmd, event)">
-       ${s}
-     </button>`
-  ).join("");
-}
-
-function renderSymbolPanel() {
-  const catsEl = document.getElementById("sym-cats");
-  // Cat buttons are rendered once — selectSymCat will toggle .active
-  // rather than wiping innerHTML. This avoids the bug where clicking a
-  // cat button detached its own DOM node before the document-level
-  // click handler ran, which then saw `panel.contains(e.target) === false`
-  // and closed the whole panel.
-  catsEl.innerHTML = SYMBOL_CATEGORIES.map((cat, i) =>
-    `<button class="sym-cat-btn${i === symActiveCat ? " active" : ""}"
-             data-cat-idx="${i}"
-             onclick="selectSymCat(${i}, event)">${cat.name}</button>`
-  ).join("");
-  renderSymGrid();
-}
-
-function selectSymCat(i, e) {
-  // Belt-and-suspenders: if we ever DO replace these buttons, stop the
-  // event from reaching the document close-handler.
-  if (e) e.stopPropagation();
-  symActiveCat = i;
-  // Toggle .active in place — keeps every cat button attached to the DOM
-  // so the click event's target stays valid through bubbling.
-  document.querySelectorAll(".sym-cat-btn").forEach(btn => {
-    btn.classList.toggle("active", Number(btn.dataset.catIdx) === i);
-  });
-  renderSymGrid();
-}
-
-function insertSymbol(cmd, e) {
-  // The same safety net as selectSymCat — and it also covers the case
-  // where focus shifts to the editor after replaceSelection, which on
-  // some browsers fires a synthetic click that bubbles to document.
-  if (e) e.stopPropagation();
-  const cursor = cmEditor.getCursor();
-  cmEditor.replaceSelection(cmd);
-  // if command ends with {} put cursor inside braces
-  if (cmd.endsWith("{}")) {
-    cmEditor.setCursor({ line: cursor.line, ch: cursor.ch + cmd.length - 1 });
-  }
-  cmEditor.focus();
-}
-
-// ── v3.2.2 — Environment templates ───────────────────────────
-// Each item is { name, preview, snippet }. `snippet` may contain a
-// single `|` placeholder marking where the cursor should land after
-// insertion (the `|` is removed before insertion). Multi-line snippets
-// embed actual newlines (CodeMirror handles indentation by mode).
-const ENV_CATEGORIES = [
-  { name: "Math", items: [
-    { name: "equation", preview: "\\begin{equation} … \\end{equation}",
-      snippet: "\\begin{equation}\n  |\n\\end{equation}\n" },
-    { name: "equation*", preview: "unnumbered equation",
-      snippet: "\\begin{equation*}\n  |\n\\end{equation*}\n" },
-    { name: "align", preview: "\\begin{align} … &= … \\end{align}",
-      snippet: "\\begin{align}\n  | &= \\\\\n  &= \n\\end{align}\n" },
-    { name: "align*", preview: "unnumbered align",
-      snippet: "\\begin{align*}\n  | &= \\\\\n  &= \n\\end{align*}\n" },
-    { name: "gather", preview: "centred multi-line",
-      snippet: "\\begin{gather}\n  |\n\\end{gather}\n" },
-    { name: "split", preview: "split inside equation",
-      snippet: "\\begin{split}\n  | &= \\\\\n  &= \n\\end{split}\n" },
-    { name: "cases", preview: "piecewise definition",
-      snippet: "\\begin{cases}\n  | & \\text{if } \\\\\n  & \\text{otherwise}\n\\end{cases}" },
-    { name: "matrix",  preview: "( ⋯ ) matrix",
-      snippet: "\\begin{matrix}\n  | & \\\\\n  & \n\\end{matrix}" },
-    { name: "pmatrix", preview: "parenthesised matrix",
-      snippet: "\\begin{pmatrix}\n  | & \\\\\n  & \n\\end{pmatrix}" },
-    { name: "bmatrix", preview: "bracketed matrix",
-      snippet: "\\begin{bmatrix}\n  | & \\\\\n  & \n\\end{bmatrix}" },
-    { name: "vmatrix", preview: "determinant",
-      snippet: "\\begin{vmatrix}\n  | & \\\\\n  & \n\\end{vmatrix}" },
-  ]},
-  { name: "Floats", items: [
-    { name: "figure",       preview: "single figure with caption + label",
-      snippet: "\\begin{figure}[H]\n  \\centering\n  \\includegraphics[width=0.8\\textwidth]{|}\n  \\caption{}\n  \\label{fig:}\n\\end{figure}\n" },
-    { name: "subfigure",    preview: "two side-by-side subfigures",
-      snippet: "\\begin{figure}[H]\n  \\centering\n  \\begin{subfigure}[b]{0.45\\textwidth}\n    \\includegraphics[width=\\textwidth]{|}\n    \\caption{}\n    \\label{fig:a}\n  \\end{subfigure}\n  \\hfill\n  \\begin{subfigure}[b]{0.45\\textwidth}\n    \\includegraphics[width=\\textwidth]{}\n    \\caption{}\n    \\label{fig:b}\n  \\end{subfigure}\n  \\caption{}\n  \\label{fig:}\n\\end{figure}\n" },
-    { name: "table",        preview: "tabular with caption",
-      snippet: "\\begin{table}[H]\n  \\centering\n  \\begin{tabular}{cc}\n    \\hline\n    | & \\\\\n    \\hline\n  \\end{tabular}\n  \\caption{}\n  \\label{tab:}\n\\end{table}\n" },
-    { name: "wrapfigure",   preview: "text wraps around figure",
-      snippet: "\\begin{wrapfigure}{r}{0.4\\textwidth}\n  \\centering\n  \\includegraphics[width=\\linewidth]{|}\n  \\caption{}\n  \\label{fig:}\n\\end{wrapfigure}\n" },
-  ]},
-  { name: "Lists", items: [
-    { name: "itemize",     preview: "bullet list",
-      snippet: "\\begin{itemize}\n  \\item |\n  \\item \n\\end{itemize}\n" },
-    { name: "enumerate",   preview: "numbered list",
-      snippet: "\\begin{enumerate}\n  \\item |\n  \\item \n\\end{enumerate}\n" },
-    { name: "description", preview: "term–definition list",
-      snippet: "\\begin{description}\n  \\item[|] \n  \\item[] \n\\end{description}\n" },
-  ]},
-  { name: "Theorem", items: [
-    { name: "theorem", preview: "amsthm theorem",
-      snippet: "\\begin{theorem}\n  |\n\\end{theorem}\n" },
-    { name: "lemma",   preview: "amsthm lemma",
-      snippet: "\\begin{lemma}\n  |\n\\end{lemma}\n" },
-    { name: "corollary", preview: "amsthm corollary",
-      snippet: "\\begin{corollary}\n  |\n\\end{corollary}\n" },
-    { name: "proof",   preview: "proof environment",
-      snippet: "\\begin{proof}\n  |\n\\end{proof}\n" },
-    { name: "definition", preview: "amsthm definition",
-      snippet: "\\begin{definition}\n  |\n\\end{definition}\n" },
-    { name: "remark", preview: "amsthm remark",
-      snippet: "\\begin{remark}\n  |\n\\end{remark}\n" },
-  ]},
-  { name: "Code", items: [
-    { name: "verbatim", preview: "monospace, no LaTeX",
-      snippet: "\\begin{verbatim}\n|\n\\end{verbatim}\n" },
-    { name: "lstlisting", preview: "listings package code block",
-      snippet: "\\begin{lstlisting}[language=Python]\n|\n\\end{lstlisting}\n" },
-    { name: "minted",     preview: "minted package code block",
-      snippet: "\\begin{minted}{python}\n|\n\\end{minted}\n" },
-  ]},
-];
-
-let envActiveCat = 0;
-
-function renderEnvPanel() {
-  const cats = document.getElementById("env-cats");
-  cats.innerHTML = ENV_CATEGORIES.map((c, i) =>
-    `<button class="env-cat-btn${i === envActiveCat ? " active" : ""}"
-             data-env-idx="${i}"
-             onclick="selectEnvCat(${i}, event)">${c.name}</button>`
-  ).join("");
-  renderEnvList();
-}
-function renderEnvList() {
-  const list = document.getElementById("env-list");
-  const items = ENV_CATEGORIES[envActiveCat].items;
-  list.innerHTML = items.map((it, i) =>
-    `<div class="env-row" data-env-i="${i}" onclick="insertEnv(${envActiveCat}, ${i}, event)">
-       <span class="env-name">${escapeHtml(it.name)}</span>
-       <span class="env-preview">${escapeHtml(it.preview)}</span>
-     </div>`
-  ).join("");
-}
-function selectEnvCat(i, e) {
-  if (e) e.stopPropagation();
-  envActiveCat = i;
-  document.querySelectorAll(".env-cat-btn").forEach(btn => {
-    btn.classList.toggle("active", Number(btn.dataset.envIdx) === i);
-  });
-  renderEnvList();
-}
-// Insert template: replace selection with snippet (minus `|`), then place
-// cursor at the `|` position. Same trick the symbol panel uses but adapted
-// for multi-line templates.
-function insertEnv(catIdx, itemIdx, e) {
-  if (e) e.stopPropagation();
-  const it = ENV_CATEGORIES[catIdx].items[itemIdx];
-  if (!it) return;
-  const snippet = it.snippet;
-  const pipe    = snippet.indexOf("|");
-  const cleaned = pipe >= 0 ? snippet.replace("|", "") : snippet;
-  const cursor  = cmEditor.getCursor();
-  cmEditor.replaceSelection(cleaned);
-  if (pipe >= 0) {
-    // Compute target cursor: walk `snippet[:pipe]` to count newlines
-    // and trailing-line characters from the original cursor position.
-    const pre   = snippet.slice(0, pipe);
-    const lines = pre.split("\n");
-    const tgt = lines.length === 1
-      ? { line: cursor.line, ch: cursor.ch + lines[0].length }
-      : { line: cursor.line + lines.length - 1, ch: lines[lines.length - 1].length };
-    cmEditor.setCursor(tgt);
-  }
-  cmEditor.focus();
-}
-function toggleEnvPanel(e) {
-  const panel = document.getElementById("env-panel");
-  if (panel.classList.contains("open")) {
-    panel.classList.remove("open");
-    return;
-  }
-  _closeOtherToolbarPanels("env-panel"); // v3.3.7
-  const btn  = document.getElementById("env-toggle-btn");
-  const rect = btn.getBoundingClientRect();
-  const pw   = 380;
-  let left   = rect.right - pw;
-  if (left < 4) left = 4;
-  panel.style.top  = (rect.bottom + 4) + "px";
-  panel.style.left = left + "px";
-  renderEnvPanel();
-  panel.classList.add("open");
-  if (e) e.stopPropagation();
-}
-document.addEventListener("click", e => {
-  const panel = document.getElementById("env-panel");
-  if (!panel || !panel.classList.contains("open")) return;
-  if (panel.contains(e.target)) return;
-  if (e.target.closest("#env-toggle-btn")) return;
-  panel.classList.remove("open");
-});
-
-// ── v4.4.0 — PACKAGE MANAGER ────────────────────────────────────
-// Lists the \usepackage{} packages in the current document, lets you remove
-// them, and suggests important packages you're not using yet — each added to
-// the preamble with one click. Pure document editing (no MiKTeX install).
-//
-// Curated "important packages": the ones a thesis/article almost always wants.
-// `line` overrides the default `\usepackage{name}` when sensible options help.
-const _IMPORTANT_PACKAGES = [
-  { name: "amsmath",    desc: "Core math: align, gather, \\text, \\dfrac" },
-  { name: "amssymb",    desc: "Extra math symbols: \\mathbb, \\lesssim" },
-  { name: "amsthm",     desc: "Theorem / proof environments" },
-  { name: "graphicx",   desc: "\\includegraphics for figures" },
-  { name: "hyperref",   desc: "Clickable links + PDF bookmarks (load late)" },
-  { name: "cleveref",   desc: "Smart cross-refs \\cref (load after hyperref)" },
-  { name: "booktabs",   desc: "Professional tables: \\toprule \\midrule" },
-  { name: "geometry",   desc: "Page margins", line: "\\usepackage[margin=1in]{geometry}" },
-  { name: "xcolor",     desc: "Colours: \\textcolor, \\color" },
-  { name: "siunitx",    desc: "Units & numbers: \\SI, \\num" },
-  { name: "microtype",  desc: "Subtle typographic polish" },
-  { name: "babel",      desc: "Language & hyphenation", line: "\\usepackage[english]{babel}" },
-  { name: "caption",    desc: "Customise figure/table captions" },
-  { name: "subcaption", desc: "Sub-figures (subfigure env)" },
-  { name: "enumitem",   desc: "Customisable lists" },
-  { name: "float",      desc: "Precise [H] float placement" },
-  { name: "listings",   desc: "Source-code listings" },
-  { name: "bm",         desc: "Bold math: \\bm" },
-  { name: "url",        desc: "Line-breakable \\url{}" },
-  { name: "csquotes",   desc: "Context-sensitive quotes" },
-];
-
-// Extract package names from every \usepackage[..]{a,b,c} in the document.
-function _usedPackages() {
-  const used = new Set();
-  const re = /\\usepackage\s*(?:\[[^\]]*\])?\s*\{([^}]*)\}/g;
-  const text = cmEditor.getValue();
-  let m;
-  while ((m = re.exec(text))) {
-    m[1].split(",").forEach(p => { const n = p.trim(); if (n) used.add(n); });
-  }
-  return used;
-}
-
-function togglePackagePanel(e) {
-  const panel = document.getElementById("package-panel");
-  if (panel.classList.contains("open")) { panel.classList.remove("open"); return; }
-  _closeOtherToolbarPanels("package-panel");
-  const btn  = document.getElementById("package-toggle-btn");
-  const rect = btn.getBoundingClientRect();
-  let left   = rect.right - 380;
-  if (left < 4) left = 4;
-  panel.style.top  = (rect.bottom + 4) + "px";
-  panel.style.left = left + "px";
-  renderPackagePanel();
-  panel.classList.add("open");
-  if (e) e.stopPropagation();
-}
-document.addEventListener("click", e => {
-  const panel = document.getElementById("package-panel");
-  if (!panel || !panel.classList.contains("open")) return;
-  if (panel.contains(e.target)) return;
-  if (e.target.closest("#package-toggle-btn")) return;
-  panel.classList.remove("open");
-});
-
-function renderPackagePanel() {
-  const list = document.getElementById("package-list");
-  if (!list) return;
-  const used = _usedPackages();
-  const usedArr = [...used].sort();
-
-  const usedRows = usedArr.length
-    ? usedArr.map(n => {
-        const known = _IMPORTANT_PACKAGES.find(p => p.name === n);
-        const desc  = known ? known.desc : "";
-        return `<div class="pkg-row">
-          <div class="pkg-info">
-            <div class="pkg-name">${escapeHtml(n)}</div>
-            ${desc ? `<div class="pkg-desc">${escapeHtml(desc)}</div>` : ""}
-          </div>
-          <span class="pkg-state" data-pkg="${escapeHtml(n)}"></span>
-          <button class="pkg-btn remove" title="Remove \\usepackage{${escapeHtml(n)}}"
-                  data-pkg="${escapeHtml(n)}" onclick="removePackage(this.dataset.pkg, event)">✕</button>
-        </div>`;
-      }).join("")
-    : `<div class="pkg-empty">No \\usepackage lines found in this file.</div>`;
-
-  // Suggestions = curated importants not already used.
-  const suggestions = _IMPORTANT_PACKAGES.filter(p => !used.has(p.name));
-  const suggRows = suggestions.length
-    ? suggestions.map(p => `<div class="pkg-row">
-          <div class="pkg-info">
-            <div class="pkg-name">${escapeHtml(p.name)}</div>
-            <div class="pkg-desc">${escapeHtml(p.desc)}</div>
-          </div>
-          <span class="pkg-state" data-pkg="${escapeHtml(p.name)}"></span>
-          <button class="pkg-btn add" title="Add ${escapeHtml(p.line || ('\\usepackage{' + p.name + '}'))}"
-                  data-pkg="${escapeHtml(p.name)}" onclick="addPackage(this.dataset.pkg, event)">＋</button>
-        </div>`).join("")
-    : `<div class="pkg-empty">You're already using all the suggested packages. 🎉</div>`;
-
-  list.innerHTML =
-    `<div class="pkg-section">In this document (${usedArr.length})</div>` + usedRows +
-    `<div class="pkg-section">Suggested</div>` + suggRows;
-
-  // Annotate each row with system install-state (kpsewhich) + an Install button
-  // for missing packages. Async so the panel paints immediately.
-  const names = [...new Set([...usedArr, ...suggestions.map(p => p.name)])];
-  _refreshPackageInstallStatus(names);
-}
-
-// Session cache for install state. kpsewhich can be slow on MiKTeX (and the
-// package DB may be locked), so we fetch once in the background, cache the
-// result, and never block the panel — add/remove/install all work regardless.
-const _pkgInstallCache = {};   // name -> bool (installed)
-let   _pkgManager = null;      // manager label (e.g. "MiKTeX Console") or null
-let   _pkgStatusFetching = false;
-
-function _pkgStateHTML(name) {
-  if (!(name in _pkgInstallCache)) return "";          // unknown → blank slot
-  if (_pkgInstallCache[name])
-    return `<span class="pkg-installed" title="Installed on this system">✓</span>`;
-  if (_pkgManager)
-    return `<button class="pkg-btn install" title="Not installed — open ${_pkgManager} to install"
-                    onclick="openPackageManager(event)">📦</button>`;
-  return `<span class="pkg-missing" title="Not installed">not installed</span>`;
-}
-
-function _applyPkgSlots() {
-  document.querySelectorAll("#package-list .pkg-state").forEach(slot => {
-    if (slot.dataset.pkg) slot.innerHTML = _pkgStateHTML(slot.dataset.pkg);
-  });
-}
-
-// Show cached state immediately, then fetch only the names we don't know yet.
-async function _refreshPackageInstallStatus(names) {
-  _applyPkgSlots();
-  const unknown = names.filter(n => !(n in _pkgInstallCache));
-  if (!unknown.length || _pkgStatusFetching) return;
-  _pkgStatusFetching = true;
-  try {
-    const d = await (await fetch("/api/packages/status", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ names: unknown }),
-    })).json();
-    Object.assign(_pkgInstallCache, d.installed || {});
-    _pkgManager = d.manager || null;
-  } catch (_) { /* leave slots blank; panel still works */ }
-  finally { _pkgStatusFetching = false; }
-  _applyPkgSlots();
-}
-
-// Open the system's package-manager GUI (MiKTeX Console / TeX Live) so the
-// user installs there — TexLocal doesn't shell the installer itself.
-async function openPackageManager(e) {
-  if (e) e.stopPropagation();
-  try {
-    const d = await (await fetch("/api/packages/open-manager", { method: "POST" })).json();
-    if (!d.ok && d.error) alert(d.error);
-  } catch (_) { alert("Couldn't open the package manager."); }
-}
-
-// Insert a \usepackage line into the preamble: after the last existing
-// \usepackage, else after \documentclass, else at the top. Never past
-// \begin{document}.
-function addPackage(name, e) {
-  if (e) e.stopPropagation();
-  const pkg  = _IMPORTANT_PACKAGES.find(p => p.name === name);
-  const line = (pkg && pkg.line) ? pkg.line : `\\usepackage{${name}}`;
-  if (_usedPackages().has(name)) return;   // already there
-
-  const lines = cmEditor.getValue().split("\n");
-  let insertAt = null, lastUse = -1, docClass = -1, beginDoc = lines.length;
-  for (let i = 0; i < lines.length; i++) {
-    if (/\\begin\s*\{document\}/.test(lines[i])) { beginDoc = i; break; }
-    if (/\\usepackage\b/.test(lines[i]))   lastUse  = i;
-    if (/\\documentclass\b/.test(lines[i])) docClass = i;
-  }
-  if (lastUse >= 0)        insertAt = lastUse + 1;
-  else if (docClass >= 0)  insertAt = docClass + 1;
-  else                     insertAt = 0;
-  if (insertAt > beginDoc) insertAt = beginDoc;   // stay in the preamble
-
-  cmEditor.replaceRange(line + "\n", { line: insertAt, ch: 0 });
-  renderPackagePanel();
-  cmEditor.focus();
-}
-
-// Remove a package: delete its whole \usepackage line if it's the only name,
-// otherwise drop just that name from the comma list.
-function removePackage(name, e) {
-  if (e) e.stopPropagation();
-  const lines = cmEditor.getValue().split("\n");
-  const re = /\\usepackage\s*(?:\[[^\]]*\])?\s*\{([^}]*)\}/;
-  for (let i = 0; i < lines.length; i++) {
-    const m = re.exec(lines[i]);
-    if (!m) continue;
-    const names = m[1].split(",").map(s => s.trim()).filter(Boolean);
-    if (!names.includes(name)) continue;
-    cmEditor.operation(() => {
-      if (names.length === 1) {
-        // Whole line goes (including its trailing newline).
-        cmEditor.replaceRange("", { line: i, ch: 0 },
-                              { line: i + 1, ch: 0 });
-      } else {
-        const kept    = names.filter(n => n !== name);
-        const newLine = lines[i].replace(/\{[^}]*\}/, "{" + kept.join(",") + "}");
-        cmEditor.replaceRange(newLine, { line: i, ch: 0 },
-                              { line: i, ch: lines[i].length });
-      }
-    });
-    break;
-  }
-  renderPackagePanel();
-  cmEditor.focus();
-}
-
-// ── v3.3.0 — Snippet library ────────────────────────────────────
-// Type a trigger (e.g. `eq`) + Tab to expand it into a multi-line template
-// with cursor placeholders. Tab cycles forward through placeholders; the
-// `${0}` slot (if present) is the final cursor resting position. Esc and
-// click-outside-the-snippet end the session early.
-//
-// Snippets are kept in two layers:
-//   1. _DEFAULT_SNIPPETS — baked into the frontend, math + envs + physics
-//      bias because the primary use case is Pol's QM/Rydberg thesis.
-//   2. Project-local `.texlocal-snippets.json` — overlays the defaults,
-//      can add new triggers OR shadow defaults. Loaded on switchProject.
-//
-// Placeholder syntax (parsed by _snippetExpand):
-//   ${N}            — empty placeholder, position N in Tab order
-//   ${N:default}    — placeholder with default text pre-selected
-//   ${0}            — final cursor (always last in the cycle, no selection)
-const _DEFAULT_SNIPPETS = {
-  // Math environments — most-used during thesis writing
-  "eq":     "\\begin{equation}\n  ${1}\n  \\label{eq:${2:label}}\n\\end{equation}\n${0}",
-  "eq*":    "\\begin{equation*}\n  ${1}\n\\end{equation*}\n${0}",
-  "al":     "\\begin{align}\n  ${1} &= ${2} \\\\\n  ${3} &= ${4}\n\\end{align}\n${0}",
-  "al*":    "\\begin{align*}\n  ${1} &= ${2}\n\\end{align*}\n${0}",
-  "gather": "\\begin{gather}\n  ${1} \\\\\n  ${2}\n\\end{gather}\n${0}",
-  "split":  "\\begin{split}\n  ${1} &= ${2} \\\\\n      &= ${3}\n\\end{split}${0}",
-  "cases":  "\\begin{cases}\n  ${1} & \\text{if } ${2} \\\\\n  ${3} & \\text{otherwise}\n\\end{cases}${0}",
-  "bmat":   "\\begin{bmatrix}\n  ${1} & ${2} \\\\\n  ${3} & ${4}\n\\end{bmatrix}${0}",
-  "pmat":   "\\begin{pmatrix}\n  ${1} & ${2} \\\\\n  ${3} & ${4}\n\\end{pmatrix}${0}",
-  // Math operators
-  "frac":   "\\frac{${1}}{${2}}${0}",
-  "dfrac":  "\\dfrac{${1}}{${2}}${0}",
-  "sqrt":   "\\sqrt{${1}}${0}",
-  "sum":    "\\sum_{${1:i=1}}^{${2:N}} ${3}${0}",
-  "int":    "\\int_{${1:0}}^{${2:\\infty}} ${3} \\, d${4:x}${0}",
-  "prod":   "\\prod_{${1:i=1}}^{${2:N}} ${3}${0}",
-  "lim":    "\\lim_{${1:n \\to \\infty}} ${2}${0}",
-  "vec":    "\\vec{${1}}${0}",
-  "hat":    "\\hat{${1}}${0}",
-  "bar":    "\\bar{${1}}${0}",
-  "tilde":  "\\tilde{${1}}${0}",
-  "dot":    "\\dot{${1}}${0}",
-  "ddot":   "\\ddot{${1}}${0}",
-  "lr":     "\\left( ${1} \\right)${0}",
-  "lrb":    "\\left[ ${1} \\right]${0}",
-  "lrc":    "\\left\\{ ${1} \\right\\}${0}",
-  // Floats
-  "fig":    "\\begin{figure}[${1:htbp}]\n  \\centering\n  \\includegraphics[width=${2:0.8}\\linewidth]{${3:path}}\n  \\caption{${4}}\n  \\label{fig:${5}}\n\\end{figure}\n${0}",
-  "tab":    "\\begin{table}[${1:htbp}]\n  \\centering\n  \\caption{${2}}\n  \\label{tab:${3}}\n  \\begin{tabular}{${4:lcc}}\n    \\toprule\n    ${5:Header} & ${6} & ${7} \\\\\n    \\midrule\n    ${0}\n    \\bottomrule\n  \\end{tabular}\n\\end{table}",
-  // Lists
-  "it":     "\\begin{itemize}\n  \\item ${1}\n  \\item ${2}\n\\end{itemize}\n${0}",
-  "en":     "\\begin{enumerate}\n  \\item ${1}\n  \\item ${2}\n\\end{enumerate}\n${0}",
-  // Sectioning
-  "sec":    "\\section{${1}}\n\\label{sec:${2}}\n\n${0}",
-  "ssec":   "\\subsection{${1}}\n\\label{sec:${2}}\n\n${0}",
-  "sssec":  "\\subsubsection{${1}}\n\\label{sec:${2}}\n\n${0}",
-  "ch":     "\\chapter{${1}}\n\\label{ch:${2}}\n\n${0}",
-  // Cite/ref shorthand
-  "cite":   "\\cite{${1}}${0}",
-  "ref":    "\\ref{${1}}${0}",
-  "eqref":  "\\eqref{${1}}${0}",
-  "cref":   "\\cref{${1}}${0}",
-  // Physics — quantum mechanics / Dirac notation (Pol's thesis area)
-  "bra":    "\\bra{${1}}${0}",
-  "ket":    "\\ket{${1}}${0}",
-  "braket": "\\braket{${1}}{${2}}${0}",
-  "expval": "\\expval{${1}}${0}",
-  "pderiv": "\\frac{\\partial ${1}}{\\partial ${2}}${0}",
-  "deriv":  "\\frac{d ${1}}{d ${2}}${0}",
-  "comm":   "\\left[ ${1}, ${2} \\right]${0}",
-  "ang":    "\\left\\langle ${1} \\right\\rangle${0}",
-  // Generic
-  "begin":  "\\begin{${1}}\n  ${2}\n\\end{${1}}${0}",
-  "todo":   "\\todo{${1}}${0}",
-};
-
-let snippetsCache = Object.assign({}, _DEFAULT_SNIPPETS);
-let _snippetSession = null;   // { markers: [{n, mark}], current: idx }
-
-async function loadSnippets() {
-  // Reset to defaults first; project file (if any) overlays on top.
-  // Doing it in this order means a project file that omits some defaults
-  // does NOT lose those triggers — they still resolve. To intentionally
-  // disable a default trigger, the project file should map it to "" and
-  // _snippetTabHandler will treat empty bodies as no-op (falls through).
-  snippetsCache = Object.assign({}, _DEFAULT_SNIPPETS);
-  if (!currentProject) return;
-  try {
-    const r = await fetch(`/api/projects/${encodeURIComponent(currentProject)}/snippets`);
-    const d = await r.json();
-    if (d && d.snippets && typeof d.snippets === "object") {
-      Object.assign(snippetsCache, d.snippets);
-    }
-  } catch (_) {
-    // network/parse fail — defaults still work
-  }
-}
-
-// Tab key handler — three paths, checked in order:
-//   (a) active snippet session → jump to next placeholder
-//   (b) trigger word before cursor matches a snippet → expand
-//   (c) default — insert 2 spaces (original Tab behaviour)
-function _snippetTabHandler(cm) {
-  // (a) Continue existing session if cursor is inside the snippet bbox
-  // and at least one upcoming placeholder still has a live range.
-  if (_snippetSession && _snippetAdvance(cm)) return;
-
-  // (b) Look for trigger word immediately before cursor.
-  // Triggers may include `*` (eq*, al*) so the char class extends \w with *.
-  if (!cm.getSelection()) {
-    const cur  = cm.getCursor();
-    const line = cm.getLine(cur.line);
-    const m    = line.slice(0, cur.ch).match(/(\w[\w*]*)$/);
-    if (m) {
-      const trigger = m[1];
-      const body    = snippetsCache[trigger];
-      if (body) {
-        const from = { line: cur.line, ch: cur.ch - trigger.length };
-        _snippetExpand(cm, body, from, cur);
-        return;
-      }
-    }
-  }
-
-  // (c) Default — insert 2 spaces matching pre-v3.3.0 behaviour.
-  cm.replaceSelection("  ", "end");
-}
-
-// Replace the trigger word at [from..to] with the snippet body, resolving
-// `${N}` and `${N:default}` placeholders. Placeholder text is inserted
-// inline (the default if any), and a CodeMirror markText is created over
-// each placeholder so the position survives subsequent edits. Tab cycles
-// through markers in n-order; ${0} (if present) is the final landing slot.
-function _snippetExpand(cm, body, from, to) {
-  _snippetClear();   // drop any previous session
-
-  // Walk body, collecting placeholder records as we build the plain text.
-  const re = /\$\{(\d+)(?::([^}]*))?\}/g;
-  let m, plain = "", lastIdx = 0;
-  const phRecs = [];   // [{n, start, end}] indexes into `plain`
-  while ((m = re.exec(body)) !== null) {
-    plain += body.slice(lastIdx, m.index);
-    const n   = parseInt(m[1], 10);
-    const def = m[2] || "";
-    const s   = plain.length;
-    plain += def;
-    phRecs.push({ n, start: s, end: plain.length });
-    lastIdx = m.index + m[0].length;
-  }
-  plain += body.slice(lastIdx);
-
-  // Apply the replacement as a single edit so CodeMirror gives us one
-  // undo step + a coherent change event for downstream listeners (linter,
-  // auto-save, outline). replaceRange returns nothing; we re-derive the
-  // inserted text's coordinates by walking `plain`.
-  cm.replaceRange(plain, from, to);
-
-  // If no placeholders, just place cursor at the end of the insertion.
-  if (!phRecs.length) {
-    const endPos = _snippetWalkPos(plain, plain.length, from);
-    cm.setCursor(endPos);
-    return;
-  }
-
-  // Create marks for each placeholder.
-  const markers = [];
-  for (const p of phRecs) {
-    const a = _snippetWalkPos(plain, p.start, from);
-    const b = _snippetWalkPos(plain, p.end,   from);
-    const mark = cm.markText(a, b, {
-      className: "cm-snippet-placeholder",
-      inclusiveLeft:  false,
-      inclusiveRight: true,    // typing AT the right edge grows the placeholder
-      clearWhenEmpty: false,   // keep zero-width markers around so Tab still finds them
-    });
-    markers.push({ n: p.n, mark });
-  }
-  // Sort by n; n=0 is the final landing slot (always last regardless of value).
-  markers.sort((x, y) => {
-    if (x.n === 0 && y.n !== 0) return 1;
-    if (y.n === 0 && x.n !== 0) return -1;
-    return x.n - y.n;
-  });
-
-  _snippetSession = { markers, current: -1 };
-  _snippetAdvance(cm);
-}
-
-// Convert "char index `idx` within `text` starting at editor pos `from`"
-// to {line, ch} by walking the text. Used to translate snippet-body offsets
-// into post-insertion editor coordinates.
-function _snippetWalkPos(text, idx, from) {
-  let line = from.line, ch = from.ch;
-  for (let i = 0; i < idx; i++) {
-    if (text[i] === "\n") { line++; ch = 0; }
-    else ch++;
-  }
-  return { line, ch };
-}
-
-// Advance to the next placeholder in the session; returns true if a jump
-// happened, false if the session ended (caller can fall through to default
-// Tab behaviour in that case).
-function _snippetAdvance(cm) {
-  if (!_snippetSession) return false;
-  const s = _snippetSession;
-  // Find next live placeholder after `current`. Skip any whose marker
-  // has been lost (e.g. user deleted the surrounding line).
-  while (true) {
-    s.current++;
-    if (s.current >= s.markers.length) { _snippetClear(); return false; }
-    const range = s.markers[s.current].mark.find();
-    if (range) {
-      cm.setSelection(range.from, range.to);
-      // If this is the ${0} slot, finish the session — the user is at
-      // the final resting position and should not Tab again into the
-      // snippet (next Tab is a plain "insert spaces").
-      if (s.markers[s.current].n === 0) _snippetClear();
-      return true;
-    }
-  }
-}
-
-function _snippetClear() {
-  if (!_snippetSession) return;
-  _snippetSession.markers.forEach(m => { try { m.mark.clear(); } catch (_) {} });
-  _snippetSession = null;
-}
-
-// End session when cursor wanders outside the snippet's bounding box —
-// otherwise a Tab pressed in unrelated code would teleport the cursor
-// back into the old snippet, which is jarring. Tolerance: 1 line above/
-// below the markers (allows e.g. Enter + indent without losing the session).
-cmEditor.on("cursorActivity", () => {
-  if (!_snippetSession) return;
-  const ranges = _snippetSession.markers
-    .map(m => m.mark.find()).filter(Boolean);
-  if (!ranges.length) { _snippetClear(); return; }
-  let minLine = Infinity, maxLine = -Infinity;
-  for (const r of ranges) {
-    if (r.from.line < minLine) minLine = r.from.line;
-    if (r.to.line   > maxLine) maxLine = r.to.line;
-  }
-  const cur = cmEditor.getCursor();
-  if (cur.line < minLine - 1 || cur.line > maxLine + 1) _snippetClear();
-});
-
-// Snippet panel — discovery surface listing every available trigger.
-// Clicking a row pastes the body's resolved (placeholder-stripped) form
-// at the cursor so users can preview what the trigger inserts without
-// memorising it. The trigger+Tab path remains the primary UX.
-function renderSnippetPanel() {
-  const list = document.getElementById("snip-list");
-  if (!list) return;
-  const entries = Object.entries(snippetsCache)
-    .filter(([_, body]) => body)            // skip disabled (empty body) entries
-    .sort((a, b) => a[0].localeCompare(b[0]));
-  if (!entries.length) {
-    list.innerHTML = '<div style="padding:14px;color:var(--muted);font-size:11px">No snippets defined.</div>';
-    return;
-  }
-  // Preview: render placeholders as accent-tinted spans so the user sees
-  // exactly where the cursor will land. Truncate long bodies in CSS.
-  const renderBody = (body) => {
-    return escapeHtml(body)
-      .replace(/\$\{(\d+)(?::([^}]*))?\}/g, (_full, n, def) =>
-        `<span class="ph">${escapeHtml(def || ("$" + n))}</span>`);
-  };
-  list.innerHTML = entries.map(([trig, body], i) =>
-    `<div class="snip-row" data-idx="${i}" data-trig="${escapeAttr(trig)}">
-       <div class="snip-trigger">${escapeHtml(trig)}</div>
-       <div class="snip-body">${renderBody(body)}</div>
-     </div>`
-  ).join("");
-  list.querySelectorAll(".snip-row").forEach(row => {
-    row.addEventListener("click", e => {
-      e.stopPropagation();
-      const trig = row.dataset.trig;
-      const body = snippetsCache[trig];
-      if (!body) return;
-      // Insert at cursor using the same expander as Tab — gives the user
-      // the placeholder cycle even when invoked from the panel.
-      const cur = cmEditor.getCursor();
-      _snippetExpand(cmEditor, body, cur, cur);
-      document.getElementById("snippet-panel").classList.remove("open");
-      cmEditor.focus();
-    });
-  });
-}
-
-function toggleSnippetPanel(e) {
-  const panel = document.getElementById("snippet-panel");
-  if (panel.classList.contains("open")) {
-    panel.classList.remove("open");
-    return;
-  }
-  _closeOtherToolbarPanels("snippet-panel"); // v3.3.7
-  const btn  = document.getElementById("snippet-toggle-btn");
-  const rect = btn.getBoundingClientRect();
-  const pw   = 380;
-  let left   = rect.right - pw;
-  if (left < 4) left = 4;
-  panel.style.top  = (rect.bottom + 4) + "px";
-  panel.style.left = left + "px";
-  renderSnippetPanel();
-  panel.classList.add("open");
-  if (e) e.stopPropagation();
-}
-document.addEventListener("click", e => {
-  const panel = document.getElementById("snippet-panel");
-  if (!panel || !panel.classList.contains("open")) return;
-  if (panel.contains(e.target)) return;
-  if (e.target.closest("#snippet-toggle-btn")) return;
-  panel.classList.remove("open");
-});
-
-// ── v3.2.2 — TODO tracker ────────────────────────────────────
-async function loadTodosUI() {
-  if (!currentProject) return;
-  const list  = document.getElementById("td-list");
-  const count = document.getElementById("td-count");
-  list.innerHTML = '<div class="td-empty">Scanning…</div>';
-  count.textContent = "";
-  try {
-    const r = await fetch(`/api/projects/${encodeURIComponent(currentProject)}/todos`);
-    const d = await r.json();
-    const todos = d.todos || [];
-    if (!todos.length) {
-      list.innerHTML =
-        `<div class="td-empty">No <code>\\todo{}</code>, <code>% TODO</code>,
-         <code>% FIXME</code>, or <code>% XXX</code> markers found.<br><br>
-         Add comments like <code>% TODO derive eq.</code> in your .tex
-         files to track pending work.</div>`;
-      return;
-    }
-    count.textContent = `${todos.length} item${todos.length === 1 ? "" : "s"}`;
-    list.innerHTML = todos.map(t =>
-      `<div class="td-item" data-file="${escapeAttr(t.file)}" onclick="jumpToTodo(this.dataset.file, ${t.line})">
-         <span class="td-tag ${t.kind}">${t.kind === "todo" ? "todo" : t.kind}</span>
-         <span class="td-text">${escapeHtml(t.text || "(empty)")}</span>
-         <span class="td-loc">${escapeHtml(t.file)}:${t.line}</span>
-       </div>`
-    ).join("");
-  } catch (e) {
-    list.innerHTML = `<div class="td-empty" style="color:var(--red)">Load failed: ${escapeHtml(e.message)}</div>`;
-  }
-}
-async function jumpToTodo(file, line) {
-  if (file !== currentFile) await openFile(file);
-  const lineNo = Math.max(0, (line | 0) - 1);
-  setTimeout(() => {
-    cmEditor.setCursor(lineNo, 0);
-    cmEditor.scrollIntoView({ line: lineNo, ch: 0 }, 120);
-    cmEditor.focus();
-    cmEditor.addLineClass(lineNo, "background", "cm-synctex-jump");
-    setTimeout(() => cmEditor.removeLineClass(lineNo, "background", "cm-synctex-jump"), 1200);
-  }, file !== currentFile ? 200 : 0);
-  document.getElementById("todo-panel").classList.remove("open");
-}
-
-// ── v4.9.0 — BIBLIOGRAPHY AUDIT ─────────────────────────────────────
-// Cross-checks \\cite usage vs .bib entries (backend /bib-audit) and lists:
-//   • unresolved — cited key with no .bib entry  (also underlined inline
-//                  by lintCrossRefs; listed here for a jump-to-fix workflow)
-//   • duplicate  — key defined 2+ times; BibTeX silently keeps the first
-//   • unused     — .bib entry no key ever cites  (informational)
-// The toolbar badge counts only unresolved + duplicate — the "broken"
-// classes. `unused` is often large for a Mendeley-exported library, so it's
-// shown in the panel but kept out of the alarming red badge.
-function toggleBibPanel(e) {
-  const panel = document.getElementById("bib-panel");
-  if (panel.classList.contains("open")) { panel.classList.remove("open"); return; }
-  _closeOtherToolbarPanels("bib-panel");
-  const btn  = document.getElementById("bib-toggle-btn");
-  const rect = btn.getBoundingClientRect();
-  const pw   = 440;
-  let left   = rect.right - pw;
-  if (left < 4) left = 4;
-  panel.style.top  = (rect.bottom + 4) + "px";
-  panel.style.left = left + "px";
-  loadBibAuditUI();
-  panel.classList.add("open");
-  if (e) e.stopPropagation();
-}
-document.addEventListener("click", e => {
-  const panel = document.getElementById("bib-panel");
-  if (!panel || !panel.classList.contains("open")) return;
-  if (panel.contains(e.target)) return;
-  if (e.target.closest("#bib-toggle-btn")) return;
-  panel.classList.remove("open");
-});
-
-let _bibAuditInFlight = null;   // v4.9.6 (B2) — coalesce concurrent audit fetches
-async function _fetchBibAudit() {
-  if (!currentProject) return null;
-  // v4.9.6 (B2) — a successful compile fires two audits back-to-back
-  // (updateBibBadge via loadCiteData, then _appendBibAuditBreadcrumb); if one
-  // is already in flight, share its promise instead of issuing a second
-  // identical request. The backend also mtime-caches /bib-audit now, so even
-  // staggered calls are cheap — this just kills the duplicate round-trip.
-  // Cleared the moment the request settles, so a later edit re-fetches fresh.
-  if (_bibAuditInFlight) return _bibAuditInFlight;
-  const proj = currentProject;
-  _bibAuditInFlight = (async () => {
-    try {
-      const r = await fetch(`/api/projects/${encodeURIComponent(proj)}/bib-audit`);
-      if (!r.ok) throw new Error("bib-audit " + r.status);
-      return await r.json();
-    } finally {
-      _bibAuditInFlight = null;
-    }
-  })();
-  return _bibAuditInFlight;
-}
-
-// Lightweight badge refresh — no panel needed. Counts only the "broken"
-// classes (unresolved + duplicate) so a big unused list doesn't cry wolf.
-async function updateBibBadge() {
-  const badge = document.getElementById("bib-badge");
-  if (!badge) return;
-  if (!currentProject) { badge.style.display = "none"; return; }
-  try {
-    const d = await _fetchBibAudit();
-    const c = (d && d.counts) || {};
-    const broken = (c.unresolved || 0) + (c.duplicate || 0);
-    if (broken > 0) {
-      badge.textContent = broken > 99 ? "99+" : String(broken);
-      badge.style.display = "block";
-    } else {
-      badge.style.display = "none";
-    }
-  } catch (_) {
-    badge.style.display = "none";
-  }
-}
-
-let _lastBibAudit = null;   // v4.9.2
-async function loadBibAuditUI() {
-  const list  = document.getElementById("bib-list");
-  const count = document.getElementById("bib-count");
-  if (!currentProject) {
-    list.innerHTML = '<div class="bib-empty">Open a project first</div>';
-    count.textContent = "";
-    return;
-  }
-  list.innerHTML = '<div class="bib-empty">Scanning…</div>';
-  count.textContent = "";
-  let d;
-  try {
-    d = await _fetchBibAudit();
-  } catch (e) {
-    list.innerHTML = `<div class="bib-empty" style="color:var(--red)">Load failed: ${escapeHtml(e.message)}</div>`;
-    return;
-  }
-  const unresolved = d.unresolved || [];
-  const duplicate  = d.duplicate  || [];
-  const unused     = d.unused     || [];
-  _lastBibAudit = d;   // v4.9.2 — remembered for the bulk "comment out all"
-  const total = unresolved.length + duplicate.length + unused.length;
-  if (total === 0) {
-    list.innerHTML = `<div class="bib-empty clean">✓ No citation issues found${
-      d.nocite_all ? " (\\nocite{*} in use — unused check skipped)" : ""}</div>`;
-    count.textContent = "";
-    return;
-  }
-  count.textContent = `${unresolved.length + duplicate.length} to fix`;
-
-  const rowsUnresolved = unresolved.map(u =>
-    `<div class="bib-item" data-file="${escapeAttr(u.file)}" onclick="jumpToBibIssue(this.dataset.file, ${u.line})">
-       <span class="bib-key">${escapeHtml(u.key)}</span>
-       <span class="bib-note">no .bib entry</span>
-       <span class="bib-loc">${escapeHtml(u.file)}:${u.line}</span>
-     </div>`).join("");
-
-  const rowsDuplicate = duplicate.map(dup =>
-    dup.locations.map((loc, idx) =>
-      `<div class="bib-item" data-file="${escapeAttr(loc.file)}" onclick="jumpToBibIssue(this.dataset.file, ${loc.line})">
-         <span class="bib-key">${escapeHtml(dup.key)}</span>
-         <span class="bib-note">${idx === 0 ? "kept" : "shadowed"} · ${dup.count}×</span>
-         <span class="bib-loc">${escapeHtml(loc.file)}:${loc.line}</span>
-       </div>`).join("")).join("");
-
-  const rowsUnused = unused.map(u =>
-    `<div class="bib-item" data-file="${escapeAttr(u.file)}" onclick="jumpToBibIssue(this.dataset.file, ${u.line})">
-       <span class="bib-key">${escapeHtml(u.key)}</span>
-       <span class="bib-note">never cited</span>
-       <span class="bib-loc">${escapeHtml(u.file)}:${u.line}</span>
-       <button class="bib-rm" title="Comment out this entry (reversible)"
-               data-key="${escapeAttr(u.key)}" onclick="event.stopPropagation();bibRemoveUnused([this.dataset.key])">comment out</button>
-     </div>`).join("");
-
-  let html = "";
-  if (unresolved.length)
-    html += `<div class="bib-section">Unresolved <span class="bib-sec-count unresolved">${unresolved.length}</span></div>` + rowsUnresolved;
-  if (duplicate.length)
-    html += `<div class="bib-section">Duplicate keys <span class="bib-sec-count duplicate">${duplicate.length}</span></div>` + rowsDuplicate;
-  if (unused.length)
-    html += `<div class="bib-section">Unused${d.nocite_all ? " (skipped)" : ""} <span class="bib-sec-count unused">${unused.length}</span>`
-          + (d.nocite_all ? "" : `<span style="flex:1"></span><button class="bib-rm-all" onclick="bibRemoveAllUnused()">Comment out all</button>`)
-          + `</div>` + rowsUnused;
-  list.innerHTML = html;
-}
-
-async function jumpToBibIssue(file, line) {
-  if (file !== currentFile) await openFile(file);
-  const lineNo = Math.max(0, (line | 0) - 1);
-  setTimeout(() => {
-    cmEditor.setCursor(lineNo, 0);
-    cmEditor.scrollIntoView({ line: lineNo, ch: 0 }, 120);
-    cmEditor.focus();
-    cmEditor.addLineClass(lineNo, "background", "cm-synctex-jump");
-    setTimeout(() => cmEditor.removeLineClass(lineNo, "background", "cm-synctex-jump"), 1200);
-  }, file !== currentFile ? 200 : 0);
-  document.getElementById("bib-panel").classList.remove("open");
-}
-
-// v4.9.2 — Remove-unused (bib-audit phase 2, piece 2). "Remove" = comment out
-// (prefix each line with %), reversible, and the backend backs up the .bib to
-// .texlocal-bibbak/ first. Both a bulk "Comment out all" and per-row buttons
-// route through bibRemoveUnused(keys); the backend re-verifies each key is
-// still uncited before touching it.
-function bibRemoveAllUnused() {
-  const keys = ((_lastBibAudit && _lastBibAudit.unused) || []).map(u => u.key);
-  bibRemoveUnused(keys);
-}
-async function bibRemoveUnused(keys) {
-  if (!currentProject || !keys || !keys.length) return;
-  const many = keys.length > 1;
-  const msg = many
-    ? `Comment out ${keys.length} unused entries?\n\nEach is prefixed with % in the .bib (reversible), and a backup is saved to .texlocal-bibbak/ first.`
-    : `Comment out "${keys[0]}"?\n\nIt's prefixed with % in the .bib (reversible); a backup is saved first.`;
-  if (!confirm(msg)) return;
-  // If a .bib is open in the editor, flush any pending edit and cancel the
-  // debounced autosave first — otherwise a stale buffer could re-save over the
-  // server-side comment-out.
-  const bibOpen = currentFile && currentFile.toLowerCase().endsWith(".bib");
-  if (bibOpen) { clearTimeout(saveTimer); await saveCurrentFile(); }
-  try {
-    const r = await fetch(`/api/projects/${encodeURIComponent(currentProject)}/bib-remove-unused`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ keys }),
-    });
-    const d = await r.json();
-    if (!r.ok) throw new Error(d.error || ("HTTP " + r.status));
-    if (d.reason === "nocite_all") {
-      _bibToast("\\nocite{*} in use — nothing is unused");
-    } else {
-      const n = d.commented_count || 0;
-      _bibToast(`Commented out ${n} entr${n === 1 ? "y" : "ies"} · backup in .texlocal-bibbak/`);
-    }
-    // Reload the open .bib so the editor shows the commented version, then
-    // refresh caches (autocomplete + linter + badge) and repaint the panel.
-    // v4.9.4 — was openFile(currentFile). openFile's first act is an
-    // unconditional saveCurrentFile(), which pushed the STALE (pre-comment)
-    // buffer back over the .bib the server had just commented — silently
-    // undoing the remove while the toast claimed success. Reload from disk
-    // WITHOUT saving instead (same trap githubPull already avoids).
-    if (bibOpen) await _reloadCurrentFileFromDisk();
-    await loadCiteData();
-    loadBibAuditUI();
-  } catch (e) {
-    _bibToast("Remove failed: " + e.message);
-  }
-}
-// Small transient toast inside the bib panel (no global toast helper exists).
-function _bibToast(msg) {
-  const panel = document.getElementById("bib-panel");
-  if (!panel) return;
-  panel.querySelectorAll(".bib-toast").forEach(n => n.remove());
-  const t = document.createElement("div");
-  t.className = "bib-toast";
-  t.textContent = msg;
-  panel.appendChild(t);
-  setTimeout(() => t.remove(), 2600);
-}
-
-// v4.9.0 — Compile-log breadcrumb (bib-audit phase 2, piece 1). Reuses the
-// same /bib-audit scan; prepends one line onto the already-rendered log. Cheap
-// enough to fetch per compile (same profile as the badge refresh). Failures
-// are swallowed silently — a breadcrumb is a nice-to-have, never a blocker.
-async function _appendBibAuditBreadcrumb() {
-  if (!currentProject) return;
-  const logEl = document.getElementById("log-content");
-  if (!logEl) return;
-  let d;
-  try { d = await _fetchBibAudit(); } catch (_) { return; }
-  if (!d) return;
-  const c = d.counts || {};
-  const parts = [];
-  if (c.unresolved) parts.push(`${c.unresolved} unresolved`);
-  if (c.duplicate)  parts.push(`${c.duplicate} duplicate`);
-  if (c.unused)     parts.push(`${c.unused} unused`);
-  let line;
-  if (parts.length) {
-    line = `[bib audit] ${parts.join(" \u00b7 ")}`;
-    if (c.unresolved || c.duplicate) line += "  \u2014 open the Bibliography panel to fix";
-    if (d.nocite_all)                line += "  (\\nocite{*}: unused check skipped)";
-  } else {
-    line = "[bib audit] \u2713 no citation issues";
-  }
-  // Prepend as its own top line. Guard against stacking if somehow re-run
-  // against a log we already annotated (belt-and-braces; compile() resets
-  // log-content from data.log each run, so this normally won't trigger).
-  const cur = logEl.textContent || "";
-  logEl.textContent = cur.startsWith("[bib audit]")
-    ? line + "\n" + cur.slice(cur.indexOf("\n") + 1)
-    : line + "\n" + cur;
-}
-
-// v4.4.0 — DOCUMENT OUTLINE ─────────────────────────────────────────
-function toggleOutlinePanel(e) {
-  const panel = document.getElementById("outline-panel");
-  if (panel.classList.contains("open")) { panel.classList.remove("open"); return; }
-  _closeOtherToolbarPanels("outline-panel");
-  const btn  = document.getElementById("outline-toggle-btn");
-  const rect = btn.getBoundingClientRect();
-  const pw   = 360;
-  let left   = rect.right - pw;
-  if (left < 4) left = 4;
-  panel.style.top  = (rect.bottom + 4) + "px";
-  panel.style.left = left + "px";
-  renderOutlinePanel();
-  panel.classList.add("open");
-  if (e) e.stopPropagation();
-}
-document.addEventListener("click", e => {
-  const panel = document.getElementById("outline-panel");
-  if (!panel || !panel.classList.contains("open")) return;
-  if (panel.contains(e.target)) return;
-  if (e.target.closest("#outline-toggle-btn")) return;
-  panel.classList.remove("open");
-});
-
-const _OL_LEVEL_LABEL = { chapter: "chapter", section: "section", subsection: "subsection", subsubsection: "subsub" };
-const _OL_INDENT      = { chapter: 0, section: 1, subsection: 2, subsubsection: 3 };
-
-async function renderOutlinePanel() {
-  const list = document.getElementById("ol-list");
-  const cnt  = document.getElementById("ol-count");
-  if (!currentProject) { list.innerHTML = '<div style="padding:12px;color:var(--muted);font-size:12px">No project open.</div>'; return; }
-  list.innerHTML = '<div style="padding:12px;color:var(--muted);font-size:12px">Scanning…</div>';
-  try {
-    const res  = await fetch(`/api/projects/${encodeURIComponent(currentProject)}/outline`);
-    const data = await res.json();
-    if (!data.length) {
-      list.innerHTML = '<div style="padding:12px;color:var(--muted);font-size:12px">No sections found.</div>';
-      cnt.textContent = ""; return;
-    }
-    cnt.textContent = data.length + " entries";
-    const frag = document.createDocumentFragment();
-    data.forEach(item => {
-      const div = document.createElement("div");
-      div.className = `ol-row ol-indent-${_OL_INDENT[item.level] || 0}`;
-      div.innerHTML =
-        `<span class="ol-level">${_OL_LEVEL_LABEL[item.level] || item.level}</span>` +
-        `<span class="ol-title" title="${item.title.replace(/"/g,'&quot;')}">${item.title || '(untitled)'}</span>` +
-        `<span class="ol-file" title="${item.file}">${item.file.split('/').pop()}</span>`;
-      div.addEventListener("click", async () => {
-        await openFile(item.file);
-        // v4.7.10 — /outline now returns 1-based lines (was 0-based); convert
-        // to CodeMirror's 0-based index here.
-        cmEditor.setCursor(item.line - 1, 0);
-        cmEditor.scrollIntoView({ line: item.line - 1, ch: 0 }, 80);
-        cmEditor.focus();
-      });
-      frag.appendChild(div);
-    });
-    list.innerHTML = "";
-    list.appendChild(frag);
-  } catch (err) {
-    list.innerHTML = `<div style="padding:12px;color:var(--error);font-size:12px">Error: ${err.message}</div>`;
-  }
-}
-
-
-function toggleTodoPanel(e) {
-  const panel = document.getElementById("todo-panel");
-  if (panel.classList.contains("open")) {
-    panel.classList.remove("open");
-    return;
-  }
-  _closeOtherToolbarPanels("todo-panel"); // v3.3.7
-  const btn  = document.getElementById("todo-toggle-btn");
-  const rect = btn.getBoundingClientRect();
-  const pw   = 420;
-  let left   = rect.right - pw;
-  if (left < 4) left = 4;
-  panel.style.top  = (rect.bottom + 4) + "px";
-  panel.style.left = left + "px";
-  loadTodosUI();
-  panel.classList.add("open");
-  if (e) e.stopPropagation();
-}
-document.addEventListener("click", e => {
-  const panel = document.getElementById("todo-panel");
-  if (!panel || !panel.classList.contains("open")) return;
-  if (panel.contains(e.target)) return;
-  if (e.target.closest("#todo-toggle-btn")) return;
-  panel.classList.remove("open");
-});
-
-// ── v3.2.3 — WORD-COUNT-PER-CHAPTER GOALS ───────────────────────
-// State: goalsData = { goals: {path: target}, counts: {path: words} }
-// The panel lists files. Default view = only files with a goal set.
-// Toggle "Show all" to inline-set new goals on any .tex file.
-//
-// Persistence flow: user edits a number → blur fires → POST /goals
-// with the full updated map → server overwrites .texlocal-goals.json.
-let goalsData = { goals: {}, counts: {} };
-
-async function loadGoalsUI() {
-  const list = document.getElementById("gp-list");
-  if (!currentProject) {
-    list.innerHTML = '<div class="gp-empty">Open a project first</div>';
-    return;
-  }
-  list.innerHTML = '<div class="gp-empty">Scanning word counts…</div>';
-  try {
-    const r = await fetch(`/api/projects/${encodeURIComponent(currentProject)}/goals`);
-    const d = await r.json();
-    goalsData = { goals: d.goals || {}, counts: d.counts || {} };
-  } catch (_) {
-    goalsData = { goals: {}, counts: {} };
-  }
-  renderGoalsPanel();
-}
-
-function renderGoalsPanel() {
-  const list    = document.getElementById("gp-list");
-  const showAll = document.getElementById("gp-show-all").checked;
-  // Decide which files to show
-  const allPaths = Object.keys(goalsData.counts).sort();
-  const visible  = showAll
-    ? allPaths
-    : Object.keys(goalsData.goals).sort();
-  if (!visible.length) {
-    list.innerHTML = `<div class="gp-empty">
-      ${showAll
-        ? 'No .tex files in this project'
-        : 'No goals set yet — toggle "Show all files" above to set one'}
-    </div>`;
-    _updateGoalsFooter();
-    return;
-  }
-  // Build with data-path attributes; click and blur handlers are wired after
-  // innerHTML so we avoid double-escaping JS string literals through HTML.
-  list.innerHTML = visible.map(p => {
-    const count  = goalsData.counts[p] || 0;
-    const target = goalsData.goals[p]  || 0;
-    const pct    = target > 0 ? Math.min(100, (count / target) * 100) : 0;
-    const cls    = target > 0 && count >= target
-      ? (count > target * 1.1 ? "over" : "full")
-      : "";
-    return `<div class="gp-row" data-path="${_esc(p)}">
-      <span class="gp-name" data-path="${_esc(p)}">${_esc(p)}</span>
-      <span class="gp-count">${count.toLocaleString()}</span>
-      <input class="gp-target" type="number" min="0" placeholder="–" value="${target || ""}" data-path="${_esc(p)}">
-      <div class="gp-bar-wrap"><div class="gp-bar ${cls}" style="width:${pct}%"></div></div>
-    </div>`;
-  }).join("");
-  list.querySelectorAll(".gp-name").forEach(el => {
-    el.addEventListener("click", () => {
-      openFile(el.dataset.path);
-      toggleGoalsPanel();
-    });
-  });
-  list.querySelectorAll(".gp-target").forEach(inp => {
-    inp.addEventListener("blur", () => onGoalChange(inp.dataset.path, inp.value));
-    // Pressing Enter inside the input commits + blurs.
-    inp.addEventListener("keydown", e => {
-      if (e.key === "Enter") { e.preventDefault(); inp.blur(); }
-    });
-  });
-  _updateGoalsFooter();
-}
-
-function _updateGoalsFooter() {
-  // Footer aggregates across the files that have a goal set (regardless of
-  // show-all state) — that's the meaningful "thesis progress" number.
-  let tCount = 0, tTarget = 0;
-  for (const p of Object.keys(goalsData.goals)) {
-    tCount  += goalsData.counts[p] || 0;
-    tTarget += goalsData.goals[p]  || 0;
-  }
-  document.getElementById("gp-foot-count").textContent  = tCount.toLocaleString();
-  document.getElementById("gp-foot-target").textContent = tTarget.toLocaleString();
-  // Header subtitle: short progress summary
-  const sub = document.getElementById("gp-totals");
-  if (tTarget > 0) {
-    const pct = Math.round((tCount / tTarget) * 100);
-    sub.textContent = `· ${pct}% (${tCount.toLocaleString()}/${tTarget.toLocaleString()})`;
-  } else {
-    sub.textContent = "";
-  }
-}
-
-async function onGoalChange(path, raw) {
-  // Empty / 0 clears the goal entry. We send the FULL updated map so the
-  // server can overwrite atomically — that way a stale tab can't resurrect
-  // a deleted goal.
-  const n = parseInt(raw, 10);
-  if (!n || n <= 0) {
-    delete goalsData.goals[path];
-  } else {
-    goalsData.goals[path] = n;
-  }
-  try {
-    const r = await fetch(`/api/projects/${encodeURIComponent(currentProject)}/goals`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ goals: goalsData.goals }),
-    });
-    if (!r.ok) throw new Error("save failed");
-    const d = await r.json();
-    if (d.goals) goalsData.goals = d.goals;
-  } catch (_) {
-    // Soft-fail — keep the in-memory state, just no persistence this round.
-  }
-  renderGoalsPanel();
-}
-
-function toggleGoalsPanel(e) {
-  const panel = document.getElementById("goals-panel");
-  if (panel.classList.contains("open")) {
-    panel.classList.remove("open");
-    return;
-  }
-  _closeOtherToolbarPanels("goals-panel"); // v3.3.7
-  const btn  = document.getElementById("goals-toggle-btn");
-  const rect = btn.getBoundingClientRect();
-  const pw   = 460;
-  let left   = rect.right - pw;
-  if (left < 4) left = 4;
-  panel.style.top  = (rect.bottom + 4) + "px";
-  panel.style.left = left + "px";
-  loadGoalsUI();
-  panel.classList.add("open");
-  if (e) e.stopPropagation();
-}
-document.addEventListener("click", e => {
-  const panel = document.getElementById("goals-panel");
-  if (!panel || !panel.classList.contains("open")) return;
-  if (panel.contains(e.target)) return;
-  if (e.target.closest("#goals-toggle-btn")) return;
-  panel.classList.remove("open");
-});
-
-// ── v3.2.3 — RECENT COMPILE LOG HISTORY ─────────────────────────
-// Stored per-project in localStorage. Each entry:
-//   { ts, elapsed, ok, errCount, warnCount, draft, partial, log }
-// Logs are capped at 50KB to keep localStorage under quota (10 entries × 50KB
-// = 500KB worst case). Truncated logs get a "... [truncated]" suffix.
-const HISTORY_MAX_LEN = 10;
-const HISTORY_LOG_CAP = 50 * 1024;
-let _historyActiveIdx = -1;
-
-function _historyKey() {
-  return currentProject ? `texlocal_compile_history_${currentProject}` : null;
-}
-
-function loadCompileHistory() {
-  const k = _historyKey();
-  if (!k) return [];
-  try {
-    const raw = localStorage.getItem(k);
-    if (!raw) return [];
-    const arr = JSON.parse(raw);
-    return Array.isArray(arr) ? arr : [];
-  } catch (_) {
-    return [];
-  }
-}
-
-function saveCompileHistory(arr) {
-  const k = _historyKey();
-  if (!k) return;
-  try {
-    localStorage.setItem(k, JSON.stringify(arr));
-  } catch (e) {
-    // Quota exceeded — drop the oldest half and retry once.
-    try {
-      const trimmed = arr.slice(0, Math.max(3, Math.floor(arr.length / 2)));
-      localStorage.setItem(k, JSON.stringify(trimmed));
-    } catch (_) { /* give up silently */ }
-  }
-}
-
-function recordCompileToHistory({ log, ok, elapsed, parsed }) {
-  if (!currentProject) return;
-  let logTrunc = log || "";
-  if (logTrunc.length > HISTORY_LOG_CAP) {
-    logTrunc = logTrunc.slice(0, HISTORY_LOG_CAP) + "\n... [truncated]";
-  }
-  const entry = {
-    ts:        Date.now(),
-    elapsed:   elapsed,
-    ok:        !!ok,
-    errCount:  (parsed && parsed.errors)   ? parsed.errors.length   : 0,
-    warnCount: (parsed && parsed.warnings) ? parsed.warnings.length : 0,
-    draft:     !!draftMode,
-    partial:   selectedIncludes.length > 0
-                 && availableIncludes.length > 0
-                 && selectedIncludes.length < availableIncludes.length,
-    log:       logTrunc,
-  };
-  const arr = loadCompileHistory();
-  arr.unshift(entry);                       // newest first
-  if (arr.length > HISTORY_MAX_LEN) arr.length = HISTORY_MAX_LEN;
-  saveCompileHistory(arr);
-  // If panel is open, refresh display
-  if (document.getElementById("history-panel").classList.contains("open")) {
-    renderHistoryPanel();
-  }
-}
-
-// ── SPELL CHECK (v3.3.2) ─────────────────────────────────────
-//
-// Design notes (the WHY, since the WHAT is in the code):
-//
-//  * Why Typo.js: pure-JS Hunspell port, works with the same en_US.aff /
-//    en_US.dic files Firefox + LibreOffice ship — high-quality affixed
-//    dictionary, handles past-tense / plurals / suffixes correctly without
-//    us having to bundle a giant precomputed word list. Cost: ~1.7MB dict
-//    on first enable, but cached by the browser thereafter.
-//
-//  * Why text-based skip-mask instead of CodeMirror getTokenAt(): the
-//    stex tokeniser is reliable for control sequences (\foo → "tag") but
-//    its math-mode and brace-content typing is brittle across versions
-//    (CM5 stex sometimes emits null for variable names inside math).
-//    A small per-line regex pass that masks $...$, \cmd, and brace args
-//    of citation-like commands gives us higher precision with less code
-//    AND no dependency on private stex state shape.
-//
-//  * Why per-line scan, not full-doc: thesis files run 1500+ lines; scanning
-//    everything on every keystroke would jank the editor. We rescan only the
-//    visible viewport (+ a small buffer above/below for scroll smoothness)
-//    on toggle-on and on debounced change events.
-//
-//  * Why a custom dict file (.texlocal-dict.txt) not a UI: Pol's thesis uses
-//    Rydberg, Hubbard, Mott, Endres, PeterSchauss, etc. — proper nouns the
-//    en_US dictionary can never know. A one-word-per-line text file at the
-//    project root is the most portable form (travels via /export-zip, edits
-//    in any text editor). Right-click "Add to dictionary" UI is deferred.
-//
-//  * Why match >= 3-letter English words only: filters out single-letter
-//    variables in math that escape the skip-mask (e.g. `x` in `let x = 5`)
-//    and avoids spell-checking acronyms (PRA, JOSA, RMP) — they'd flood the
-//    panel since en_US doesn't know journal-name acronyms.
-
-// Commands whose immediate brace arg is identifier-like (NOT prose) — skip.
-// Order matters slightly: longer prefixes first would matter if we ran prefix
-// match, but we anchor on \b so prefix collisions aren't an issue.
-const _SPELL_SKIP_BRACE_CMDS = /\\(?:cite[a-zA-Z]*|ref|eqref|cref|Cref|autoref|nameref|pageref|footcite|textcite|citeauthor|citeyear|citep|citet|nocite|label|input|include|includeonly|bibliography|bibliographystyle|includegraphics|usepackage|RequirePackage|documentclass|href|url|nolinkurl|graphicspath|inputenc|fontenc|setmainfont|setsansfont|setmonofont|setmainlanguage|babelfont|newcommand|renewcommand|providecommand|DeclareMathOperator|def)\b/g;
-
-async function _ensureSpellDict() {
-  // Dedup concurrent loads — toggle-on while loading shouldn't kick off two.
-  if (spellChecker) return spellChecker;
-  if (spellLoadingPromise) return spellLoadingPromise;
-  const status = document.getElementById("spell-status");
-  if (status) { status.textContent = "Loading dictionary…"; status.classList.add("visible"); }
-  spellLoadingPromise = (async () => {
-    if (typeof Typo === "undefined") {
-      // CDN failed (offline?) — surface the failure once and don't retry.
-      if (status) { status.textContent = "Spell dict failed to load"; setTimeout(() => status.classList.remove("visible"), 3000); }
-      console.error("[spellcheck] Typo.js global missing — CDN blocked?");
-      return null;
-    }
-    try {
-      const base = "/static/vendor/typo/dictionaries/en_US";
-      const [aff, dic] = await Promise.all([
-        fetch(base + "/en_US.aff").then(r => r.ok ? r.text() : Promise.reject(r.status)),
-        fetch(base + "/en_US.dic").then(r => r.ok ? r.text() : Promise.reject(r.status)),
-      ]);
-      // platform "any" forces Typo to use the in-memory dict args (not try to
-      // fetch them itself — which would fail because Typo guesses a relative
-      // path that doesn't match jsdelivr's layout).
-      spellChecker = new Typo("en_US", aff, dic, { platform: "any" });
-      if (status) { status.textContent = "Dictionary loaded"; setTimeout(() => status.classList.remove("visible"), 1500); }
-      return spellChecker;
-    } catch (e) {
-      if (status) { status.textContent = "Spell dict failed to load"; setTimeout(() => status.classList.remove("visible"), 3000); }
-      console.error("[spellcheck] dict load failed:", e);
-      return null;
-    } finally {
-      spellLoadingPromise = null;
-    }
-  })();
-  return spellLoadingPromise;
-}
-
-async function loadCustomDict(projectName) {
-  customDict = new Set();
-  customDictMtime = 0;
-  if (!projectName) return;
-  try {
-    const res = await fetch(`/api/projects/${encodeURIComponent(projectName)}/dict`);
-    if (!res.ok) return;
-    const data = await res.json();
-    (data.words || []).forEach(w => customDict.add(String(w).toLowerCase()));
-    // v3.3.5 — Cache mtime for hot-reload comparison. Missing/zero means the
-    // file doesn't exist yet; next focus tick will see a non-zero mtime if
-    // the user creates it externally.
-    customDictMtime = Number(data.mtime) || 0;
-  } catch (_) { /* dict file is optional; absence is fine */ }
-  // If spell check is already active, rescan so newly-added words clear.
-  if (_spellHighlightOn()) scheduleSpellCheck(50);
-}
-
-// v3.3.5 — Hot-reload on window focus. Fires when Pol alt-tabs back to the
-// editor. Cheap mtime check on the backend: if the dict file was edited
-// externally (e.g. VS Code, hand-edit to remove a word), swap customDict
-// and trigger a rescan so wavy underlines update without a page reload.
-// No-ops when spell check is off (no point fetching) or no project loaded.
-async function _maybeReloadDictOnFocus() {
-  if (!spellEnabled && !spellSuggestEnabled) return;
-  if (!currentProject) return;
-  try {
-    const res = await fetch(`/api/projects/${encodeURIComponent(currentProject)}/dict`);
-    if (!res.ok) return;
-    const data = await res.json();
-    const newMtime = Number(data.mtime) || 0;
-    // Same mtime → file unchanged; bail out without disturbing customDict.
-    if (newMtime === customDictMtime) return;
-    customDict = new Set();
-    (data.words || []).forEach(w => customDict.add(String(w).toLowerCase()));
-    customDictMtime = newMtime;
-    if (spellChecker) scheduleSpellCheck(30);
-  } catch (_) { /* network blip; try again on next focus */ }
-}
-// Wire the focus listener once at script load.
-window.addEventListener("focus", _maybeReloadDictOnFocus);
-
-function _clearSpellMarkers() {
-  for (const m of spellMarkers) {
-    try { m.clear(); } catch (_) {}
-  }
-  spellMarkers = [];
-}
-
-function _buildSkipMask(text) {
-  // 1 = "do not spell-check this character". Walk once, handling escapes,
-  // inline-math `$...$`, line comments (`%`), and any \command region.
-  const n = text.length;
-  const mask = new Uint8Array(n);
-  let inMath = false;
-  for (let i = 0; i < n; i++) {
-    const ch = text.charCodeAt(i);
-    if (ch === 0x5C /* \ */) {
-      // Mask the backslash + the following command name (alpha+) or the
-      // single escaped char if non-alpha (e.g. `\$`, `\%`, `\_`).
-      mask[i] = 1;
-      let j = i + 1;
-      if (j < n && /[a-zA-Z]/.test(text[j])) {
-        while (j < n && /[a-zA-Z]/.test(text[j])) { mask[j] = 1; j++; }
-        if (j < n && text[j] === "*") { mask[j] = 1; j++; }  // starred form
-      } else if (j < n) {
-        mask[j] = 1; j++;
-      }
-      i = j - 1;
-      continue;
-    }
-    if (ch === 0x25 /* % */) {
-      // Comment runs to EOL — mask everything left.
-      while (i < n) { mask[i] = 1; i++; }
-      break;
-    }
-    if (ch === 0x24 /* $ */) {
-      // Inline math delimiter — itself masked + flip math state.
-      mask[i] = 1;
-      inMath = !inMath;
-      continue;
-    }
-    if (inMath) mask[i] = 1;
-  }
-  // Second pass: mask brace args of citation/ref/label/input/include/etc.
-  // We re-scan from the original text rather than the mask because the
-  // commands themselves are already masked above, but we still want to peek
-  // back at them to detect "is this a skip-brace command?".
-  _SPELL_SKIP_BRACE_CMDS.lastIndex = 0;
-  let m;
-  while ((m = _SPELL_SKIP_BRACE_CMDS.exec(text))) {
-    let i = m.index + m[0].length;
-    // Optional [opts] arg — skip and mask.
-    while (i < n && /\s/.test(text[i])) i++;
-    if (text[i] === "[") {
-      let depth = 1, j = i + 1;
-      while (j < n && depth > 0) {
-        if (text[j] === "\\" && j + 1 < n) { j += 2; continue; }
-        if (text[j] === "[") depth++;
-        else if (text[j] === "]") depth--;
-        j++;
-      }
-      for (let k = i; k < Math.min(j, n); k++) mask[k] = 1;
-      i = j;
-    }
-    while (i < n && /\s/.test(text[i])) i++;
-    // Required {arg} — mask the WHOLE thing (including nested braces).
-    if (text[i] === "{") {
-      let depth = 1, j = i + 1;
-      while (j < n && depth > 0) {
-        if (text[j] === "\\" && j + 1 < n) { j += 2; continue; }
-        if (text[j] === "{") depth++;
-        else if (text[j] === "}") depth--;
-        j++;
-      }
-      for (let k = i; k < Math.min(j, n); k++) mask[k] = 1;
-    }
-  }
-  return mask;
-}
-
-function _spellCheckLine(line) {
-  const text = cm_get_line_safe(line);
-  if (!text || !text.trim()) return;
-  const mask = _buildSkipMask(text);
-  // English word matcher — 3+ chars, allow internal apostrophe (don't, it's).
-  const wordRe = /[A-Za-z][A-Za-z']{2,}/g;
-  let m;
-  while ((m = wordRe.exec(text))) {
-    const start = m.index, end = start + m[0].length;
-    // Any masked char inside the word → skip whole word.
-    let bad = false;
-    for (let j = start; j < end; j++) {
-      if (mask[j]) { bad = true; break; }
-    }
-    if (bad) continue;
-    const word = m[0];
-    // Skip ALL-CAPS short tokens (likely acronyms / journal codes).
-    if (word.length <= 5 && word === word.toUpperCase()) continue;
-    // Skip if the word contains an apostrophe + 's (don't, it's, Pol's)
-    // because contractions / possessives aren't worth flagging.
-    if (/'s$/i.test(word) || /'t$/i.test(word) || /'re$/i.test(word) || /'ve$/i.test(word) || /'ll$/i.test(word) || /'d$/i.test(word) || /'m$/i.test(word)) continue;
-    if (customDict.has(word.toLowerCase())) continue;
-    if (!spellChecker) continue;
-    if (spellChecker.check(word)) continue;
-    const marker = cmEditor.markText(
-      { line, ch: start },
-      { line, ch: end },
-      { className: "spell-error", attributes: { title: `Possibly misspelled: ${word}` } }
-    );
-    spellMarkers.push(marker);
-  }
-}
-
-// Defensive helper — cm.getLine() can throw if line index is out of bounds
-// after a rapid delete; just return empty so the caller bails gracefully.
-function cm_get_line_safe(line) {
-  try { return cmEditor.getLine(line) || ""; } catch (_) { return ""; }
-}
-
-// v4.4.0 — The red wavy underline now shows whenever EITHER spell check OR
-// "Suggest corrections while typing" is on. Both use the same dictionary and
-// the same _spellCheckLine pass, so seeing which word is wrong (underline) and
-// getting corrections for it (dropdown / right-click) are two halves of one
-// feature. False until the dict has actually loaded.
-function _spellHighlightOn() {
-  return (spellEnabled || spellSuggestEnabled) && !!spellChecker;
-}
-
-function _runSpellCheck() {
-  if (!_spellHighlightOn()) return;
-  _clearSpellMarkers();
-  // Scope: only the visible viewport ± a 50-line buffer. For a 2000-line
-  // chapter this is ~100 lines of work — fast, and the user can't see beyond
-  // the viewport anyway. Buffer makes scrolling feel "always already checked".
-  const vp = cmEditor.getViewport();
-  const total = cmEditor.lineCount();
-  const from = Math.max(0, vp.from - 50);
-  const to   = Math.min(total, vp.to   + 50);
-  cmEditor.operation(() => {
-    for (let i = from; i < to; i++) _spellCheckLine(i);
-  });
-}
-
-let _spellViewportTimer = null;
-function scheduleSpellCheck(delay) {
-  clearTimeout(spellScanTimer);
-  spellScanTimer = setTimeout(_runSpellCheck, typeof delay === "number" ? delay : 600);
-}
-
-function onSpellCheckToggle() {
-  const cb = document.getElementById("spellcheck-toggle");
-  spellEnabled = cb.checked;
-  localStorage.setItem("texlocal_spellcheck", spellEnabled ? "1" : "0");
-  if (spellEnabled) {
-    _ensureSpellDict().then(d => {
-      if (d) _runSpellCheck();
-    });
-  } else {
-    // Keep the underlines if suggestions still want them; only clear when
-    // BOTH features are off.
-    if (!spellSuggestEnabled) _clearSpellMarkers();
-    const status = document.getElementById("spell-status");
-    if (status) status.classList.remove("visible");
-  }
-}
-
-// v4.4.0 — Inline-suggestion toggle. Independent of the underline toggle so a
-// user can keep red squiggles without the typing-time dropdown (or vice versa).
-// No dict work here — the dropdown is gated at trigger time on spellChecker.
-function onSpellSuggestToggle() {
-  const cb = document.getElementById("spell-suggest-toggle");
-  spellSuggestEnabled = cb ? cb.checked : true;
-  localStorage.setItem("texlocal_spellsuggest", spellSuggestEnabled ? "1" : "0");
-  if (spellSuggestEnabled) {
-    // Warm the dictionary, then underline misspellings (same pass spell check
-    // uses) so wrong words are flagged even with the red-underline toggle off.
-    _ensureSpellDict().then(d => { if (d) _runSpellCheck(); });
-  } else if (!spellEnabled) {
-    // Neither feature wants the underlines now.
-    _clearSpellMarkers();
-  }
-}
-
-// Init on load — restore the user's preference. Don't actually fetch the
-// dictionary yet; wait until the editor settles (1s) so initial paint isn't
-// blocked by ~1.7MB of dict parsing.
-(function _initSpellCheck() {
-  const saved = localStorage.getItem("texlocal_spellcheck") === "1";
-  spellEnabled = saved;
-  // v4.6.0 — inline suggestions default OFF (absent key → off); explicit "1" on.
-  spellSuggestEnabled = localStorage.getItem("texlocal_spellsuggest") === "1";
-  const sc = document.getElementById("spell-suggest-toggle");
-  if (sc) sc.checked = spellSuggestEnabled;
-  // Sync the checkbox once Settings popup is built — the input is in the
-  // markup already, so we can set it right away.
-  const cb = document.getElementById("spellcheck-toggle");
-  if (cb) cb.checked = saved;
-  // Load the dict on settle if EITHER feature is on, so misspellings already
-  // in the opened document get underlined without waiting for the user to type.
-  // (Suggestions default on, so this is the common path.)
-  if (saved || spellSuggestEnabled) {
-    setTimeout(() => {
-      _ensureSpellDict().then(d => { if (d) _runSpellCheck(); });
-    }, 1000);
-  }
-  // Re-scan when the viewport changes (scroll, fold/unfold, resize).
-  // Light debounce — scrolling fires many viewportChange events.
-  cmEditor.on("viewportChange", () => {
-    if (!_spellHighlightOn()) return;
-    clearTimeout(_spellViewportTimer);
-    _spellViewportTimer = setTimeout(_runSpellCheck, 200);
-  });
-
-  // v3.3.3 — Right-click on a spell-error span → context menu offering to
-  // add the word to .texlocal-dict.txt. We catch contextmenu on CM's wrapper
-  // and resolve the click into a {line,ch} via coordsChar, then test each
-  // active spellMarker for containment. This is robust against CM splitting
-  // the rendered span across token boundaries.
-  // v3.3.4 — Now also passes the resolved range so the menu can offer
-  // "Replace with X" via cmEditor.replaceRange().
-  cmEditor.getWrapperElement().addEventListener("contextmenu", (evt) => {
-    if ((!spellEnabled && !spellSuggestEnabled) || !spellMarkers.length) return;
-    const pos = cmEditor.coordsChar({ left: evt.clientX, top: evt.clientY });
-    if (!pos) return;
-    for (const m of spellMarkers) {
-      const range = m.find();
-      if (!range) continue;
-      const inLine = pos.line === range.from.line && pos.line === range.to.line;
-      if (!inLine) continue;
-      if (pos.ch < range.from.ch || pos.ch > range.to.ch) continue;
-      const word = cmEditor.getRange(range.from, range.to);
-      if (!word) continue;
-      evt.preventDefault();
-      _showSpellContextMenu(word, range, evt.clientX, evt.clientY);
-      return;
-    }
-  });
-})();
-
-// v3.3.3 — context menu state. _currentMenuWord lets onAddToDictClick know
-// which word to POST without having to re-resolve from the DOM.
-// v3.3.4 — _currentMenuRange lets onReplaceClick swap the word in place via
-// cmEditor.replaceRange(). The range comes from the spellMarker we matched
-// in the contextmenu listener — using the live marker (instead of a fresh
-// re-resolve at click time) means the replace still works even if the user's
-// edits before the menu opened have shifted absolute offsets, because CM
-// keeps marker ranges in sync with edits.
-let _currentMenuWord  = null;
-let _currentMenuRange = null;
-let _menuDismissHandler = null;
-
-// v3.3.6 — Per-session cache of Typo.suggest() results, keyed by lowercased
-// word. The Hunspell algorithm in typo-js is synchronous and CPU-bound
-// (~50-250ms per call on common typos), which is what made the right-click
-// menu feel laggy in v3.3.4/5. We now (a) open and position the menu
-// instantly with just the "Add to dictionary" item visible, (b) compute
-// suggestions on the next tick via setTimeout(0) so the menu paints first,
-// and (c) cache the result so subsequent right-clicks on the same word are
-// effectively free. Cache is invariant for the session because Typo's
-// suggest output depends only on the loaded Hunspell .aff/.dic — neither
-// changes once spell-check is enabled.
-const _suggestCache = new Map();
-
-// v4.4.0 — Spell suggest Web Worker (Blob URL).
-// Runs Typo.suggest() off the main thread so right-click never freezes UI.
-// Worker loads its own copy of Typo.js + en_US dict (~1.7MB extra memory,
-// acceptable for a single-user local app).
-const _SUGGEST_WORKER_SRC = `
-importScripts('${location.origin}/static/vendor/typo/typo.js');
-let _wTypo = null;
-let _wLoading = null;
-function _wLoadDict() {
-  if (_wTypo) return Promise.resolve(_wTypo);
-  if (_wLoading) return _wLoading;
-  const base = '${location.origin}/static/vendor/typo/dictionaries/en_US';
-  _wLoading = Promise.all([
-    fetch(base + '/en_US.aff').then(r => r.text()),
-    fetch(base + '/en_US.dic').then(r => r.text()),
-  ]).then(([aff, dic]) => {
-    _wTypo = new Typo('en_US', aff, dic, { platform: 'any' });
-    _wLoading = null;
-    return _wTypo;
-  });
-  return _wLoading;
-}
-self.onmessage = function(e) {
-  const { id, word } = e.data;
-  _wLoadDict().then(t => {
-    let s = [];
-    try { s = t.suggest(word, 5) || []; } catch(_) {}
-    self.postMessage({ id, word, suggestions: s });
-  }).catch(() => self.postMessage({ id, word, suggestions: [] }));
-};
-`;
-let _suggestWorker = null;
-let _suggestWorkerPending = new Map();
-let _suggestWorkerIdSeq  = 0;
-
-function _ensureSuggestWorker() {
-  if (_suggestWorker) return _suggestWorker;
-  try {
-    const blob = new Blob([_SUGGEST_WORKER_SRC], { type: 'application/javascript' });
-    _suggestWorker = new Worker(URL.createObjectURL(blob));
-    _suggestWorker.onmessage = (e) => {
-      const { id, suggestions } = e.data;
-      const cb = _suggestWorkerPending.get(id);
-      if (cb) { _suggestWorkerPending.delete(id); cb(suggestions); }
-    };
-    _suggestWorker.onerror = () => { _suggestWorker = null; };  // reset on crash
-  } catch (_) { _suggestWorker = null; }
-  return _suggestWorker;
-}
-
-function _suggestAsync(word) {
-  return new Promise(resolve => {
-    const worker = _ensureSuggestWorker();
-    if (!worker) { resolve([]); return; }
-    const id = ++_suggestWorkerIdSeq;
-    _suggestWorkerPending.set(id, resolve);
-    try { worker.postMessage({ id, word }); }
-    catch (_) { _suggestWorkerPending.delete(id); resolve([]); }
-  });
-}
-
-
-function _showSpellContextMenu(word, range, x, y) {
-  _currentMenuWord  = word;
-  _currentMenuRange = range;
-  const menu = document.getElementById("spell-context-menu");
-  const label = document.getElementById("scm-word");
-  if (!menu || !label) return;
-  label.textContent = "«" + word + "»";
-  // Restore the default item state in case a previous "Added!" toast lingered.
-  const item = document.getElementById("scm-add");
-  if (item) { item.style.opacity = ""; item.style.pointerEvents = ""; }
-  // Strip any toast row leftover AND any prior suggestions/divider so we
-  // can re-render fresh for this word.
-  Array.from(menu.querySelectorAll(".scm-toast, .scm-suggestion, .scm-divider"))
-    .forEach(n => n.remove());
-
-  // v3.3.6 — Open + position the menu FIRST, before computing suggestions.
-  // _clampPosition is reused after async injection because the menu height
-  // grows by up to 5 rows + 1 divider once suggestions land, which can push
-  // the bottom edge past the viewport on a click near the bottom of the pane.
-  const _clampPosition = () => {
-    const r = menu.getBoundingClientRect();
-    const w = r.width  || 230;
-    const h = r.height || 60;
-    menu.style.left = Math.min(x, window.innerWidth  - w - 8) + "px";
-    menu.style.top  = Math.min(y, window.innerHeight - h - 8) + "px";
-  };
-  menu.classList.add("open");
-  _clampPosition();
-
-  // Dismiss on any click outside, Escape, or scroll. Bind once; tear down
-  // when the menu hides so we don't accumulate listeners. Deferred one tick
-  // so the contextmenu event that opened us doesn't itself trip "click".
-  _menuDismissHandler = (e) => {
-    if (e.type === "keydown" && e.key !== "Escape") return;
-    _hideSpellContextMenu();
-  };
-  setTimeout(() => {
-    document.addEventListener("click",   _menuDismissHandler, { once: true });
-    document.addEventListener("keydown", _menuDismissHandler, { once: true });
-    cmEditor.on("scroll", _hideSpellContextMenu);
-  }, 0);
-
-  // v3.3.6 — Render suggestions asynchronously so the menu paints first.
-  // `word` is captured in the closure so a rapid second right-click on a
-  // different word can't inject stale suggestions into the new menu — the
-  // `_currentMenuWord === word` guard at injection time bails out cleanly.
-  if (!spellChecker || typeof spellChecker.suggest !== "function") return;
-
-  const _injectSuggestions = (suggestions) => {
-    // Defensive: menu may have been dismissed or replaced for another word
-    // between kick-off and now.
-    if (_currentMenuWord !== word) return;
-    if (!menu.classList.contains("open")) return;
-    // Dedup against the original (case-insensitive) — Typo can echo input
-    // back as a "suggestion" in rare edge cases.
-    suggestions = (suggestions || [])
-      .filter(s => s && s.toLowerCase() !== word.toLowerCase());
-    if (!suggestions.length) return;
-    const frag = document.createDocumentFragment();
-    suggestions.forEach(s => {
-      const row = document.createElement("div");
-      row.className = "scm-item scm-suggestion";
-      row.dataset.suggestion = s;
-      row.innerHTML =
-        `<span class="scm-icon">↻</span>` +
-        `<span>Replace with <span class="scm-word"></span></span>`;
-      // textContent (not innerHTML) so apostrophes/quotes in suggestions
-      // like "because's" don't break the markup.
-      row.querySelector(".scm-word").textContent = s;
-      row.addEventListener("click", (ev) => {
-        ev.stopPropagation();
-        onReplaceClick(row.dataset.suggestion);
-      });
-      frag.appendChild(row);
-    });
-    // Visual separator before the "Add" item.
-    const divider = document.createElement("div");
-    divider.className = "scm-divider";
-    frag.appendChild(divider);
-    // Insert before #scm-add so suggestions appear at the top of the menu.
-    menu.insertBefore(frag, item || null);
-    // Re-clamp: menu height grew, may now extend past viewport bottom.
-    _clampPosition();
-  };
-
-  const cacheKey = word.toLowerCase();
-  if (_suggestCache.has(cacheKey)) {
-    // Cache hit — still defer one tick so behaviour is uniform with the
-    // miss path (no risk of layout thrash from "sometimes the menu paints
-    // tall, sometimes short"). The compute itself is free here.
-    setTimeout(() => _injectSuggestions(_suggestCache.get(cacheKey)), 0);
-  } else {
-    // v4.7.0 — restore the v4.4.0 Web Worker path. The v4.6.0 rebuild regressed
-    // this to a synchronous spellChecker.suggest(), which blocks the main thread
-    // ~50-250ms and makes the right-click menu stutter. _suggestAsync runs
-    // Typo.suggest() off-thread; falls back to empty if the worker is unavailable.
-    _suggestAsync(word).then(suggestions => {
-      _suggestCache.set(cacheKey, suggestions);
-      _injectSuggestions(suggestions);
-    });
-  }
-}
-
-function _hideSpellContextMenu() {
-  const menu = document.getElementById("spell-context-menu");
-  if (menu) menu.classList.remove("open");
-  _currentMenuWord  = null;
-  _currentMenuRange = null;
-  if (_menuDismissHandler) {
-    document.removeEventListener("click",   _menuDismissHandler);
-    document.removeEventListener("keydown", _menuDismissHandler);
-    _menuDismissHandler = null;
-  }
-  cmEditor.off("scroll", _hideSpellContextMenu);
-}
-
-// v3.3.4 — Replace the right-clicked misspelled word with the chosen
-// suggestion. Range is captured at menu-open time (live CM marker), so it
-// stays valid against intervening edits. After the swap, schedule a quick
-// spell-check pass so any new error state updates within ~30ms.
-function onReplaceClick(suggestion) {
-  const range = _currentMenuRange;
-  if (!range || !suggestion) { _hideSpellContextMenu(); return; }
-  // Defensive: if the marker was cleared between menu-open and click (e.g.
-  // the user toggled spell check off mid-menu), bail without touching CM.
-  if (!range.from || !range.to) { _hideSpellContextMenu(); return; }
-  cmEditor.replaceRange(suggestion, range.from, range.to);
-  // Place the cursor after the inserted text and refocus the editor so the
-  // user can keep typing without an extra click.
-  cmEditor.focus();
-  // Re-scan: the new word may itself be flagged (unlikely from a dict
-  // suggestion, but cheap), and the original marker needs to clear.
-  scheduleSpellCheck(30);
-  _hideSpellContextMenu();
-}
-
-async function onAddToDictClick() {
-  const word = _currentMenuWord;
-  if (!word) { _hideSpellContextMenu(); return; }
-  if (!currentProject) {
-    _showMenuToast("No active project");
-    return;
-  }
-  // Disable the click target so a double-click doesn't fire twice.
-  const item = document.getElementById("scm-add");
-  if (item) { item.style.opacity = "0.5"; item.style.pointerEvents = "none"; }
-  try {
-    const res = await fetch(`/api/projects/${encodeURIComponent(currentProject)}/dict`, {
-      method:  "POST",
-      headers: { "Content-Type": "application/json" },
-      body:    JSON.stringify({ word })
-    });
-    const data = await res.json();
-    if (!res.ok || data.error) {
-      _showMenuToast("Error: " + (data.error || res.status));
-      return;
-    }
-    // Optimistically add to the in-memory set so the next spell scan clears
-    // this word's underlines without waiting for a /dict round-trip.
-    customDict.add(word.toLowerCase());
-    if (data.added) {
-      _showMenuToast(`Added · ${customDict.size} word${customDict.size !== 1 ? "s" : ""} in dict`);
-    } else if (data.reason === "duplicate") {
-      _showMenuToast("Already in dictionary");
-    }
-    // Re-scan immediately so the underline disappears.
-    scheduleSpellCheck(30);
-    // Auto-dismiss after a beat so the toast is readable.
-    setTimeout(_hideSpellContextMenu, 900);
-  } catch (e) {
-    _showMenuToast("Network error: " + e.message);
-  }
-}
-
-function _showMenuToast(msg) {
-  const menu = document.getElementById("spell-context-menu");
-  if (!menu) return;
-  Array.from(menu.querySelectorAll(".scm-toast")).forEach(n => n.remove());
-  const toast = document.createElement("div");
-  toast.className = "scm-toast";
-  toast.textContent = msg;
-  menu.appendChild(toast);
-}
-
-// v3.3.5 — "Manage custom dictionary" modal. Opens from Settings → Custom
-// dictionary → Manage…. Loads `.texlocal-dict.txt` via /dict GET, renders a
-// row per word with a × button that DELETEs that word from the file. Each
-// successful delete also drops the word from in-memory `customDict` so the
-// next spell rescan flags it again immediately.
-let _dictMgrWords = [];   // last-loaded word list (for client-side filter)
-let _dictMgrEsc   = null; // bound Escape handler (removed on close)
-
-async function openDictManager() {
-  if (!currentProject) return;
-  // Auto-close the settings popup so the modal isn't half-hidden underneath.
-  closeSettingsPanel();
-  const overlay = document.getElementById("dict-mgr-overlay");
-  const filter  = document.getElementById("dm-filter");
-  const list    = document.getElementById("dm-list");
-  if (!overlay || !list) return;
-  // Reset filter every time the modal opens — feels less surprising than a
-  // sticky filter from last session ("why are my words missing?").
-  if (filter) filter.value = "";
-  list.innerHTML = "";
-  document.getElementById("dm-count").textContent = "";
-  document.getElementById("dm-empty").classList.remove("show");
-  overlay.classList.add("open");
-  // Esc-to-close. Bound once per open, removed on close.
-  _dictMgrEsc = (e) => { if (e.key === "Escape") closeDictManager(); };
-  document.addEventListener("keydown", _dictMgrEsc);
-  // Focus the filter so Pol can start typing immediately on big dicts.
-  setTimeout(() => filter && filter.focus(), 30);
-  // Fetch fresh — don't trust in-memory customDict here, since hot-reload
-  // may not have run yet if the user hasn't focused-out since last edit.
-  try {
-    const res = await fetch(`/api/projects/${encodeURIComponent(currentProject)}/dict`);
-    if (!res.ok) {
-      list.innerHTML = `<div class="dm-empty show">Could not load dictionary (HTTP ${res.status}).</div>`;
-      return;
-    }
-    const data = await res.json();
-    _dictMgrWords = (data.words || []).slice();
-    // Keep mtime in sync so the focus hot-reload doesn't see a phantom
-    // change right after we just refreshed.
-    customDictMtime = Number(data.mtime) || 0;
-    _renderDictMgrList("");
-  } catch (e) {
-    list.innerHTML = `<div class="dm-empty show">Network error: ${e.message}</div>`;
-  }
-}
-
-function closeDictManager() {
-  const overlay = document.getElementById("dict-mgr-overlay");
-  if (overlay) overlay.classList.remove("open");
-  if (_dictMgrEsc) {
-    document.removeEventListener("keydown", _dictMgrEsc);
-    _dictMgrEsc = null;
-  }
-}
-
-function _renderDictMgrList(filterStr) {
-  const list  = document.getElementById("dm-list");
-  const count = document.getElementById("dm-count");
-  const empty = document.getElementById("dm-empty");
-  if (!list) return;
-  list.innerHTML = "";
-  const q = (filterStr || "").trim().toLowerCase();
-  // Stable sort: case-insensitive alpha. Mirrors how a human would scan
-  // a printed word list. (File order is "added order" — fine for the
-  // file itself but unfriendly for a manage UI.)
-  const sorted = _dictMgrWords.slice().sort((a, b) =>
-    a.toLowerCase().localeCompare(b.toLowerCase())
-  );
-  const filtered = q ? sorted.filter(w => w.toLowerCase().includes(q)) : sorted;
-  if (count) {
-    count.textContent = filtered.length === _dictMgrWords.length
-      ? `· ${_dictMgrWords.length}`
-      : `· ${filtered.length} of ${_dictMgrWords.length}`;
-  }
-  if (filtered.length === 0) {
-    // Two distinct empty states: (a) dict has no words at all, (b) filter
-    // hides everything. Same element, different copy.
-    if (empty) {
-      empty.textContent = _dictMgrWords.length === 0
-        ? "No words yet. Right-click a misspelled word and choose Add to dictionary."
-        : "No matches for that filter.";
-      empty.classList.add("show");
-    }
-    return;
-  }
-  if (empty) empty.classList.remove("show");
-  const frag = document.createDocumentFragment();
-  for (const w of filtered) {
-    const row = document.createElement("div");
-    row.className = "dm-row";
-    row.dataset.word = w;
-    // textContent for the word so apostrophes / quotes never break markup.
-    const wordEl = document.createElement("span");
-    wordEl.className = "dm-word";
-    wordEl.textContent = w;
-    const delBtn = document.createElement("button");
-    delBtn.className = "dm-row-del";
-    delBtn.textContent = "×";
-    delBtn.title = `Remove "${w}" from dictionary`;
-    delBtn.onclick = () => onDictMgrDelete(w, row);
-    row.appendChild(wordEl);
-    row.appendChild(delBtn);
-    frag.appendChild(row);
-  }
-  list.appendChild(frag);
-}
-
-function onDictMgrFilterInput() {
-  const filter = document.getElementById("dm-filter");
-  _renderDictMgrList(filter ? filter.value : "");
-}
-
-async function onDictMgrDelete(word, rowEl) {
-  if (!currentProject || !word) return;
-  // Optimistic "removing" state: half-opacity + pointer-events:none stops
-  // double-clicks while the DELETE is in flight. If the call fails, we
-  // restore the row.
-  if (rowEl) rowEl.classList.add("removing");
-  try {
-    const res = await fetch(`/api/projects/${encodeURIComponent(currentProject)}/dict`, {
-      method:  "DELETE",
-      headers: { "Content-Type": "application/json" },
-      body:    JSON.stringify({ word })
-    });
-    const data = await res.json();
-    if (!res.ok || data.error) {
-      if (rowEl) rowEl.classList.remove("removing");
-      return;
-    }
-    // Drop from in-memory state so the next spell rescan re-flags this
-    // word. Also drop from _dictMgrWords so a filter-clear re-render
-    // doesn't show it again.
-    customDict.delete(word.toLowerCase());
-    _dictMgrWords = _dictMgrWords.filter(w => w.toLowerCase() !== word.toLowerCase());
-    // Re-render to update the count + handle the "now empty" case.
-    const filter = document.getElementById("dm-filter");
-    _renderDictMgrList(filter ? filter.value : "");
-    // Trigger a rescan — the deleted word's instances in the buffer should
-    // light back up if they're indeed misspellings per Typo's en_US dict.
-    if (_spellHighlightOn()) scheduleSpellCheck(30);
-  } catch (e) {
-    if (rowEl) rowEl.classList.remove("removing");
-  }
-}
+// v5.0.0-beta.2.0 — PANELS lifted to static/panels.js (Phase 2 CM-light split). Loaded via <script defer> after editor.js.
+// v5.0.0-beta.2.0 — BIBTOOLS lifted to static/bibtools.js (Phase 2 CM-light split). Loaded via <script defer> after editor.js.
+// v5.0.0-beta.3.0 — SPELL CHECK + dict manager lifted to static/spell.js (Phase 3). Shared spell-state (spellChecker/spellEnabled/customDict/_spellHintTimer/…) stays in editor.js core — used by autocomplete + settings + the change handler.
 
 function _fmtAgo(ts) {
   const s = Math.floor((Date.now() - ts) / 1000);
@@ -6605,7 +1948,7 @@ function _fmtAgo(ts) {
   return Math.floor(s / 86400) + "d ago";
 }
 
-function renderHistoryPanel() {
+export function renderHistoryPanel() {
   const list  = document.getElementById("hp-list");
   const sub   = document.getElementById("hp-sub");
   const detail = document.getElementById("hp-detail");
@@ -6634,7 +1977,7 @@ function renderHistoryPanel() {
   list.querySelectorAll(".hp-row").forEach(el => {
     el.addEventListener("click", () => {
       const idx = parseInt(el.dataset.idx, 10);
-      _historyActiveIdx = (_historyActiveIdx === idx) ? -1 : idx;   // toggle
+      _ssHistoryActiveIdx((_historyActiveIdx === idx) ? -1 : idx);   // toggle
       renderHistoryPanel();
     });
   });
@@ -6646,475 +1989,30 @@ function renderHistoryPanel() {
   }
 }
 
-function clearCompileHistory() {
+export function clearCompileHistory() {
   if (!confirm("Clear all compile history for this project?")) return;
   const k = _historyKey();
   if (!k) return;
   localStorage.removeItem(k);
-  _historyActiveIdx = -1;
+  _ssHistoryActiveIdx(-1);
   renderHistoryPanel();
 }
 
-function toggleHistoryPanel(e) {
-  const panel = document.getElementById("history-panel");
-  if (panel.classList.contains("open")) {
-    panel.classList.remove("open");
-    return;
-  }
-  _closeOtherToolbarPanels("history-panel"); // v3.3.7
-  const btn  = document.getElementById("history-btn");
-  const rect = btn.getBoundingClientRect();
-  const pw   = 540;
-  let left   = rect.right - pw;
-  if (left < 4) left = 4;
-  let top = rect.bottom + 4;
-  panel.style.top  = top  + "px";
-  panel.style.left = left + "px";
-  _historyActiveIdx = -1;
-  renderHistoryPanel();
-  panel.classList.add("open");
-  if (e) e.stopPropagation();
-}
-document.addEventListener("click", e => {
-  const panel = document.getElementById("history-panel");
-  if (!panel || !panel.classList.contains("open")) return;
-  if (panel.contains(e.target)) return;
-  if (e.target.closest("#history-btn")) return;
-  panel.classList.remove("open");
-});
+// v5.0.0-beta.0.0 — Popover. onOpen resets the keyboard-nav highlight before rendering.
+export function toggleHistoryPanel(e){ _togglePopover(e, { panelId: "history-panel", btnId: "history-btn", width: 540, onOpen: () => { _ssHistoryActiveIdx(-1); renderHistoryPanel(); } }); }
 
-function toggleSymbolPanel(e) {
-  const panel = document.getElementById("symbol-panel");
-  if (panel.classList.contains("open")) {
-    panel.classList.remove("open");
-    return;
-  }
-  _closeOtherToolbarPanels("symbol-panel"); // v3.3.7
-  // position below the toggle button
-  const btn = document.getElementById("sym-toggle-btn");
-  const rect = btn.getBoundingClientRect();
-  const panelW = 370;
-  let left = rect.right - panelW;
-  if (left < 4) left = 4;
-  panel.style.top  = (rect.bottom + 4) + "px";
-  panel.style.left = left + "px";
-  renderSymbolPanel();
-  panel.classList.add("open");
-  if (e) e.stopPropagation();
-}
+// v5.0.0-beta.0.0 — Popover
+export function toggleSymbolPanel(e){ _togglePopover(e, { panelId: "symbol-panel", btnId: "sym-toggle-btn", width: 370, onOpen: renderSymbolPanel }); }
 
-document.addEventListener("click", e => {
-  const panel = document.getElementById("symbol-panel");
-  if (!panel.classList.contains("open")) return;
-  if (panel.contains(e.target)) return;
-  if (e.target.closest("#sym-toggle-btn")) return;
-  panel.classList.remove("open");
-});
-
-// ── SEARCH ACROSS FILES ───────────────────────────────────────
-function toggleSearchPanel() {
-  const panel = document.getElementById("search-panel");
-  if (panel.classList.contains("open")) {
-    hideSearchPanel();
-  } else {
-    panel.classList.add("open");
-    setTimeout(() => document.getElementById("search-input").focus(), 60);
-  }
-}
-
-function hideSearchPanel() {
-  document.getElementById("search-panel").classList.remove("open");
-}
-
-// v3.2.2 — Replace-mode toggle + project-wide replace-all.
-function toggleReplaceMode() {
-  const row = document.getElementById("replace-row");
-  const visible = row.style.display !== "none";
-  row.style.display = visible ? "none" : "flex";
-  if (!visible) setTimeout(() => document.getElementById("replace-input").focus(), 40);
-}
-
-async function doReplaceAll() {
-  if (!currentProject) { alert("Select a project first."); return; }
-  const find    = document.getElementById("search-input").value;
-  const replace = document.getElementById("replace-input").value;
-  const regex   = document.getElementById("search-regex").checked;
-  const caseS   = document.getElementById("search-case").checked;
-  if (!find) {
-    alert("Type something in the Find field first.");
-    return;
-  }
-  // Hard guard: irreversible across many files. Show a confirm with
-  // realistic stakes so the user can back out.
-  const ok = confirm(
-    `Replace ALL occurrences of:\n\n  ${find}\n\nwith:\n\n  ${replace}\n\n`
-    + `across every .tex / .bib file in "${currentProject}"?\n\n`
-    + `${regex ? "Regex mode ON. " : ""}${caseS ? "Case-sensitive. " : ""}`
-    + `This rewrites files on disk and cannot be undone from inside TexLocal.\n\n`
-    + `(Tip: commit with git first, or export ZIP as a backup.)`
-  );
-  if (!ok) return;
-
-  // Cancel any pending auto-save so it can't race with the file rewrites.
-  clearTimeout(saveTimer);
-  // v4.9.4 — flush the buffer BEFORE replacing: the backend replaces what's
-  // on disk, so edits typed within the autosave debounce window (<=800ms)
-  // must land first — otherwise they'd be missed by the replace and then
-  // clobbered by the reload below.
-  await saveCurrentFile();
-
-  const resultsEl = document.getElementById("search-results");
-  const countEl   = document.getElementById("search-count");
-  resultsEl.innerHTML = '<div class="search-empty">Replacing…</div>';
-  countEl.style.display = "none";
-
-  let data;
-  try {
-    const res = await fetch(
-      `/api/projects/${encodeURIComponent(currentProject)}/replace-all`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ find, replace, regex, case: caseS }),
-      }
-    );
-    data = await res.json();
-    if (!res.ok || data.error) throw new Error(data.error || ("HTTP " + res.status));
-  } catch (e) {
-    resultsEl.innerHTML =
-      `<div class="search-empty" style="color:var(--red)">Replace failed: ${escapeHtml(e.message)}</div>`;
-    return;
-  }
-
-  const files = data.files || [];
-  countEl.textContent = `${data.total_replacements} replacement${data.total_replacements === 1 ? "" : "s"} across ${files.length} file${files.length === 1 ? "" : "s"}`;
-  countEl.style.display = "block";
-
-  if (!files.length) {
-    resultsEl.innerHTML = '<div class="search-empty">No matches — nothing changed.</div>';
-    return;
-  }
-  resultsEl.innerHTML = files.map(f =>
-    `<div class="search-result-item" data-path="${escapeAttr(f.path)}" onclick="openFile(this.dataset.path)">
-       <div class="search-result-header">
-         <span class="search-result-file">${escapeHtml(f.path)}</span>
-         <span class="search-result-line">×${f.count}</span>
-       </div>
-       <div class="search-result-text">${escapeHtml(f.preview || "")}</div>
-     </div>`
-  ).join("");
-
-  // If the currently-open file was rewritten, reload its contents from
-  // disk so the editor doesn't keep displaying the pre-replace version.
-  // v4.9.4 — was openFile(currentFile), whose unconditional saveCurrentFile()
-  // wrote the pre-replace buffer back over the freshly-replaced file and
-  // silently reverted every replacement in the OPEN file (other files kept
-  // theirs, so the count message lied). Reload from disk without saving.
-  if (currentFile && files.some(f => f.path === currentFile)) {
-    await _reloadCurrentFileFromDisk();
-  }
-}
-
-async function doSearch() {
-  if (!currentProject) { alert("Select a project first."); return; }
-  const q = document.getElementById("search-input").value.trim();
-  if (!q) return;
-
-  const resultsEl = document.getElementById("search-results");
-  const countEl   = document.getElementById("search-count");
-  resultsEl.innerHTML = '<div class="search-empty">Searching…</div>';
-  countEl.style.display = "none";
-
-  const res  = await fetch(`/api/projects/${encodeURIComponent(currentProject)}/search?q=${encodeURIComponent(q)}`);
-  const data = await res.json();
-  const results = data.results || [];
-
-  if (!results.length) {
-    resultsEl.innerHTML = '<div class="search-empty">No results found</div>';
-    return;
-  }
-
-  const total = results.length + (data.truncated ? "+" : "");
-  countEl.textContent = `${total} result${results.length !== 1 ? "s" : ""}${data.truncated ? " (showing first 200)" : ""}`;
-  countEl.style.display = "block";
-
-  const esc = s => s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
-  // build regex from the escaped query so it matches within HTML-escaped text
-  const qEsc = esc(q);
-  const qRe  = new RegExp(qEsc.replace(/[.*+?^${}()|[\]\\]/g,"\\$&"), "gi");
-
-  resultsEl.innerHTML = "";
-  results.forEach(r => {
-    const div = document.createElement("div");
-    div.className = "search-result-item";
-    const hiText = esc(r.text).replace(qRe, m => `<mark>${m}</mark>`);
-    div.innerHTML = `
-      <div class="search-result-loc">${esc(r.file)} : line ${r.line}</div>
-      <div class="search-result-text">${hiText}</div>
-    `;
-    div.onclick = async () => {
-      hideSearchPanel();
-      if (r.file !== currentFile) await openFile(r.file);
-      setTimeout(() => {
-        // v4.7.10 — /search now returns 1-based lines; convert to 0-based.
-        cmEditor.setCursor(r.line - 1, 0);
-        cmEditor.scrollIntoView({ line: r.line - 1, ch: 0 }, 100);
-        cmEditor.focus();
-      }, 180);
-    };
-    resultsEl.appendChild(div);
-  });
-}
-
-// v4.4.0 — KaTeX MATH HOVER PREVIEW ────────────────────────────────
-// Shows a rendered popup when hovering over $...$ / $$...$$ / \[...\] / \(...\).
-// Single-line detection only — covers the vast majority of thesis inline math.
-// Lookbehind not used for browser compat; $$ vs $ disambiguated by checking
-// adjacent chars manually.
-(function _attachKatexHover() {
-  if (typeof katex === "undefined") return;   // CDN failed — degrade silently
-  const popup = document.getElementById("katex-preview");
-  if (!popup) return;
-  let _hoverTimer = null;
-  let _lastSrc    = null;
-
-  function _findMathAt(line, ch) {
-    // Walk the line with a small state machine to find the math span under ch.
-    const len = line.length;
-    let i = 0;
-    while (i < len) {
-      // $$ display math
-      if (line[i] === '$' && line[i+1] === '$') {
-        const start = i + 2;
-        const end   = line.indexOf('$$', start);
-        if (end < 0) break;
-        if (i <= ch && ch <= end + 2) return { src: line.slice(start, end), display: true };
-        i = end + 2; continue;
-      }
-      // $ inline math (not adjacent to another $)
-      if (line[i] === '$' && line[i-1] !== '$' && line[i+1] !== '$') {
-        const start = i + 1;
-        const end   = line.indexOf('$', start);
-        if (end < 0) break;
-        if (line[end+1] === '$') { i = end + 2; continue; }  // skip $$
-        if (i <= ch && ch <= end + 1) return { src: line.slice(start, end), display: false };
-        i = end + 1; continue;
-      }
-      // \[ display math
-      if (line[i] === '\\' && line[i+1] === '[') {
-        const start = i + 2;
-        const end   = line.indexOf('\\]', start);
-        if (end < 0) break;
-        if (i <= ch && ch <= end + 2) return { src: line.slice(start, end), display: true };
-        i = end + 2; continue;
-      }
-      // \( inline math
-      if (line[i] === '\\' && line[i+1] === '(') {
-        const start = i + 2;
-        const end   = line.indexOf('\\)', start);
-        if (end < 0) break;
-        if (i <= ch && ch <= end + 2) return { src: line.slice(start, end), display: false };
-        i = end + 2; continue;
-      }
-      i++;
-    }
-    return null;
-  }
-
-
-  // v4.4.0 — Detect cursor inside a multi-line math environment.
-  // Scans up to 50 lines back for \begin{env}, then forward for \end{env}.
-  // Returns { src: full environment including \begin/\end, display: true } or null.
-  const _MATH_ENVS = new Set([
-    'equation','equation*','align','align*','gather','gather*',
-    'multline','multline*','math','displaymath','eqnarray','eqnarray*',
-    'alignat','alignat*','flalign','flalign*','split','cases',
-    'pmatrix','bmatrix','vmatrix','Bmatrix','matrix','array',
-  ]);
-  function _findMathEnvAt(pos) {
-    const total = cmEditor.lineCount();
-    const cur   = pos.line;
-    const endRe   = /\\end\{([^}]+)\}/;
-    const beginRe = /\\begin\{([^}]+)\}/;
-    // Scan backwards to find \begin{mathenv} — stop if \end found first
-    let beginLine = -1, env = null;
-    for (let i = cur; i >= Math.max(0, cur - 60); i--) {
-      const ln = cmEditor.getLine(i) || '';
-      const bm = ln.match(beginRe);
-      if (bm && _MATH_ENVS.has(bm[1])) { beginLine = i; env = bm[1]; break; }
-      if (i < cur && endRe.test(ln)) break;  // hit \end before \begin — not inside
-    }
-    if (beginLine < 0) return null;
-    // Scan forward to find matching \end{env}
-    let endLine = -1;
-    for (let i = beginLine + 1; i <= Math.min(total - 1, cur + 60); i++) {
-      if ((cmEditor.getLine(i) || '').includes('\\end{' + env + '}')) { endLine = i; break; }
-    }
-    if (endLine < 0 || cur > endLine) return null;
-    // Collect lines and render as display math
-    const lines = [];
-    for (let i = beginLine; i <= endLine; i++) lines.push(cmEditor.getLine(i) || '');
-    return { src: lines.join('\n'), display: true };
-  }
-
-  cmEditor.getWrapperElement().addEventListener("mousemove", e => {
-    clearTimeout(_hoverTimer);
-    _hoverTimer = setTimeout(() => {
-      const pos  = cmEditor.coordsChar({ left: e.clientX, top: e.clientY });
-      const line = cmEditor.getLine(pos.line);
-      if (!line) { popup.classList.remove("visible"); return; }
-      const math = _findMathAt(line, pos.ch) || _findMathEnvAt(pos);
-      if (!math) { popup.classList.remove("visible"); _lastSrc = null; return; }
-      if (math.src === _lastSrc) return;   // same formula still hovered — skip re-render
-      _lastSrc = math.src;
-      popup.innerHTML = "";
-      try {
-        katex.render(math.src.trim(), popup, { displayMode: math.display, throwOnError: false });
-      } catch (err) {
-        popup.innerHTML = `<span class="katex-error">${err.message}</span>`;
-      }
-      // Position: prefer above cursor, fall back to below if near top.
-      const pw = Math.min(popup.scrollWidth + 28, 480);
-      const ph = popup.scrollHeight || 60;
-      let left = e.clientX + 12;
-      let top  = e.clientY - ph - 14;
-      if (left + pw > window.innerWidth - 8) left = Math.max(4, e.clientX - pw);
-      if (top < 8) top = e.clientY + 20;
-      popup.style.left = left + "px";
-      popup.style.top  = top  + "px";
-      popup.classList.add("visible");
-    }, 280);  // 280ms debounce — fast enough for hover, avoids flicker on cursor movement
-  });
-
-  cmEditor.getWrapperElement().addEventListener("mouseleave", () => {
-    clearTimeout(_hoverTimer);
-    popup.classList.remove("visible");
-    _lastSrc = null;
-  });
-})();
-
+// v5.0.0-beta.2.0 — SEARCH lifted to static/search.js (Phase 2 CM-light split). Loaded via <script defer> after editor.js.
 // v4.4.0 — PRE-COMPILE SYNTAX LINTER ───────────────────────────────
 // Checks for: unmatched {}, \begin/\end mismatches, unclosed $ (inline math).
 // Registered as CodeMirror "stex" lint helper; wavy underlines appear without
 // running pdflatex. Conservative by design — skips \verb|..| and verbatim envs.
 // False-positive risk noted in HANDOFF: \verb|{| is explicitly skipped here.
 
-function _buildLatexSkipRanges(text) {
-  const ranges = [];
-  // \verb*?X...X  (any delimiter char)
-  const verbRe = /\\verb\*?(.)/g;
-  let m;
-  while ((m = verbRe.exec(text)) !== null) {
-    const delim = m[1];
-    const start = m.index;
-    const end   = text.indexOf(delim, m.index + m[0].length);
-    if (end >= 0) ranges.push([start, end + 1]);
-  }
-  // \begin{verbatim}...\end{verbatim}
-  const venvRe = /\\begin\{verbatim\*?\}[\s\S]*?\\end\{verbatim\*?\}/g;
-  while ((m = venvRe.exec(text)) !== null) ranges.push([m.index, m.index + m[0].length]);
-  // % line comments — skip from % to end of line (but not \%)
-  const commentRe = /(?<!\\)%[^\n]*/g;
-  while ((m = commentRe.exec(text)) !== null) ranges.push([m.index, m.index + m[0].length]);
-  return ranges;
-}
+// v5.0.0-beta.3.0 — SYNTAX LINTER (stex lint helper + gutters/lint setOption) lifted to static/linter.js (Phase 3 CM-heavy split).
 
-function _latexInSkip(ranges, pos) {
-  for (const [a, b] of ranges) { if (pos >= a && pos < b) return true; }
-  return false;
-}
-
-function _latexOffsetToPos(text, offset) {
-  const before = text.slice(0, offset);
-  const lines  = before.split('\n');
-  return { line: lines.length - 1, ch: lines[lines.length - 1].length };
-}
-
-CodeMirror.registerHelper('lint', 'stex', function(text) {
-  const errors = [];
-  const skip   = _buildLatexSkipRanges(text);
-
-  // ── 1. Brace balance ────────────────────────────────────────
-  const braceStack = [];
-  for (let i = 0; i < text.length; i++) {
-    if (_latexInSkip(skip, i)) continue;
-    if (text[i] === '\\') { i++; continue; }   // skip escaped char
-    if (text[i] === '{') {
-      braceStack.push(i);
-    } else if (text[i] === '}') {
-      if (braceStack.length === 0) {
-        const p = _latexOffsetToPos(text, i);
-        errors.push({ from: p, to: { line: p.line, ch: p.ch + 1 },
-          message: 'Unmatched }', severity: 'error' });
-      } else { braceStack.pop(); }
-    }
-  }
-  // Report only the last 3 unmatched opens to avoid flooding
-  braceStack.slice(-3).forEach(idx => {
-    const p = _latexOffsetToPos(text, idx);
-    errors.push({ from: p, to: { line: p.line, ch: p.ch + 1 },
-      message: 'Unmatched {', severity: 'error' });
-  });
-
-  // ── 2. \begin / \end environment matching ───────────────────
-  const envStack = [];
-  const envRe = /\\(begin|end)\{([^}]*)\}/g;
-  let em;
-  while ((em = envRe.exec(text)) !== null) {
-    if (_latexInSkip(skip, em.index)) continue;
-    const kind = em[1], env = em[2].trim();
-    if (kind === 'begin') {
-      envStack.push({ env, index: em.index, len: em[0].length });
-    } else {
-      if (envStack.length === 0) {
-        const p = _latexOffsetToPos(text, em.index);
-        errors.push({ from: p, to: { line: p.line, ch: p.ch + em[0].length },
-          message: `\\end{${env}} without matching \\begin`, severity: 'error' });
-      } else {
-        const last = envStack[envStack.length - 1];
-        if (last.env === env) { envStack.pop(); }
-        else {
-          const p = _latexOffsetToPos(text, em.index);
-          errors.push({ from: p, to: { line: p.line, ch: p.ch + em[0].length },
-            message: `\\end{${env}} but expected \\end{${last.env}}`, severity: 'warning' });
-        }
-      }
-    }
-  }
-  envStack.slice(-3).forEach(({ env, index, len }) => {
-    const p = _latexOffsetToPos(text, index);
-    errors.push({ from: p, to: { line: p.line, ch: p.ch + len },
-      message: `\\begin{${env}} never closed`, severity: 'warning' });
-  });
-
-  // ── 3. Unclosed $ (inline math) ─────────────────────────────
-  // Walk the document, count unescaped single $ (not $$).
-  // An odd total means one $ is unpaired; report at its position.
-  let dollarCount = 0, lastDollarIdx = -1;
-  for (let i = 0; i < text.length; i++) {
-    if (_latexInSkip(skip, i)) continue;
-    if (text[i] === '\\') { i++; continue; }
-    if (text[i] === '$') {
-      if (text[i + 1] === '$') { i++; continue; }  // skip $$
-      dollarCount++;
-      lastDollarIdx = i;
-    }
-  }
-  if (dollarCount % 2 !== 0 && lastDollarIdx >= 0) {
-    const p = _latexOffsetToPos(text, lastDollarIdx);
-    errors.push({ from: p, to: { line: p.line, ch: p.ch + 1 },
-      message: 'Unclosed $ — odd number of inline math delimiters in file', severity: 'warning' });
-  }
-
-  return errors;
-});
-
-// Enable lint gutter and linting on the editor.
-// setOption after init avoids re-specifying the whole gutters array.
-cmEditor.setOption('gutters', [
-  'CodeMirror-linenumbers', 'CodeMirror-foldgutter',
-  'CodeMirror-lint-markers', 'cm-errors-gutter'
-]);
-cmEditor.setOption('lint', { delay: 600 });   // 600ms after last keystroke
-
-init();
+// v5.0.0-beta.2.0 — init() relocated to static/boot.js so it runs AFTER the lifted
+// Phase 2 modules load (boot.js is the last <script defer>). Keeping init()
+// here would call module fns (loadFiles/showPDF/...) before their scripts ran.

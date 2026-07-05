@@ -361,6 +361,7 @@
       <button class="settings-tab" id="settings-tab-compile" role="tab" aria-selected="false" onclick="switchSettingsTab('compile')">Compile</button>
       <button class="settings-tab" id="settings-tab-editor" role="tab" aria-selected="false" onclick="switchSettingsTab('editor')">Editor</button>
       <button class="settings-tab" id="settings-tab-keyboard" role="tab" aria-selected="false" onclick="switchSettingsTab('keyboard')">Keyboard</button>
+      <button class="settings-tab" id="settings-tab-engine" role="tab" aria-selected="false" onclick="switchSettingsTab('engine')">Engine</button>
     </div>
     <div class="settings-panes">
       <div class="settings-pane active" id="settings-pane-appearance">
@@ -451,6 +452,9 @@
         </div>
         <div class="settings-pane" id="settings-pane-keyboard">
           <div class="settings-kb-note">Loading keyboard shortcuts…</div>
+        </div>
+        <div class="settings-pane" id="settings-pane-engine">
+          <div class="engine-info-note">Loading engine info…</div>
         </div>
       </div>
     </div>
@@ -693,6 +697,33 @@
 <script src="{{ url_for('static', filename='vendor/typo/typo.js') }}"></script>
 <script src="{{ url_for('static', filename='vendor/codemirror/addon/lint/lint.min.js') }}"></script>
 <script src="{{ url_for('static', filename='vendor/katex/katex.min.js') }}"></script>
-<script defer src="{{ url_for('static', filename='editor.js') }}?v={{ texlocal_version }}"></script>
+<!-- v5.0.0-beta.5.0 — Phase 4 pt2: real ESM. The 13 classic <script defer> tags collapsed to
+     ONE module entry (boot.js) that imports the whole graph. Import order no longer
+     matters (imports resolve the dependency graph); boot.js is the sole init() caller
+     and the window-bridge binder. The import map preserves per-file ?v= cache-busting
+     by remapping the bare specifiers used in the modules' import statements to
+     versioned /static URLs — it MUST precede the module entry. -->
+<script type="importmap">
+{
+  "imports": {
+    "editor": "{{ url_for('static', filename='editor.js') }}?v={{ texlocal_version }}",
+    "cm6": "{{ url_for('static', filename='vendor/cm6/cm6.bundle.js') }}?v={{ texlocal_version }}",
+    "cm6-adapter": "{{ url_for('static', filename='cm6/adapter.js') }}?v={{ texlocal_version }}",
+    "files": "{{ url_for('static', filename='files.js') }}?v={{ texlocal_version }}",
+    "pdfviewer": "{{ url_for('static', filename='pdfviewer.js') }}?v={{ texlocal_version }}",
+    "github": "{{ url_for('static', filename='github.js') }}?v={{ texlocal_version }}",
+    "panels": "{{ url_for('static', filename='panels.js') }}?v={{ texlocal_version }}",
+    "bibtools": "{{ url_for('static', filename='bibtools.js') }}?v={{ texlocal_version }}",
+    "search": "{{ url_for('static', filename='search.js') }}?v={{ texlocal_version }}",
+    "errors": "{{ url_for('static', filename='errors.js') }}?v={{ texlocal_version }}",
+    "linter": "{{ url_for('static', filename='linter.js') }}?v={{ texlocal_version }}",
+    "autocomplete": "{{ url_for('static', filename='autocomplete.js') }}?v={{ texlocal_version }}",
+    "synctex": "{{ url_for('static', filename='synctex.js') }}?v={{ texlocal_version }}",
+    "spell": "{{ url_for('static', filename='spell.js') }}?v={{ texlocal_version }}",
+    "boot": "{{ url_for('static', filename='boot.js') }}?v={{ texlocal_version }}"
+  }
+}
+</script>
+<script type="module" src="{{ url_for('static', filename='boot.js') }}?v={{ texlocal_version }}"></script>
 </body>
 </html>
