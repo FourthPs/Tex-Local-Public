@@ -4,6 +4,131 @@ All notable changes to TexLocal are documented here.
 
 ---
 
+## v5.8.4 — 2026-07-14
+
+### Fixes
+- A successful compile shows the refreshed PDF immediately, even if the Logs panel was open; success with warnings keeps the warning badge and parsed logs available.
+
+### Improvements
+- Settings > Compile groups the Live mode options under a labelled "Live mode" section with a short description.
+
+## v5.8.3 — 2026-07-13
+
+### Fixes
+- The Logs panel tabs (All / Errors / Warnings / Info) and its close button work again.
+- The error panel gained a compact **View PDF** / **View previous PDF** action to return to the rendered PDF without losing error and warning details.
+
+## v5.8.2 — 2026-07-13
+
+### New
+- Compile can be cancelled: the Compile button becomes **Cancel** while a compile is running, for both manual and Live compiles.
+
+### Security
+- GitHub sign-in tokens are now stored encrypted with Windows DPAPI (never plaintext) and migrate automatically from the old format. Tokens are no longer visible to other processes during Git operations.
+
+## v5.8.1 — 2026-07-13
+
+### Security & reliability
+- Auto-update downloads are verified end to end: the installer must match the SHA256 digest published with the GitHub release, and incomplete or tampered downloads are rejected. The check runs again right before the installer launches.
+- Compile results are truthful: a failed run can no longer present an older PDF as if it were the new output.
+- Backing up when GitHub has newer changes now explains the situation and points to **Get GitHub changes**; pull conflicts list the affected files and guide you to resolve them first.
+- Fixes for very fast project switching (PDF, outline, and main-file detection can no longer mix projects).
+
+## v5.8.0 — 2026-07-13
+
+### New
+- **GitHub backup, end to end.** Back up your project to a private GitHub repository in one click — create the repository from inside TexLocal, push updates with an optional note, and pull changes back down with **Get GitHub changes**. Sign in via GitHub device login or an existing gh CLI session; sign out works for both.
+
+### Improvements
+- The Backup dialog speaks plain language, shows one **Connected repository** card once linked, opens instantly on reopen, and hides Git plumbing unless something fails.
+- The dashboard's Import-from-GitHub repository list uses the same styled dropdown as the rest of the app.
+
+## v5.7.2 — 2026-07-12
+
+### Fixes
+- Two small polish fixes following the v5.7.1 reliability round.
+
+## v5.7.1 — 2026-07-12
+
+### Fixes
+- Reliability round: fixed a potential loss of unsaved edits when switching projects at the wrong moment, made compile status truthful after failures, and hardened the app against several async races and an XSS vector.
+
+## v5.7.0 — 2026-07-10
+
+### New
+- **Live mode — real-time preview.** A new Live button in the toolbar compiles the chapter you're editing as you type and refreshes the PDF seamlessly (no flash, scroll position kept). Previews never overwrite your full PDF. Fine-tune debounce and draft figures under Settings > Compile.
+- Instant math preview at the caret (KaTeX) while Live mode is on, plus live-aware SyncTeX jumps.
+
+### Improvements
+- **Faster full compiles:** the LaTeX engine reruns only while something still needs resolving (references, citations), cutting typical builds roughly in half.
+
+## v5.6.0 — 2026-07-07
+
+### Improvements
+- The STATS.md project summary in exported ZIPs is now optional (Settings toggle, on by default).
+
+## v5.5.0 — 2026-07-07
+
+### Improvements
+- "Theme accent" is now **Accent color**, and all dropdown menus use a consistent custom style with keyboard navigation.
+
+## v5.4.0 — 2026-07-07
+
+### Improvements
+- The PDF preview desk can tint itself to **match** your editor theme background.
+
+## v5.3.0 — 2026-07-07
+
+### New
+- Named editor themes: pick an editor color scheme from Settings, independent of the app's dark/light mode.
+
+## v5.2.0 — 2026-07-07
+
+### Improvements
+- The PDF preview theme is now independent from the editor theme.
+
+## v5.1.1 — 2026-07-06
+
+### Fixes
+- Hardening round plus fixes to the STATS.md statistics.
+
+## v5.1.0 — 2026-07-06
+
+### New
+- Exported ZIPs include a STATS.md summary: word counts, citations, figures, equations, and a bibliography cross-check.
+
+## v5.0.5 — 2026-07-06
+
+### Improvements
+- Web mode now runs on a friendly named URL (`texlocal.localhost:52839`) and listens on both IPv4 and IPv6 loopback.
+
+## v5.0.4 — 2026-07-06
+
+### Fixes
+- Web mode opens `127.0.0.1` directly, fixing sluggish first loads in some browsers.
+
+## v5.0.3 — 2026-07-06
+
+### Fixes
+- Clicking between files in the file tree is snappier: unedited files no longer trigger a redundant save.
+
+## v5.0.2 — 2026-07-06
+
+### Improvements
+- The editor loads faster in the browser (web mode) — assets are now served in parallel, and the projects page preloads the heaviest ones.
+- Settings ▸ Engine now lists the full stack: editor packages, rendering libraries (pdf.js, KaTeX, Typo.js), and your LaTeX toolchain (MiKTeX version + available compilers).
+
+### Fixes
+- The mouse pointer over the code area shows a text cursor again instead of an arrow.
+
+## v5.0.1 — 2026-07-06
+
+### Fixes
+- A failed save no longer silently produces a mismatched PDF. If a file can't be saved, TexLocal now shows a "Save failed" warning and stops the compile instead of building from older content. Closing a tab whose save failed also keeps your unsaved text so you can retry.
+- Project names are validated properly: invalid names (Windows reserved names like `CON`/`NUL`, trailing dots or spaces, and characters like `< > : " | ? *`) are now rejected with a clear message instead of an obscure error.
+- Fixed file, compile, and preview actions for projects whose names contain spaces or special characters.
+- File, folder, and project names are now safely escaped in the interface.
+
 ## v5.0.0 — 2026-07-05
 
 Migrated the code editor from CodeMirror 5 to CodeMirror 6.
