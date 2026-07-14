@@ -1,13 +1,18 @@
 import { _appendBibAuditBreadcrumb, _historyActiveIdx, _historyKey, _ssHistoryActiveIdx, loadCompileHistory, recordCompileToHistory, updateBibBadge } from "bibtools";
-import { _ssLastParsedLog, clearErrorMarkers, hideErrorPanel, parseLatexErrors, showErrorMarkers, showErrorPanel, showLogsPanel, updateLogsBadge } from "errors";
+import { _ssLastParsedLog, clearErrorMarkers, hideErrorPanel, hideLogsPanel, parseLatexErrors, showErrorMarkers, showErrorPanel, showLogsPanel, updateLogsBadge } from "errors";
 import { _restoreLastFile, loadFiles, openFile, openFolders, renderTabs, saveCurrentFile, updateOutline } from "files";
 import { lintCrossRefs, scheduleCrossRefLint } from "linter";
 import { _snippetTabHandler, loadSnippets, renderSymbolPanel } from "panels";
-import { showPDF } from "pdfviewer";
+import { showPDF, swapPDF } from "pdfviewer"; // v5.7.0 — swapPDF: seamless recompile refresh
 import { hideSearchPanel, toggleSearchPanel } from "search";
 import { loadCustomDict, scheduleSpellCheck } from "spell";
 import { syncForward } from "synctex";
 import { createCm6Editor } from "cm6-adapter"; // v-CM6 Phase 5 inc2 — only USED when CM6_ENGINE
+import { CM6_THEME_META, cm6ThemeAppearance, cm6ThemeBg } from "cm6-themes"; // v5.3.0 — named editor themes (CM6)
+import { applyEditorKeybindings } from "settings"; // 2026-07-06 — settings/keymap split; called in init()
+import { openQuickOpen } from "quickopen"; // 2026-07-06 — Quick Open split; called by the global Ctrl+P handler
+import { toggleGrammarMode } from "grammar"; // 2026-07-06 — Grammar mode split; used in EDITOR_ACTIONS
+import { _tlddSync } from "dropdown"; // v5.7.2 — resync tl-dd trigger after programmatic select reset (no change event)
 
 export let currentProject    = null;
 export let currentFile       = null;
@@ -20,10 +25,68 @@ export function isImageFile(name) {
 export let mainFile          = "main.tex";   // ไฟล์หลักสำหรับ compile
 export let openTabs          = [];   // [{name, content}]
 export let saveTimer         = null;
-let autoCompile       = false;
+// v5.0.3 — dirty flag so saveCurrentFile() can skip the disk write when nothing
+// changed. openFile() used to POST the current buffer on EVERY file-tree click
+// (even with no edits), which (a) blocked the new file's load behind a network
+// round-trip = perceptible click delay, and (b) bumped the file's mtime, wrongly
+// invalidating the mtime-keyed cite/bib/synctex caches → extra full re-scans.
+export let editorDirty       = false;
+export let autoCompile       = false;
 let autoCompileTimer  = null;
 let wordCountTimer    = null;
 export let draftMode         = false;   // v3.2.2 — skip figures during compile (per-project)
+
+// v5.7.0p4 — Live mode (⚡, real_time_plan.md §8.7) — DELIBERATE second attempt.
+// (First, dispatch-built attempt removed 2026-07-10 — see LIVEMODE_removed doc.)
+// Key differences from attempt 1: preview compiles land at _tlpreview.pdf so
+// the real full PDF on disk is NEVER overwritten (PoL's call), and draft
+// defaults OFF in live cycles (real figures; ~3–7 s per Step 0, still fast).
+export let liveMode          = false;  // ⚡ on/off; persisted to texlocal_livemode
+let liveModeTimer     = null;  // debounce handle
+let liveInFlight      = false; // true while a live quick-compile fetch is outstanding
+let livePending       = false; // set during in-flight to fire one more cycle on completion
+let liveRequest       = null;  // owning {controller, jobId, project}; only owner clears state
+let manualCompileRequest = null;
+// v5.7.1 (#4/#5, codex Medium) — monotonic generation tokens. `liveGen` bumps
+// whenever Live is turned off or the project changes, so a live cycle that
+// began under the old state detects it's stale and drops its result instead of
+// swapping a late/foreign preview in. `switchGen` does the same for project
+// switches: async startup work (file tree, source) captures it and aborts if a
+// newer switch has since landed, so A->B switching can't let late A results
+// overwrite B.
+export let liveGen           = 0;
+export let switchGen         = 0;
+let switchRequestGen         = 0; // v5.8.1 — latest requested target wins before save awaits
+let liveLastHash      = "";    // djb2 hash of last successfully compiled buffer (dirty-hash skip)
+let liveLastCycleMs   = 2800;  // adaptive debounce seed; updated each cycle (§8.4 cadence)
+export let liveDebounceMs    = 1000;  // base debounce ms; user-configurable in Settings ▸ Compile (v5.7.0p7 — 2000→1000, §6 step 5 tune from PoL's real use)
+export let liveDraftOn       = false; // v2: default OFF — real figures in the preview
+
+function _newCompileJobId(prefix) {
+  const id = globalThis.crypto?.randomUUID?.()
+    || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return `${prefix}-${id}`;
+}
+
+function _requestCompileCancel(active) {
+  if (!active) return Promise.resolve();
+  active.controller?.abort();
+  return fetch(`/api/projects/${encodeURIComponent(active.project)}/compile/cancel`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ job_id: active.jobId }),
+  }).catch(() => {});
+}
+
+// v5.7.1 (#1, codex High) — last-resort unsaved-work guard. autosave is
+// debounced (800 ms) so closing the tab fast can outrun it; this prompts the
+// browser's native "leave site?" dialog while the buffer is dirty. It does NOT
+// attempt an async save during unload (unreliable) — it just lets the user
+// cancel and save. Silent on clean buffers, so normal closes aren't nagged.
+if (typeof window !== "undefined") {
+  window.addEventListener("beforeunload", (e) => {
+    if (editorDirty) { e.preventDefault(); e.returnValue = ""; }
+  });
+}
 
 // v3.2.2 — autocomplete sources for \cite{...} and \ref{...}
 // Both are populated by loadCiteData() (per-project) and refreshed after
@@ -78,6 +141,7 @@ export function _ssCurrentFile(v){ currentFile = v; }
 export function _ssMainFile(v){ mainFile = v; }
 export function _ssOpenTabs(v){ openTabs = v; }
 export function _ssSaveTimer(v){ saveTimer = v; }
+export function _ssEditorDirty(v){ editorDirty = v; }   // v5.0.3
 export function _ssSpellChecker(v){ spellChecker = v; }
 export function _ssSpellEnabled(v){ spellEnabled = v; }
 export function _ssSpellLoadingPromise(v){ spellLoadingPromise = v; }
@@ -132,6 +196,7 @@ const _CM5 = {
   setCursor:         (...a) => cmEditor.setCursor(...a),
   scrollIntoView:    (...a) => cmEditor.scrollIntoView(...a),
   coordsChar:        (...a) => cmEditor.coordsChar(...a),
+  cursorCoords:      (...a) => cmEditor.cursorCoords(...a),  // v5.7.0p6 — caret overlay anchor
   getViewport:       (...a) => cmEditor.getViewport(...a),
   // focus / DOM
   focus:             (...a) => cmEditor.focus(...a),
@@ -164,7 +229,7 @@ const _CM5 = {
 // localStorage; `?cm=5` opts out; otherwise the saved flag decides. CM5 remains
 // the default. Heavy features (lint/autocomplete/spell) are guarded off under
 // CM6 for this increment — see boot.js + linter.js. Full plan: PHASE5 doc.
-const CM6_ENGINE = (() => {
+export const CM6_ENGINE = (() => {
   // v5.0.0-beta.8.0 — CM6 is now the DEFAULT engine. `?cm=5` opts into legacy CM5 (persists
   // to localStorage as the escape hatch); `?cm=6` clears it back to default; with
   // no param the default is CM6 unless the user explicitly parked on CM5.
@@ -175,7 +240,6 @@ const CM6_ENGINE = (() => {
     return localStorage.getItem("texlocal_cm_engine") !== "5";
   } catch (_) { return true; }
 })();
-export { CM6_ENGINE };
 
 // v-CM6 (Phase 5) — the ?cm=6 flag PERSISTS to localStorage (so it survives
 // dashboard→editor navigation while testing). That created a trap: after visiting
@@ -255,8 +319,8 @@ CM.registerHelper("fold", "latex-section", function (cm, start) {
 // localStorage entry and re-applies — the handler wiring never moves. Global
 // (document-level) and CM-default shortcuts are intentionally NOT here: phase 3
 // remaps editor scope only.
-const _KB_LS_KEY = "texlocal_keybindings"; // global overrides {id: "Canonical-Key"}
-const EDITOR_ACTIONS = {
+export const _KB_LS_KEY = "texlocal_keybindings"; // global overrides {id: "Canonical-Key"}
+export const EDITOR_ACTIONS = {
   snippet:     { defaultKey: "Tab",          handler: cm => _snippetTabHandler(cm) },
   compile:     { defaultKey: "Ctrl-Enter",   handler: ()  => compile() },
   find:        { defaultKey: "Ctrl-F",       handler: "findPersistent" },
@@ -270,14 +334,14 @@ const EDITOR_ACTIONS = {
 };
 // Saved overrides ({} on missing/corrupt). Global localStorage, matching
 // texlocal_theme / texlocal_font_size etc.
-function getSavedKeybindings() {
+export function getSavedKeybindings() {
   try { return JSON.parse(localStorage.getItem(_KB_LS_KEY)) || {}; }
   catch (e) { return {}; }
 }
 // Build the CM extraKeys object: override key (if any) else default → handler.
 // CM normalises modifier order on setOption, so keys need no pre-normalising
 // here — normalisation matters only for conflict comparison (see _kbNorm).
-function _buildExtraKeys(overrides) {
+export function _buildExtraKeys(overrides) {
   const map = {};
   for (const id in EDITOR_ACTIONS) {
     const key = (overrides && overrides[id]) || EDITOR_ACTIONS[id].defaultKey;
@@ -314,14 +378,20 @@ if (!CM6_ENGINE) cmEditor = CodeMirror(document.getElementById("editor-host"), {
 });
 let outlineTimer = null;
 CM.on("change", () => {
+  editorDirty = true;   // v5.0.3 — real content change; openFile resets this after setValue
   clearTimeout(saveTimer);
-  saveTimer = setTimeout(saveCurrentFile, 800);
+  // v5.0.1 — saveCurrentFile now throws on write failure; swallow the rejection
+  // here (it already flashes the save-error indicator) so autosave doesn't emit
+  // an unhandled promise rejection on every failed debounced write.
+  saveTimer = setTimeout(() => { saveCurrentFile().catch(() => {}); }, 800);
   clearTimeout(outlineTimer);
   outlineTimer = setTimeout(updateOutline, 1200);
   if (autoCompile) {
     clearTimeout(autoCompileTimer);
     autoCompileTimer = setTimeout(compile, 3000);
   }
+  // v5.7.0p4 — Live mode trigger: debounced, distinct from the auto-compile path
+  if (liveMode) _liveSchedule();
   clearTimeout(wordCountTimer);
   wordCountTimer = setTimeout(updateWordCount, 500);
   // v3.2.3 — cross-ref linter, debounced (defined further below).
@@ -368,7 +438,7 @@ function _showImgPreviewAt(rawPath, x, y) {
       return;
     }
     const fullPath = rawPath + _IMG_EXTS[idx];
-    const url = `/api/projects/${proj}/raw?path=${encodeURIComponent(fullPath)}`;
+    const url = `/api/projects/${encodeURIComponent(proj)}/raw?path=${encodeURIComponent(fullPath)}`;
     const probe = new Image();
     probe.onload = () => {
       if (imgHoverLast !== rawPath) return;
@@ -423,9 +493,17 @@ export async function init() {
   // restore saved theme
   const savedTheme = localStorage.getItem("texlocal_theme") || "dark";
   setTheme(savedTheme, true);
-  // v3.2.3 — restore saved editor theme (default = light, the original look)
-  const savedEditorTheme = localStorage.getItem("texlocal_editor_theme") || "light";
-  setEditorTheme(savedEditorTheme, true);
+  // v5.3.0 — restore saved editor theme by scheme id. Migrate old installs that
+  // only stored the coarse texlocal_editor_theme (light|dark) → paper|midnight.
+  _populateEditorThemes();
+  const savedScheme = localStorage.getItem("texlocal_editor_scheme")
+    || (localStorage.getItem("texlocal_editor_theme") === "dark" ? "midnight" : "paper");
+  setEditorScheme(savedScheme, true);
+  // v5.2.0 — restore saved PDF preview mode (default "match" = old coupled
+  // behavior, so existing installs see no surprise change). MUST run after
+  // setEditorTheme so "match" reads the correct editor theme.
+  const savedPdfPreview = localStorage.getItem("texlocal_pdf_preview") || "match";
+  setPdfPreview(savedPdfPreview, true);
   // v4.7.9 — restore saved appearance theme (default = original blue scheme)
   const savedAppearance = localStorage.getItem("texlocal_appearance") || "default";
   setAppearance(savedAppearance, true);
@@ -434,6 +512,23 @@ export async function init() {
   if (savedFontSize) setFontSize(savedFontSize);
   const savedTabSize = localStorage.getItem("texlocal_tab_size");
   if (savedTabSize) setTabSize(savedTabSize);
+  // v5.7.0p4 — restore Live mode preferences (debounce ms, draft flag, on/off)
+  const savedLiveDebounce = parseInt(localStorage.getItem("texlocal_live_debounce") || "1000", 10);
+  // v5.7.0p7 — 2000 was the pre-tune DEFAULT (p4, shipped 1 day earlier): a
+  // stored "2000" is almost certainly the old default echoed back by the
+  // Settings input, not a deliberate choice — migrate it to the new default.
+  if (!isNaN(savedLiveDebounce) && savedLiveDebounce >= 500 && savedLiveDebounce !== 2000) liveDebounceMs = savedLiveDebounce;
+  liveDraftOn = localStorage.getItem("texlocal_live_draft") === "1"; // v2 default OFF
+  if (localStorage.getItem("texlocal_livemode") === "1") {
+    liveMode = true;
+    // Restore active appearance only; no ⏳ — nothing is loaded yet. The first
+    // keystroke after a project loads goes through the normal schedule path.
+    const liveBtn = document.getElementById("live-btn");
+    if (liveBtn) {
+      liveBtn.classList.add("active");
+      liveBtn.title = "Live mode — on (compiles current chapter to a separate preview)";
+    }
+  }
   await loadProjects();
 
   // priority 1: URL param (?project=name) — จาก dashboard
@@ -658,7 +753,7 @@ const _TOOLBAR_PANEL_IDS = [
   "goals-panel", "history-panel", "symbol-panel", "settings-panel",
   "outline-panel", "package-panel", "bib-panel"   // v4.9.0
 ];
-function _closeOtherToolbarPanels(exceptId) {
+export function _closeOtherToolbarPanels(exceptId) {
   for (const id of _TOOLBAR_PANEL_IDS) {
     if (id === exceptId) continue;
     const p = document.getElementById(id);
@@ -785,10 +880,44 @@ function updateDraftBadge() {
 
 export async function switchProject(name, opts) {
   if (!name) return;
+  const requestGen = ++switchRequestGen;
+  // v5.7.1 (#1, codex High) — flush a dirty buffer to disk BEFORE flipping
+  // currentProject. Below we clear the editor (CM.setValue("")), so a pending
+  // (debounced) edit that hadn't autosaved yet would be silently discarded and
+  // the visible change lost. saveCurrentFile() no-ops instantly when the buffer
+  // is clean (v5.0.3 editorDirty guard → the fast file-tree switch stays fast)
+  // and snapshots the project/file it writes, so this always lands in the
+  // OUTGOING project. Abort the switch on save failure so the user keeps their
+  // work rather than losing it to a switch that couldn't preserve it.
+  if (editorDirty) {
+    try {
+      await saveCurrentFile();
+    } catch (e) {
+      if (requestGen !== switchRequestGen) return;
+      const st = document.getElementById("compile-status");
+      if (st) { st.textContent = `✗ Save failed — stayed in this project: ${e.message || e}`; st.className = "compile-status err"; }
+      // v5.7.2 — the user already picked the target in the selector (that's
+      // what fired this call), so on abort the dropdown shows a project we
+      // did NOT switch to. Reset it to reality; _tlddSync refreshes the tl-dd
+      // trigger label WITHOUT dispatching "change" (that would re-enter here).
+      const sel = document.getElementById("project-select");
+      if (sel && currentProject) { sel.value = currentProject; _tlddSync(); }
+      return;
+    }
+  }
+  // v5.8.1 — two dirty switches can await the same save; only the most recent
+  // user selection may commit the transition when those promises resume.
+  if (requestGen !== switchRequestGen) return;
   // Cancel any pending auto-save from the previous project — otherwise it
   // could fire after `currentProject` flipped and write into the new project.
   clearTimeout(saveTimer);
   saveTimer = null;
+  // v5.7.1 (#4/#5) — invalidate any in-flight live cycle + async startup work
+  // from the project we're leaving so a late result can't land in the new one.
+  liveGen++;
+  _requestCompileCancel(liveRequest);
+  switchGen++;
+  const _gen = switchGen;
   currentProject = name;
   localStorage.setItem("texlocal_last_project", name);
   loadCompilerPref(name);
@@ -842,18 +971,20 @@ export async function switchProject(name, opts) {
         const fresh = d.main || "main.tex";
         if (fresh !== _cachedMain) {
           localStorage.setItem(_mainKey, fresh);
-          if (currentProject === name) _setMainStatus(fresh);
+          if (currentProject === name && switchGen === _gen) _setMainStatus(fresh);
         }
       })
       .catch(() => {});
   } else {
     try {
       const mData = await (await fetch(`/api/projects/${encodeURIComponent(name)}/detect-main`)).json();
+      if (currentProject !== name || switchGen !== _gen) return;
       mainFile = mData.main || "main.tex";
       localStorage.setItem(_mainKey, mainFile);   // cache for instant reuse next time
       _setMainStatus(mainFile);
     } catch (_) { /* fallback to main.tex */ }
   }
+  if (currentProject !== name || switchGen !== _gen) return;
   // ── Parallel startup (v4.5.0) ──────────────────────────────────────
   // The file-tree, the main file's editor content, and the compiled PDF are
   // all independent. Loading them concurrently — instead of awaiting
@@ -875,7 +1006,8 @@ export async function switchProject(name, opts) {
         `/api/projects/${encodeURIComponent(name)}/pdf?file=${encodeURIComponent(pdfName)}`,
         { method: "HEAD" }
       );
-      if (chk.ok) await showPDF(pdfName);
+      // v5.7.1 (#5) — drop the result if a newer switch landed mid-HEAD.
+      if (chk.ok && switchGen === _gen) await showPDF(pdfName);
     } catch (_) { /* network error — leave placeholder */ }
   })());
 
@@ -917,42 +1049,115 @@ export async function createProject() {
 
 // ── COMPILE ───────────────────────────────────────────────────
 export async function compile() {
+  if (manualCompileRequest) {
+    const active = manualCompileRequest;
+    if (active.cancelling) return;
+    active.cancelling = true;
+    const btn = document.getElementById("compile-btn");
+    const status = document.getElementById("compile-status");
+    btn.disabled = true;
+    status.textContent = "Stopping compile...";
+    status.className = "compile-status";
+    await _requestCompileCancel(active);
+    return;
+  }
   if (!currentProject) return alert("Select a project first.");
   // Cancel any pending auto-save so it can't race with our explicit save below
   // (otherwise an in-flight POST could clobber our save with a stale snapshot).
   clearTimeout(saveTimer);
-  await saveCurrentFile();
+  // v5.0.1 — abort compile if the pre-compile save fails. Previously the save
+  // was awaited but its result ignored, so a failed write let the backend
+  // compile OLDER on-disk content while the editor showed newer text.
+  try {
+    await saveCurrentFile();
+  } catch (e) {
+    const st = document.getElementById("compile-status");
+    if (st) {
+      st.textContent = `✗ Save failed — compile aborted: ${e.message || e}`;
+      st.className    = "compile-status err";
+    }
+    return;
+  }
 
   const btn    = document.getElementById("compile-btn");
   const status = document.getElementById("compile-status");
-  btn.innerHTML = '<span class="spinner"></span>';
-  btn.disabled  = true;
+  const projectAtStart = currentProject;
+  const active = {
+    project: projectAtStart,
+    jobId: _newCompileJobId("manual"),
+    controller: new AbortController(),
+    cancelling: false,
+  };
+  manualCompileRequest = active;
+  btn.textContent = "■ Cancel";
+  btn.disabled  = false;
   status.textContent = "Compiling...";
   status.className   = "compile-status";
   const t0 = Date.now();
 
-const compiler = document.getElementById("compiler-select").value;
-  const res  = await fetch(`/api/projects/${currentProject}/compile`, {
-    method:"POST", headers:{"Content-Type":"application/json"},
-    body: JSON.stringify({
-      main: mainFile,
-      // v4.9.5 — was hard-coded `true` (code-review B1). That forced a
-      // bibtex/biber run + the full 3-pass sequence (compile→bib→compile→compile)
-      // on EVERY compile whenever any .bib file existed in the project — even if
-      // the document never \bibliography/\addbibresource'd it — making the
-      // backend's has_bib_cmd auto-detection dead code and costing 2 extra
-      // pdflatex passes (+ a spurious "no \citation commands" warning) on the
-      // common path of the real thesis. Send false and let the backend decide.
-      bibtex: false,
-      compiler,
-      draft: draftMode,
-      includeOnly: selectedIncludes,   // v3.2.2 — empty = full compile
-    })
-  });
-  const data = await res.json();
-
-  btn.innerHTML = "▶ Compile";
-  btn.disabled  = false;
+  const compiler = document.getElementById("compiler-select").value;
+  // v5.7.1 (#6, codex Medium) — wrap the request + parse in try/catch/finally.
+  // Previously a transport failure (server disconnect, HTML error page, JSON
+  // parse error, process shutdown) rejected compile() AFTER the button was
+  // disabled + swapped to a spinner but BEFORE it was restored, leaving a
+  // permanent "Compiling..." with a dead button until a full reload. finally
+  // always restores the control; catch surfaces a controlled transport error.
+  let data;
+  try {
+    const res = await fetch(`/api/projects/${encodeURIComponent(projectAtStart)}/compile`, {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      signal: active.controller.signal,
+      body: JSON.stringify({
+        job_id: active.jobId,
+        main: mainFile,
+        // v4.9.5 — was hard-coded `true` (code-review B1). That forced a
+        // bibtex/biber run + the full 3-pass sequence (compile→bib→compile→compile)
+        // on EVERY compile whenever any .bib file existed in the project — even if
+        // the document never \bibliography/\addbibresource'd it — making the
+        // backend's has_bib_cmd auto-detection dead code and costing 2 extra
+        // pdflatex passes (+ a spurious "no \citation commands" warning) on the
+        // common path of the real thesis. Send false and let the backend decide.
+        bibtex: false,
+        compiler,
+        draft: draftMode,
+        includeOnly: selectedIncludes,   // v3.2.2 — empty = full compile
+      })
+    });
+    // v5.1.1 — backend serializes compiles per project (409 = one already
+    // running). Notice + bail — no auto-retry; the running compile finishes and
+    // the user can click again. (finally restores the button.)
+    if (res.status === 409) {
+      status.textContent = "⏳ Compile already running for this project";
+      status.className   = "compile-status";
+      return;
+    }
+    // v5.7.1 (#6) — a non-OK response often carries an HTML error page, not
+    // JSON; parsing it would throw. Fail with a clear message instead.
+    if (!res.ok) throw new Error(`server returned HTTP ${res.status}`);
+    data = await res.json();
+    if (data.cancelled) {
+      status.textContent = "Compile stopped";
+      status.className = "compile-status";
+      document.getElementById("log-content").textContent = data.log || "";
+      return;
+    }
+    if (currentProject !== projectAtStart) return;
+  } catch (e) {
+    if (e.name === "AbortError" || active.cancelling) {
+      status.textContent = "Compile stopped";
+      status.className = "compile-status";
+      return;
+    }
+    status.textContent = `✗ Compile request failed: ${e.message || e}`;
+    status.className    = "compile-status err";
+    return;
+  } finally {
+    if (manualCompileRequest === active) {
+      manualCompileRequest = null;
+      btn.textContent = "▶ Compile";
+      btn.disabled = false;
+    }
+  }
 
   const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
   document.getElementById("log-content").textContent = data.log || "";
@@ -963,9 +1168,13 @@ const compiler = document.getElementById("compiler-select").value;
   // v3.2.3 — Push this run into the compile history (last 10 per project).
   // Done before the ok/err branches so failed compiles are also remembered.
   recordCompileToHistory({ log: data.log || "", ok: data.ok, elapsed, parsed });
-  // ถ้า logs panel เปิดอยู่ ให้ refresh
+  const compileSucceeded = data.ok && !parsed.errors.length;
+  // v5.8.4 — A successful compile always returns to the primary result: PDF.
+  // Keep the latest Logs data/badge, but do not let an already-open overlay
+  // obscure the new document. Failed compiles still refresh open diagnostics.
   if (document.getElementById("logs-panel").classList.contains("visible")) {
-    showLogsPanel(parsed);
+    if (compileSucceeded) hideLogsPanel();
+    else showLogsPanel(parsed);
   }
 
   // v3.3.0 — pull page count + output bytes out of the log so the status
@@ -973,7 +1182,7 @@ const compiler = document.getElementById("compiler-select").value;
   // even when the compile failed (we still surface partial pages if found).
   const stats = _extractCompileStats(data.log || "");
 
-  if (data.ok) {
+  if (compileSucceeded) {
     const partial = selectedIncludes.length > 0
                     && availableIncludes.length > 0
                     && selectedIncludes.length < availableIncludes.length;
@@ -989,21 +1198,42 @@ const compiler = document.getElementById("compiler-select").value;
     status.title       = _compileStatsTooltip(elapsed);  // v3.3.0 — hover for trend
     status.className   = "compile-status ok";
     hideErrorPanel();
-    showPDF(data.pdf);
+    // v5.7.0 — recompile refresh goes through swapPDF (Layer D): the old
+    // pages stay on screen while the new PDF downloads/parses, and the scroll
+    // position survives the swap. swapPDF itself falls back to showPDF when
+    // nothing is rendered yet or the output filename changed, so first
+    // compile / main-file switch behave exactly as before.
+    swapPDF(data.pdf);
     // v3.2.2 — labels and bibkeys may have been added/removed; refresh
     // cache so the next \ref{ / \cite{ shows current state. Backend caches
     // on mtime, so this is essentially free when nothing changed.
     loadCiteData();
     showErrorMarkers({ errors: [], warnings: parsed.warnings });
     document.getElementById("log-panel").classList.remove("open");
+  } else if (data.pdf_fresh && data.pdf_available) {
+    // v5.8.1 — this PDF is proven fresh for the current run. It may be a
+    // nonstopmode recovery or contain parsed errors, so preview it but stay red.
+    // An unchanged pre-existing PDF never enters this branch.
+    status.textContent = parsed.errors.length
+      ? `⚠ Compiled with ${parsed.errors.length} error${parsed.errors.length !== 1 ? "s" : ""} — recovered PDF shown (${elapsed}s)`
+      : `⚠ Compiler failed — recovered PDF shown (${elapsed}s)`;
+    status.title       = _compileStatsTooltip(elapsed);
+    status.className   = "compile-status err";
+    swapPDF(data.pdf);
+    loadCiteData();
+    showErrorMarkers(parsed);
+    showErrorPanel(parsed, { available: data.pdf_available, fresh: data.pdf_fresh });
   } else {
     // v3.3.0 — keep stats hint on failure too: shows recent-runs avg even
     // when this run blew up, so user can see "this used to take 8s, now it's hanging".
-    status.textContent = `✗ ${parsed.errors.length} error${parsed.errors.length !== 1 ? "s" : ""} (${elapsed}s)`;
+    const staleNote = data.pdf_available && !data.pdf_fresh
+      ? " — previous PDF kept"
+      : "";
+    status.textContent = `✗ ${parsed.errors.length} error${parsed.errors.length !== 1 ? "s" : ""}${staleNote} (${elapsed}s)`;
     status.title       = _compileStatsTooltip(elapsed);
     status.className   = "compile-status err";
     showErrorMarkers(parsed);
-    showErrorPanel(parsed);
+    showErrorPanel(parsed, { available: data.pdf_available, fresh: data.pdf_fresh });
   }
   // v4.9.0 — prepend a one-line citation-health summary to the log so bib
   // problems surface without opening the panel. Async, fire-and-forget; runs
@@ -1081,7 +1311,7 @@ async function renderProjectList() {
                   + " " + date.toLocaleTimeString(undefined, { hour:"2-digit", minute:"2-digit" });
 
     row.innerHTML = `
-      <span class="project-row-name" title="${p.name}">${p.name}</span>
+      <span class="project-row-name" title="${escapeAttr(p.name)}">${escapeHtml(p.name)}</span>
       <span class="project-row-date">${dateStr}</span>
       <button class="project-row-del" title="Delete project">🗑</button>
     `;
@@ -1146,10 +1376,19 @@ export async function desktopSave(urlPath, filename) {
   }
 }
 
+// v5.6.0 — global pref: include STATS.md in the export ZIP (default on). Read on
+// demand so the dashboard (separate page, same origin/localStorage) honors it too.
+function _exportStatsOn() { return localStorage.getItem("texlocal_export_stats") !== "0"; }
+export function onExportStatsToggle() {
+  const cb = document.getElementById("export-stats-toggle");
+  if (cb) localStorage.setItem("texlocal_export_stats", cb.checked ? "1" : "0");
+}
+
 function exportZip() {
   if (!currentProject) return alert("Select a project first.");
   const btn = document.getElementById("export-zip-btn");
-  const urlPath = `/api/projects/${encodeURIComponent(currentProject)}/export-zip`;
+  let urlPath = `/api/projects/${encodeURIComponent(currentProject)}/export-zip`;
+  if (!_exportStatsOn()) urlPath += "?stats=0";
   const fname   = `${currentProject}.zip`;
   // v4.7.6 — desktop build can't use <a download>; go through the bridge.
   if (window.pywebview) {
@@ -1190,6 +1429,222 @@ export function updateWordCount() {
 export function onAutoCompileToggle() {
   autoCompile = document.getElementById("auto-compile-toggle").checked;
   if (!autoCompile) clearTimeout(autoCompileTimer);
+}
+
+// ── LIVE MODE (⚡) — v5.7.0p4, deliberate second attempt ───────
+// real_time_plan.md §8.7: separate first-class mode, not an Auto-compile sub-toggle.
+// Quiet trigger path: no compile-btn spinner, no error panel; status on ⚡ only.
+// v2 fixes over the removed first attempt (LIVEMODE_removed_2026-07-10.md):
+//   - preview: true → backend compiles to _tlpreview.pdf; the real full PDF on
+//     disk is never touched; exiting Live swaps the full PDF back instantly.
+//   - draft defaults OFF (real figures, ~3–7 s per Step 0 — still fast).
+//   - 409 now RE-SCHEDULES (was: stuck ⏳ until the next keystroke).
+//   - skips cycles while the PDF pane itself is hidden (plan rule 4), not just
+//     when the tab is backgrounded.
+
+// djb2 hash — fast, sufficient for dirty-hash skip (no crypto needed)
+function _liveHash(s) {
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) h = (h * 33 ^ s.charCodeAt(i)) >>> 0;
+  return h.toString(36);
+}
+
+// Derive the \include{} stem for the file currently open, so the live cycle
+// compiles only that chapter (Layer B — smallest compilable unit).
+function _liveDeriveStem() {
+  if (!currentFile) return null;
+  const stem = currentFile.replace(/\.tex$/i, "");
+  const entry = availableIncludes.find(i => i.path === stem);
+  return entry ? entry.path : null;
+}
+
+// Reflect the live-cycle status on the Live button. No emoji/label swapping —
+// the button keeps its SVG (activity/pulse icon, PoL's pick over the ⚡ emoji);
+// status is a color class on the button (CSS: amber pulse / green / red).
+function _liveStatusSet(state) {
+  const btn = document.getElementById("live-btn");
+  if (!btn) return;
+  btn.classList.remove("live-compiling", "live-ok", "live-err");
+  // v5.7.0p6 — stale-refs hint (plan §6 tail): quick cycles skip bib + other
+  // chapters, so cross-chapter \ref/\cite can show ?? or old numbers by design.
+  const map = { compiling: ["live-compiling", "Live — compiling preview…"],
+                ok:        ["live-ok",        "Live — preview up to date · cross-chapter refs/cites may be stale (full Compile resyncs)"],
+                err:       ["live-err",       "Live — compile error (preview may be stale)"] };
+  const ent = map[state];
+  if (ent) { btn.classList.add(ent[0]); btn.title = ent[1]; }
+  else     { btn.title = "Live mode"; }
+}
+
+// Schedule a live cycle with adaptive debounce (§8.4: D = max(user base, 1.5×last cycle)).
+// Cancels any pending debounce so rapid keystrokes coalesce into one fire.
+function _liveSchedule() {
+  clearTimeout(liveModeTimer);
+  // v5.7.0p7 — adaptive multiplier 1.5→1.0 (§6 step 5 tune): with ~3 s cycles
+  // the 1.5× wait added 4.5 s of pure idle BEFORE compiling — nearly half of
+  // PoL's perceived latency. 1.0× ≈ 50% duty of one below-normal-priority
+  // core while typing continuously — fine on this machine; the base debounce
+  // (Settings ▸ Compile) remains the knob if it ever feels aggressive.
+  const d = Math.max(liveDebounceMs, Math.round(1.0 * liveLastCycleMs));
+  liveModeTimer = setTimeout(_liveMaybeFire, d);
+}
+
+// Re-schedule when the tab becomes visible again (visibility guard).
+function _onVisibilityForLive() {
+  if (document.visibilityState === "visible" && liveMode) _liveSchedule();
+}
+
+// Pre-flight checks before firing a cycle. Drops silently if nothing changed;
+// defers until visible if the tab is backgrounded; skips while the PDF pane
+// has nothing rendered/visible (rule 4 — no point compiling an unseen preview).
+function _liveMaybeFire() {
+  if (!liveMode || !currentProject || !mainFile) return;
+  if (document.visibilityState !== "visible") {
+    document.addEventListener("visibilitychange", _onVisibilityForLive, { once: true });
+    return;
+  }
+  // v2 — PDF pane check: offsetParent is null when the container (or any
+  // ancestor) is display:none, i.e. no PDF shown yet or pane collapsed.
+  const cont = document.getElementById("pdf-canvas-container");
+  if (!cont || cont.offsetParent === null) return;
+  // dirty-hash: skip if buffer hasn't changed since last good compile
+  const buf  = CM.getValue();
+  const hash = _liveHash(buf);
+  if (hash === liveLastHash) return;
+  // coalesce: if a live compile is running, note "one more pending" and bail
+  if (liveInFlight) { livePending = true; return; }
+  _liveFire(hash);
+}
+
+// Fire one preview cycle (Layers A+B): quick + preview + chapter includeOnly.
+// Result goes to swapPDF(…, {preview:true}) — Layer D; errors stay ambient.
+async function _liveFire(hash) {
+  if (!currentProject || !mainFile) return;
+  // v5.7.1 (#4, codex Medium) — snapshot generation + project. Live-off or a
+  // project switch bumps liveGen (and changes currentProject), so when this
+  // outstanding request resolves we can tell it's stale and drop it instead of
+  // swapping a late/foreign preview into the viewer.
+  const _gen  = liveGen;
+  const _proj = currentProject;
+  const _main = mainFile;
+  const active = {
+    project: _proj,
+    jobId: _newCompileJobId("live"),
+    controller: new AbortController(),
+  };
+  liveRequest = active;
+  liveInFlight = true;
+  livePending  = false;
+  _liveStatusSet("compiling");
+  const t0       = Date.now();
+  const compiler = document.getElementById("compiler-select").value;
+  const stem     = _liveDeriveStem();
+  // Prefer the chapter being edited; fall back to the user's manual chapter
+  // selection; empty list = full doc (no \include structure in the project).
+  const includes = stem ? [stem] : (selectedIncludes.length ? [...selectedIncludes] : []);
+  try {
+    const res = await fetch(
+      `/api/projects/${encodeURIComponent(_proj)}/compile`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: active.controller.signal,
+        body: JSON.stringify({
+          job_id: active.jobId,
+          main: _main,
+          bibtex: false,            // cites resolve from last full compile's .bbl
+          compiler,
+          draft: liveDraftOn,       // v2 default OFF — real figures
+          includeOnly: includes,
+          quick: true,              // 1 pass, no bib, no tree walks
+          preview: true,            // v2 — lands at _tlpreview.pdf, full PDF untouched
+        }),
+      }
+    );
+    if (res.status === 409) {
+      // A manual compile holds the lock. v2 fix: RE-SCHEDULE (attempt 1 just
+      // set pending and stalled on "compiling" until the next keystroke).
+      livePending = true;
+      _liveSchedule();
+      return;
+    }
+    const data = await res.json();
+    liveLastCycleMs = Date.now() - t0;
+    // v5.7.1 (#4) — bail if Live was turned off or the project changed while we
+    // were compiling; the finally block still resets liveInFlight + coalesces.
+    if (_gen !== liveGen || _proj !== currentProject || !liveMode) return;
+    if (data.pdf_fresh && data.pdf_available) {
+      // v5.8.1 — only a PDF proven fresh for this cycle may replace the preview.
+      const _errs = parseLatexErrors(data.log || "").errors;
+      liveLastHash = hash;    // fixed text will hash differently → recompiles
+      swapPDF(data.pdf, { preview: true });  // seamless; Download stays = full PDF
+      _liveStatusSet(data.ok && !_errs.length ? "ok" : "err");
+    } else {
+      _liveStatusSet("err"); // no PDF at all; last-good preview stays on screen
+    }
+  } catch (e) {
+    // v5.7.2 — same staleness guard as the ok path (#4 review follow-up): a
+    // stale request failing AFTER ⚡-off / project switch must not tint the
+    // now-off button red.
+    if (e.name !== "AbortError" && _gen === liveGen &&
+        _proj === currentProject && liveMode) _liveStatusSet("err");
+  } finally {
+    if (liveRequest !== active) return;
+    liveRequest = null;
+    liveInFlight = false;
+    if (livePending && liveMode) { // edits arrived mid-compile → one coalesced cycle
+      livePending = false;
+      _liveSchedule();
+    }
+  }
+}
+
+// Primary ⚡ toggle — toolbar button onclick.
+export function onLiveModeToggle() {
+  const btn = document.getElementById("live-btn");
+  const st  = document.getElementById("compile-status");
+  liveMode = !liveMode;
+  if (liveMode) {
+    // §8.7: enabling Live permanently disables Auto-compile (one trigger owner).
+    autoCompile = false;
+    clearTimeout(autoCompileTimer);
+    const ac = document.getElementById("auto-compile-toggle");
+    if (ac) ac.checked = false;
+    liveLastHash    = "";
+    liveLastCycleMs = liveDebounceMs;
+    livePending     = false;
+    btn.classList.add("active");
+    _liveStatusSet("compiling");
+    if (st) { st.textContent = "Live on — previews compile to a separate file; your full PDF is untouched. Cross-chapter refs/cites may show ?? until a full Compile"; st.className = "compile-status"; }  // v5.7.0p6 — stale-refs hint
+    _liveSchedule();
+  } else {
+    clearTimeout(liveModeTimer);
+    liveGen++;              // v5.7.1 (#4) — invalidate any outstanding live cycle
+    _requestCompileCancel(liveRequest);
+    livePending  = false;
+    // Keep the SVG icon; just clear the on-state + any status color class.
+    btn.classList.remove("active", "live-compiling", "live-ok", "live-err");
+    btn.title = "Live mode — off (click for real-time chapter preview)";
+    // v2 — instantly restore the full PDF in the viewer (it was never
+    // overwritten on disk, so no recompile is needed).
+    if (mainFile) swapPDF(mainFile.replace(/\.tex$/i, ".pdf"));
+    if (st) { st.textContent = "Live off — showing the full PDF"; st.className = "compile-status"; }
+  }
+  localStorage.setItem("texlocal_livemode", liveMode ? "1" : "0");
+}
+
+// Settings ▸ Compile — live debounce input.
+export function onLiveDebounceChange(val) {
+  const n = parseInt(val, 10);
+  if (!isNaN(n) && n >= 500 && n <= 30000) {
+    liveDebounceMs = n;
+    localStorage.setItem("texlocal_live_debounce", String(n));
+  }
+}
+
+// Settings ▸ Compile — draft-in-live toggle.
+export function onLiveDraftToggle() {
+  liveDraftOn = document.getElementById("live-draft-toggle").checked;
+  localStorage.setItem("texlocal_live_draft", liveDraftOn ? "1" : "0");
 }
 
 // v5.0.0-beta.3.0 — LATEX AUTOCOMPLETE + PROSE WORD SUGGESTIONS lifted to static/autocomplete.js (Phase 3 CM-heavy split).
@@ -1292,89 +1747,38 @@ export function wrapSel(before, after) {
   CM.focus();
 }
 
-// ── GRAMMAR MODE (v4.4.0) ─────────────────────────────────────
-// Browser grammar/paraphrase extensions (QuillBot, Grammarly, LanguageTool)
-// only attach to real editable fields — CodeMirror keeps the document in its
-// own model behind a hidden 1-line scratch textarea, so they can't see it.
-// This opens the current selection (or, if nothing is selected, the paragraph
-// around the cursor) in a genuine full <textarea> the extension CAN hook. The
-// edited text is written back to the exact source range on "Insert back".
-// NB: extensions run in browser mode (localhost:5000) only — the desktop
-// WebView2 build doesn't load browser extensions at all.
-let _grammarRange = null;
-
-function _currentParagraphRange() {
-  // Block bounded by blank lines (or document edges) around the cursor.
-  const cur  = CM.getCursor();
-  const last = CM.lastLine();
-  const blank = (ln) => !(CM.getLine(ln) || "").trim();
-  if (blank(cur.line)) {
-    const len = (CM.getLine(cur.line) || "").length;
-    return { from: { line: cur.line, ch: 0 }, to: { line: cur.line, ch: len } };
-  }
-  let top = cur.line, bot = cur.line;
-  while (top > 0    && !blank(top - 1)) top--;
-  while (bot < last && !blank(bot + 1)) bot++;
-  return { from: { line: top, ch: 0 }, to: { line: bot, ch: (CM.getLine(bot) || "").length } };
-}
-
-export function openGrammarMode() {
-  if (!cmEditor) return;
-  const range = CM.somethingSelected()
-    ? { from: CM.getCursor("from"), to: CM.getCursor("to") }
-    : _currentParagraphRange();
-  _grammarRange = range;
-  const ta = document.getElementById("grammar-textarea");
-  if (!ta) return;
-  ta.value = CM.getRange(range.from, range.to);
-  openModal("modal-grammar");
-  // Focus + caret at end so the extension activates and typing starts cleanly.
-  setTimeout(() => { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }, 30);
-}
-
-export function applyGrammarText() {
-  const ta = document.getElementById("grammar-textarea");
-  if (ta && _grammarRange) {
-    // Modal blocks editing while open, so the stored range is still valid.
-    CM.replaceRange(ta.value, _grammarRange.from, _grammarRange.to);
-  }
-  _grammarRange = null;
-  closeModal("modal-grammar");
-  CM.focus();
-}
-
-// v4.4.0 — Ctrl-G toggle: open Grammar mode, or close it if already open.
-function toggleGrammarMode() {
-  const modal = document.getElementById("modal-grammar");
-  if (modal && modal.classList.contains("open")) closeModal("modal-grammar");
-  else openGrammarMode();
-}
-// CodeMirror's "Shift-Ctrl-G" extraKey handles the open case while the editor
-// is focused. This document-level handler covers Ctrl+Shift+G when focus is
-// elsewhere (e.g. inside the grammar textarea, to close it) — and bails when
-// the editor is focused so the two never double-fire.
-document.addEventListener("keydown", e => {
-  if (!((e.ctrlKey || e.metaKey) && e.shiftKey && !e.altKey
-        && (e.key === "g" || e.key === "G"))) return;
-  if (cmEditor && CM.hasFocus && CM.hasFocus()) return;  // CM keymap handles it
-  e.preventDefault();
-  toggleGrammarMode();
-});
 
 // v5.0.0-beta.2.0 — GITHUB lifted to static/github.js (Phase 2 CM-light split). Loaded via <script defer> after editor.js.
 // Reload the open file's content from disk WITHOUT saving the editor buffer
 // first — used after a pull, where saving would push the stale buffer back
 // over the freshly-pulled changes.
-export async function _reloadCurrentFileFromDisk() {
-  if (!currentProject || !currentFile || isImageFile(currentFile)) return;
+export async function _reloadCurrentFileFromDisk(expectedProject) {
+  if (!currentProject || !currentFile || isImageFile(currentFile)) return false;
+  // v5.8.0p6 — Pull can finish while the user is switching projects. Snapshot
+  // every identity used by this asynchronous read and refuse to paint unless
+  // the editor is still showing that exact project/file/generation afterward.
+  const projectAtReload = currentProject;
+  const fileAtReload = currentFile;
+  const genAtReload = switchGen;
+  if (expectedProject && expectedProject !== projectAtReload) return false;
   try {
-    const data = await (await fetch(`/api/projects/${encodeURIComponent(currentProject)}/file?path=${encodeURIComponent(currentFile)}`)).json();
-    const tab = openTabs.find(t => t.name === currentFile);
+    const response = await fetch(`/api/projects/${encodeURIComponent(projectAtReload)}/file?path=${encodeURIComponent(fileAtReload)}`);
+    if (!response.ok) return false;
+    const data = await response.json();
+    if (currentProject !== projectAtReload || currentFile !== fileAtReload ||
+        switchGen !== genAtReload) return false;
+    const tab = openTabs.find(t => t.name === fileAtReload);
     if (tab) tab.content = data.content;
     CM.setValue(data.content || "");
     CM.clearHistory();
+    // setValue fires the normal change hook. This content already matches disk,
+    // so do not leave a false dirty state or a redundant autosave behind.
+    editorDirty = false;
+    clearTimeout(saveTimer);
+    saveTimer = null;
     updateOutline(); updateWordCount();
-  } catch (_) { /* leave the editor as-is on failure */ }
+    return true;
+  } catch (_) { return false; /* leave the editor as-is on failure */ }
 }
 
 export function insertDisplayMath() {
@@ -1412,6 +1816,83 @@ export function setEditorTheme(theme, skipSave) {
   const darkBtn  = document.getElementById("editor-theme-dark-btn");
   if (lightBtn) lightBtn.classList.toggle("active", theme === "light");
   if (darkBtn)  darkBtn.classList.toggle("active", theme === "dark");
+  // v5.2.0 — if PDF preview is in "match" mode, re-sync it to the new editor
+  // theme (this is the only path that keeps the old coupled behavior alive).
+  const pdfMode = localStorage.getItem("texlocal_pdf_preview") || "match";
+  if (pdfMode === "match") setPdfPreview("match", true);
+}
+
+// v5.3.0 — Named editor themes (CM6 only). A theme id (e.g. "dracula") carries an
+// intrinsic light/dark appearance (see cm6/themes.js). We set the fine id on
+// `data-editor-scheme` (the CM6 adapter reads it + repaints via its observer) AND
+// mirror the coarse appearance onto `data-editor-theme` via setEditorTheme() — so
+// CM5, the `.spell-error`/`.cm-snippet-placeholder` CSS, and the PDF "match" mode
+// all keep working off the same light/dark signal they always used. Under CM5 the
+// palette degrades to that appearance (CM5 is not extended, Pol's call).
+export function setEditorScheme(id, skipSave) {
+  if (!CM6_THEME_META.some(t => t.id === id)) id = "paper";
+  document.documentElement.setAttribute("data-editor-scheme", id);
+  // mirror appearance onto data-editor-theme (also drives CM5 + spell/snippet CSS
+  // + PDF match). Pass skipSave — the scheme is the saved key, not the appearance.
+  setEditorTheme(cm6ThemeAppearance(id), true);
+  if (!skipSave) localStorage.setItem("texlocal_editor_scheme", id);
+  const sel = document.getElementById("editor-theme-select");
+  if (sel && sel.value !== id) sel.value = id;
+}
+
+// v5.3.0 — fill the Settings ▸ Editor theme <select> from the registry, grouped
+// by appearance (Light / Dark optgroups). Idempotent (clears first).
+export function _populateEditorThemes() {
+  const sel = document.getElementById("editor-theme-select");
+  if (!sel) return;
+  sel.innerHTML = "";
+  for (const group of [["light", "Light"], ["dark", "Dark"]]) {
+    const og = document.createElement("optgroup");
+    og.label = group[1];
+    for (const th of CM6_THEME_META.filter(t => t.appearance === group[0])) {
+      const opt = document.createElement("option");
+      opt.value = th.id; opt.textContent = th.name;
+      og.appendChild(opt);
+    }
+    sel.appendChild(og);
+  }
+}
+
+// v5.2.0 — PDF preview theme, independent of the code-editor theme. The PDF is
+// the actual document, so its background shouldn't be forced to follow the
+// editor palette. Three modes:
+//   "paper" — always white (default look; recommended for figure-heavy review)
+//   "match" — mirror the editor theme (the pre-v5.2.0 coupled behavior)
+//   "dark"  — always dark (invert filter), regardless of editor theme
+// Drives `data-pdf-theme="dark"`; the [data-pdf-theme="dark"] rules in
+// editor.css do the actual inversion. Persisted globally (not per-project).
+export function setPdfPreview(mode, skipSave) {
+  if (mode !== "paper" && mode !== "match" && mode !== "dark") mode = "match";
+  const root = document.documentElement;
+  const editorDark = root.getAttribute("data-editor-theme") === "dark";
+  const dark = mode === "dark" || (mode === "match" && editorDark);
+  if (dark) {
+    root.setAttribute("data-pdf-theme", "dark");
+  } else {
+    root.removeAttribute("data-pdf-theme");
+  }
+  // v5.4.0 — in "match" mode, tint the PDF viewer DESK (the area around the page)
+  // to the current editor theme's background so e.g. Solarized Light's cream
+  // carries over. The page itself stays true (white, or inverted under dark) —
+  // only the desk is tinted, so figure colors aren't distorted. paper/dark modes
+  // clear the override and fall back to the CSS defaults (grey / near-black desk).
+  if (mode === "match") {
+    const id = root.getAttribute("data-editor-scheme") || (editorDark ? "midnight" : "paper");
+    root.style.setProperty("--pdf-desk-bg", cm6ThemeBg(id));
+  } else {
+    root.style.removeProperty("--pdf-desk-bg");
+  }
+  if (!skipSave) localStorage.setItem("texlocal_pdf_preview", mode);
+  const ids = { paper: "pdf-preview-paper-btn", match: "pdf-preview-match-btn", dark: "pdf-preview-dark-btn" };
+  for (const [m, id] of Object.entries(ids)) {
+    const btn = document.getElementById(id);
+    if (btn) btn.classList.toggle("active", m === mode);
+  }
 }
 
 // v4.7.9 — Appearance theme: accent color scheme for UI text & buttons.
@@ -1421,188 +1902,29 @@ export function setEditorTheme(theme, skipSave) {
 // "cerulean" applies the SchemeColor "Cerulean Gradient" palette via the
 // [data-appearance="cerulean"] block in editor.css. The app icon is NOT
 // affected. Persisted globally (not per-project), shared with dashboard.html.
+// Known accent schemes. "default" = original blue (no data-appearance attr, uses
+// the :root --accent). Any other name applies the matching
+// [data-appearance="<name>"] block in editor.css. To add a color: append it here,
+// add an <option> to #appearance-select, and add the CSS block.
+const APPEARANCE_SCHEMES = ["default", "cerulean"];
 export function setAppearance(name, skipSave) {
-  if (name === "cerulean") {
-    document.documentElement.setAttribute("data-appearance", "cerulean");
-  } else {
-    name = "default";
+  if (!APPEARANCE_SCHEMES.includes(name)) name = "default";
+  if (name === "default") {
     document.documentElement.removeAttribute("data-appearance");
+  } else {
+    document.documentElement.setAttribute("data-appearance", name);
   }
   if (!skipSave) localStorage.setItem("texlocal_appearance", name);
-  const defBtn = document.getElementById("appearance-default-btn");
-  const cerBtn = document.getElementById("appearance-cerulean-btn");
-  if (defBtn) defBtn.classList.toggle("active", name === "default");
-  if (cerBtn) cerBtn.classList.toggle("active", name === "cerulean");
+  const sel = document.getElementById("appearance-select");
+  if (sel) sel.value = name;
 }
 
-// ── v3.2.3 — QUICK OPEN (Ctrl+P) ────────────────────────────────
-// File cache is refreshed by loadFiles(). Matching is a simple subsequence
-// scorer: each query character must appear in order in the candidate; we
-// reward consecutive matches, basename hits, and earlier hit positions.
-// Top-50 are shown to keep the list snappy on big projects.
-let quickOpenFiles  = [];   // current project's file list (filtered)
-let qoActiveIdx     = 0;
-let qoCurrentMatches = [];
 
-export function setQuickOpenFiles(files) {
-  // Called from loadFiles after fetching. We keep all non-generated files
-  // (images included — quick-open is a navigator, not a tex-only switcher).
-  quickOpenFiles = (files || []).slice();
-}
-
-function _qoFuzzyScore(query, text) {
-  // Returns { score, hits: [indices] } or null if not a subsequence match.
-  // Higher score = better. Bonuses for: consecutive char streaks, hits inside
-  // the basename portion, and hits at position 0 of the basename.
-  if (!query) return { score: 0, hits: [] };
-  const q   = query.toLowerCase();
-  const t   = text.toLowerCase();
-  const baseStart = text.lastIndexOf("/") + 1;
-  let ti = 0, qi = 0, score = 0, streak = 0;
-  const hits = [];
-  while (qi < q.length && ti < t.length) {
-    if (t[ti] === q[qi]) {
-      hits.push(ti);
-      let bonus = 1;
-      if (ti >= baseStart) bonus += 2;       // basename hits weigh more
-      if (ti === baseStart) bonus += 3;      // very first char of basename
-      bonus += streak;                       // reward consecutive matches
-      score += bonus;
-      streak++;
-      qi++;
-    } else {
-      streak = 0;
-    }
-    ti++;
-  }
-  if (qi < q.length) return null;
-  // Shorter paths break ties — they're usually more relevant.
-  score -= text.length * 0.02;
-  return { score, hits };
-}
-
-function _qoRenderHits(text, hits) {
-  // Wrap matched chars in <span class="qo-hit">. Hits is sorted asc.
-  if (!hits || !hits.length) return _esc(text);
-  let out = "", cursor = 0;
-  for (const i of hits) {
-    if (i > cursor) out += _esc(text.slice(cursor, i));
-    out += `<span class="qo-hit">${_esc(text[i])}</span>`;
-    cursor = i + 1;
-  }
-  if (cursor < text.length) out += _esc(text.slice(cursor));
-  return out;
-}
-
+// ── shared _esc HTML-escape util (kept in core; used by quickopen/bibtools/errors) ──
 export function _esc(s) {
   return String(s).replace(/[&<>"']/g, c => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;",
   })[c]);
-}
-
-function _qoRebuild() {
-  const q = document.getElementById("qo-input").value.trim();
-  let matches;
-  if (!q) {
-    // Empty query — show recent files (just the first 50) so the modal
-    // is still useful as a "what was I working on" jumper.
-    matches = quickOpenFiles.slice(0, 50).map(f => ({ path: f, score: 0, hits: [] }));
-  } else {
-    matches = [];
-    for (const f of quickOpenFiles) {
-      const r = _qoFuzzyScore(q, f);
-      if (r) matches.push({ path: f, score: r.score, hits: r.hits });
-    }
-    matches.sort((a, b) => b.score - a.score);
-    matches = matches.slice(0, 50);
-  }
-  qoCurrentMatches = matches;
-  qoActiveIdx = 0;
-  _qoRenderList();
-}
-
-function _qoRenderList() {
-  const list = document.getElementById("qo-list");
-  if (!qoCurrentMatches.length) {
-    list.innerHTML = `<div class="qo-empty">No files match</div>`;
-    return;
-  }
-  list.innerHTML = qoCurrentMatches.map((m, i) => {
-    const slash = m.path.lastIndexOf("/");
-    const dir   = slash >= 0 ? m.path.slice(0, slash) : "";
-    const base  = slash >= 0 ? m.path.slice(slash + 1) : m.path;
-    // Re-score the hits relative to the slice. Easier: just render the full
-    // path with hits, then place basename on left and dir on right.
-    const baseHits = m.hits
-      .filter(h => h > slash)
-      .map(h => h - slash - 1);
-    return `<div class="qo-item ${i === qoActiveIdx ? "active" : ""}" data-idx="${i}">
-      <span class="qo-name">${_qoRenderHits(base, baseHits)}</span>
-      ${dir ? `<span class="qo-path">${_esc(dir)}</span>` : ""}
-    </div>`;
-  }).join("");
-  // Wire clicks and ensure active item is in view
-  list.querySelectorAll(".qo-item").forEach(el => {
-    el.addEventListener("click", () => {
-      qoActiveIdx = parseInt(el.dataset.idx, 10);
-      _qoOpenSelected();
-    });
-  });
-  const activeEl = list.querySelector(".qo-item.active");
-  if (activeEl) activeEl.scrollIntoView({ block: "nearest" });
-}
-
-function _qoOpenSelected() {
-  const m = qoCurrentMatches[qoActiveIdx];
-  if (!m) return;
-  closeQuickOpen();
-  // Re-use the existing openFile path so all the same side-effects fire
-  // (tabs, cite cache reload, autoflag, etc.).
-  openFile(m.path);
-}
-
-function openQuickOpen() {
-  if (!currentProject) return;
-  const overlay = document.getElementById("quick-open-overlay");
-  const input   = document.getElementById("qo-input");
-  overlay.classList.add("open");
-  input.value = "";
-  _qoRebuild();
-  // Defer focus until display:flex has applied — otherwise focus() is a no-op.
-  setTimeout(() => input.focus(), 0);
-}
-
-export function closeQuickOpen() {
-  document.getElementById("quick-open-overlay").classList.remove("open");
-  // Return focus to the editor so typing resumes naturally.
-  if (cmEditor) CM.focus();
-}
-
-// Single keydown handler on the input drives navigation. Bound once via
-// inline addEventListener in init() (after DOM is ready).
-function _qoOnInputKey(e) {
-  if (e.key === "Escape") { e.preventDefault(); closeQuickOpen(); return; }
-  if (e.key === "ArrowDown") {
-    e.preventDefault();
-    if (qoCurrentMatches.length) {
-      qoActiveIdx = (qoActiveIdx + 1) % qoCurrentMatches.length;
-      _qoRenderList();
-    }
-    return;
-  }
-  if (e.key === "ArrowUp") {
-    e.preventDefault();
-    if (qoCurrentMatches.length) {
-      qoActiveIdx = (qoActiveIdx - 1 + qoCurrentMatches.length) % qoCurrentMatches.length;
-      _qoRenderList();
-    }
-    return;
-  }
-  if (e.key === "Enter") {
-    e.preventDefault();
-    _qoOpenSelected();
-    return;
-  }
 }
 
 // ── FOCUS MODE ────────────────────────────────────────────────
@@ -1638,303 +1960,8 @@ document.addEventListener("keydown", e => {
   }
 });
 
-// v3.2.3 — Bind the quick-open input's own key handler once on first ready
-// frame (the modal exists from initial render but we attach lazily to avoid
-// running before the DOM is parsed in some bundling edge cases).
-window.addEventListener("DOMContentLoaded", () => {
-  const inp = document.getElementById("qo-input");
-  if (inp) {
-    inp.addEventListener("input", _qoRebuild);
-    inp.addEventListener("keydown", _qoOnInputKey);
-  }
-});
 
-// ── SETTINGS PANEL ───────────────────────────────────────────
-let _settingsEsc = null; // v4.8.0 — bound Escape handler, removed on close
-
-// v4.8.0 — Settings moved from a 256px toolbar dropdown to a centered modal
-// dialog with a left tab rail (Appearance / Compile / Editor / Keyboard),
-// reusing the dict-manager overlay pattern. The rect-anchor positioning the
-// dropdown needed is gone — the overlay centers via flexbox. Backdrop click
-// closes it (inline onclick on #settings-panel); Esc closes via a listener
-// added on open / removed on close, matching openDictManager.
-export function switchSettingsTab(name) {
-  for (const t of document.querySelectorAll(".settings-tab")) {
-    const on = t.id === `settings-tab-${name}`;
-    t.classList.toggle("active", on);
-    t.setAttribute("aria-selected", on ? "true" : "false");
-  }
-  for (const p of document.querySelectorAll(".settings-pane")) {
-    p.classList.toggle("active", p.id === `settings-pane-${name}`);
-  }
-  if (name === "keyboard") renderKeyboardShortcuts(); // v4.8.1 — lazy-render cheat-sheet
-  if (name === "engine") renderEditorEngineInfo();   // v-CM6 vp.2 — engine + packages
-}
-
-// v-CM6 vp.2 — Settings ▸ Engine tab. Shows which editor engine is live (CM6
-// default / CM5 legacy) and the CM6 package versions vendored in the offline
-// bundle (static/vendor/cm6/, pins mirrored from VERSIONS.txt). Read-only info;
-// package names/versions are trusted constants, so no escaping needed.
-const CM6_PACKAGES = [
-  ["@codemirror/state", "6.7.0"],
-  ["@codemirror/view", "6.43.4"],
-  ["@codemirror/commands", "6.10.4"],
-  ["@codemirror/language", "6.12.4"],
-  ["@codemirror/autocomplete", "6.20.3"],
-  ["@codemirror/lint", "6.9.7"],
-  ["@codemirror/search", "6.7.1"],
-  ["@codemirror/legacy-modes", "stex"],
-  ["@lezer/highlight", "tags"],
-];
-function renderEditorEngineInfo() {
-  const pane = document.getElementById("settings-pane-engine");
-  if (!pane) return;
-  const cm6 = CM6_ENGINE;
-  const engineName = cm6 ? "CodeMirror 6" : "CodeMirror 5.65.16 (legacy)";
-  const engineNote = cm6
-    ? "The modern engine (default). Multi-cursor, incremental parsing, stronger Thai/IME handling."
-    : "The classic engine, kept as a reversible fallback. Add <code>?cm=6</code> to the URL to switch back to CM6.";
-  const rows = cm6
-    ? CM6_PACKAGES.map(([n, v]) =>
-        `<div class="engine-pkg"><span class="engine-pkg-name">${n}</span><span class="engine-pkg-ver">${v}</span></div>`).join("")
-    : `<div class="engine-pkg"><span class="engine-pkg-name">codemirror</span><span class="engine-pkg-ver">5.65.16</span></div>` +
-      `<div class="engine-pkg"><span class="engine-pkg-name">+ mode / addon</span><span class="engine-pkg-ver">stex, fold, hint, lint, search…</span></div>`;
-  pane.innerHTML =
-    `<div class="engine-hero">` +
-      `<span class="engine-badge ${cm6 ? "is-cm6" : "is-cm5"}">${cm6 ? "CM6" : "CM5"}</span>` +
-      `<div class="engine-hero-txt"><div class="engine-hero-name">${engineName}</div>` +
-        `<div class="engine-hero-note">${engineNote}</div></div>` +
-    `</div>` +
-    `<div class="engine-sec-title">Editor packages</div>` +
-    `<div class="engine-pkg-list">${rows}</div>` +
-    `<div class="engine-foot">Also bundled: pdf.js 3.11.174 · KaTeX (math preview) · Typo.js (spell check)</div>`;
-}
-
-export function toggleSettingsPanel(e) {
-  const panel = document.getElementById("settings-panel");
-  if (panel.classList.contains("open")) {
-    closeSettingsPanel();
-    return;
-  }
-  _closeOtherToolbarPanels("settings-panel"); // v3.3.7
-  // sync current state into panel controls
-  const curTheme = document.documentElement.getAttribute("data-theme") === "light" ? "light" : "dark";
-  document.getElementById("theme-dark-btn").classList.toggle("active", curTheme === "dark");
-  document.getElementById("theme-light-btn").classList.toggle("active", curTheme === "light");
-  // v3.2.3 — sync editor theme buttons
-  const curEditorTheme = document.documentElement.getAttribute("data-editor-theme") === "dark" ? "dark" : "light";
-  document.getElementById("editor-theme-light-btn").classList.toggle("active", curEditorTheme === "light");
-  document.getElementById("editor-theme-dark-btn").classList.toggle("active", curEditorTheme === "dark");
-  document.getElementById("auto-compile-toggle").checked = autoCompile;
-  document.getElementById("draft-mode-toggle").checked   = draftMode;
-  // v3.3.2 — sync spell check toggle to current state (may have been changed
-  // programmatically since the popup was last opened).
-  const spCb = document.getElementById("spellcheck-toggle");
-  if (spCb) spCb.checked = spellEnabled;
-  if (currentProject) {
-    const saved = localStorage.getItem(`texlocal_compiler_${currentProject}`) || "pdflatex";
-    document.getElementById("compiler-select").value = saved;
-  }
-  switchSettingsTab("appearance"); // always open on the first tab
-  panel.classList.add("open");
-  // v4.8.0 — Esc closes the modal, but not while the dict-manager modal is
-  // stacked on top of it (opened from the Editor tab's "Manage…" button).
-  _settingsEsc = (ev) => {
-    if (ev.key !== "Escape") return;
-    const dm = document.getElementById("dict-mgr-overlay");
-    if (dm && dm.classList.contains("open")) return;
-    closeSettingsPanel();
-  };
-  document.addEventListener("keydown", _settingsEsc);
-  if (e) e.stopPropagation();
-}
-
-export function closeSettingsPanel() {
-  document.getElementById("settings-panel").classList.remove("open");
-  if (_settingsEsc) {
-    document.removeEventListener("keydown", _settingsEsc);
-    _settingsEsc = null;
-  }
-}
-
-// ── KEYBOARD SHORTCUTS CHEAT-SHEET (v4.8.1 — phase 2) ────────
-// v4.8.1 — Single source of truth for keyboard shortcuts, consolidating the
-// three places bindings currently live: CodeMirror extraKeys (editor scope,
-// editor.js ~line 116), document-level keydown handlers (global scope), and
-// CM 5.65's built-in default keymap (cmdefault — listed for discoverability,
-// e.g. Ctrl-D deletes a line, which has surprised people). Rendered read-only
-// in the Keyboard tab for now; the `id`/`scope` fields are groundwork for the
-// phase-3 click-to-remap (editor-scope keys remap first). Keep this list in
-// sync when adding a new binding anywhere above.
-const KEYBINDINGS = [
-  { cat: "Compile & files", items: [
-    { id: "compile",        label: "Compile document",              keys: ["Ctrl-Enter"],             scope: "editor" },
-    { id: "quick-open",     label: "Quick open file",               keys: ["Ctrl-P"],                 scope: "global" },
-  ]},
-  { cat: "Search", items: [
-    { id: "find",           label: "Find in file",                  keys: ["Ctrl-F"],                 scope: "editor" },
-    { id: "replace",        label: "Replace in file",               keys: ["Ctrl-H"],                 scope: "editor" },
-    { id: "find-next",      label: "Find next",                     keys: ["Ctrl-G"],                 scope: "editor" },
-    { id: "project-search", label: "Search across project",         keys: ["Ctrl-Shift-F"],           scope: "global" },
-    { id: "escape",         label: "Close search / exit focus mode", keys: ["Esc"],                   scope: "global" },
-  ]},
-  { cat: "Editing", items: [
-    { id: "snippet",        label: "Expand snippet / indent",       keys: ["Tab"],                    scope: "editor" },
-    { id: "grammar",        label: "Toggle grammar mode",           keys: ["Ctrl-Shift-G"],           scope: "editor" },
-    { id: "add-cursor",     label: "Add cursor (multi-cursor)",     keys: ["Alt-Click"],              scope: "cmdefault" },
-    { id: "delete-line",    label: "Delete line",                   keys: ["Ctrl-D"],                 scope: "cmdefault" },
-    { id: "undo",           label: "Undo",                          keys: ["Ctrl-Z"],                 scope: "cmdefault" },
-    { id: "redo",           label: "Redo",                          keys: ["Ctrl-Y", "Ctrl-Shift-Z"], scope: "cmdefault" },
-  ]},
-  { cat: "Folding & view", items: [
-    { id: "fold",           label: "Fold section",                  keys: ["Ctrl-Shift-["],           scope: "editor" },
-    { id: "unfold",         label: "Unfold section",                keys: ["Ctrl-Shift-]"],           scope: "editor" },
-  ]},
-  { cat: "Navigation", items: [
-    { id: "synctex-fwd",    label: "Jump to PDF (SyncTeX forward)", keys: ["Ctrl-Alt-→"],             scope: "global" },
-  ]},
-];
-
-// Render the read-only cheat-sheet into the Keyboard tab (built once, guarded
-// by dataset.rendered so re-opening the tab is a no-op).
-// v4.8.2 (phase 3) — the cheat-sheet is now interactive for editor-scope
-// shortcuts: each editor row is a button that captures a new keystroke,
-// conflict-checks it against the other editor bindings + reserved global/
-// CM-default keys, persists to localStorage and re-applies live via
-// applyEditorKeybindings(). Global and CM-default rows stay read-only (locked)
-// — phase 3 is editor-scope only. Re-rendered on every open and after each
-// remap (the old dataset.rendered guard is gone — the pane is now stateful).
-function renderKeyboardShortcuts() {
-  const pane = document.getElementById("settings-pane-keyboard");
-  if (!pane) return;
-  const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-  // split(/-(?!$)/) keeps a trailing "-" key intact (e.g. "Ctrl--").
-  const chip = (combo) => combo.split(/-(?!$)/).map(k => `<kbd class="kbd">${esc(k)}</kbd>`).join('<span class="kbd-plus">+</span>');
-  const overrides = getSavedKeybindings();
-  const hasOverrides = Object.keys(overrides).length > 0;
-  let html = '<div class="kb-intro">Click an editor shortcut to remap it. Global and built-in shortcuts are shown for reference.</div>';
-  html += `<div class="kb-toolbar"><button class="kb-reset" onclick="resetAllKeybindings()"${hasOverrides ? "" : " disabled"}>Reset all to defaults</button></div>`;
-  for (const group of KEYBINDINGS) {
-    html += `<div class="kb-group"><div class="kb-cat">${esc(group.cat)}</div>`;
-    for (const it of group.items) {
-      const remappable = it.scope === "editor" && (it.id in EDITOR_ACTIONS);
-      if (remappable) {
-        // Display the real binding source (EDITOR_ACTIONS default or override),
-        // not KEYBINDINGS.keys — so display can't drift from what actually fires.
-        const eff = overrides[it.id] || EDITOR_ACTIONS[it.id].defaultKey;
-        const changed = overrides[it.id] ? " kb-changed" : "";
-        html += `<div class="kb-row"><span class="kb-label">${esc(it.label)}</span>` +
-                `<button type="button" class="kb-remap${changed}" data-id="${it.id}" title="Click to remap">${chip(eff)}</button></div>`;
-      } else {
-        const keysHtml = it.keys.map(chip).join('<span class="kb-or">or</span>');
-        html += `<div class="kb-row"><span class="kb-label">${esc(it.label)}</span>` +
-                `<span class="kb-keys kb-locked" title="Not remappable in this version">${keysHtml}</span></div>`;
-      }
-    }
-    html += "</div>";
-  }
-  pane.innerHTML = html;
-  for (const btn of pane.querySelectorAll(".kb-remap")) {
-    btn.addEventListener("click", () => _kbBeginCapture(btn));
-  }
-}
-
-// Apply the current (default + override) editor keymap onto the live editor.
-// setOption("extraKeys", …) replaces the whole map, so a removed default key
-// stops firing — that's why remap rebuilds the full map rather than layering
-// an addKeyMap on top (which couldn't unbind the old default).
-function applyEditorKeybindings() {
-  CM.setOption("extraKeys", _buildExtraKeys(getSavedKeybindings()));
-}
-
-// Normalise a key string to CM's canonical modifier order for conflict
-// comparison ("Ctrl-Shift-[" and "Shift-Ctrl-[" are the same binding).
-function _kbNorm(key) {
-  try { return Object.keys(CM.normalizeKeyMap({ [key]: "x" }))[0]; }
-  catch (e) { return key; }
-}
-// Accept a binding only if it has a real modifier (Ctrl/Alt/Cmd) or is a
-// standalone special key — a bare letter would hijack typing in the editor.
-const _KB_SPECIALS = new Set(["Tab","Enter","Esc","Backspace","Delete","Insert","Home","End","PageUp","PageDown","Up","Down","Left","Right","F1","F2","F3","F4","F5","F6","F7","F8","F9","F10","F11","F12"]);
-function _kbIsValidBinding(name) {
-  if (/(^|-)(Ctrl|Alt|Cmd)-/.test(name)) return true;
-  return _KB_SPECIALS.has(name.split(/-(?!$)/).pop());
-}
-
-let _kbCapturingId = null;
-let _kbCaptureBtn  = null;
-function _kbBeginCapture(btn) {
-  if (_kbCapturingId) return;                 // one capture at a time
-  _kbCapturingId = btn.dataset.id;
-  _kbCaptureBtn  = btn;
-  btn.classList.add("kb-capturing");
-  btn.innerHTML = '<span class="kb-capture-hint">Press keys… (Esc cancels)</span>';
-  // Capture phase so this fires before the Settings-modal Esc handler and
-  // before CodeMirror; preventDefault stops the keystroke doing its old job
-  // while we're recording it.
-  document.addEventListener("keydown", _kbCaptureKeydown, true);
-}
-function _kbEndCapture() {
-  document.removeEventListener("keydown", _kbCaptureKeydown, true);
-  _kbCapturingId = null;
-  _kbCaptureBtn  = null;
-  renderKeyboardShortcuts();
-}
-function _kbCaptureKeydown(e) {
-  if (["Control","Shift","Alt","Meta"].includes(e.key)) return; // wait for real key
-  e.preventDefault();
-  e.stopPropagation();
-  if (e.key === "Escape") { _kbEndCapture(); return; }
-  const name = CM.keyName(e);
-  if (!name || !_kbIsValidBinding(name)) {
-    _kbFlash("Needs a modifier (Ctrl/Alt) or a special key");
-    return;
-  }
-  const norm = _kbNorm(name);
-  const id = _kbCapturingId;
-  const overrides = getSavedKeybindings();
-  // Conflict 1: same key already bound to a DIFFERENT editor action.
-  for (const oid in EDITOR_ACTIONS) {
-    if (oid === id) continue;
-    if (_kbNorm(overrides[oid] || EDITOR_ACTIONS[oid].defaultKey) === norm) {
-      _kbFlash("Already used by another editor shortcut");
-      return;
-    }
-  }
-  // Conflict 2: reserved by a global / CM-default shortcut (shown locked).
-  for (const g of KEYBINDINGS) for (const it of g.items) {
-    if (it.scope === "editor") continue;
-    for (const k of it.keys) if (_kbNorm(k) === norm) { _kbFlash("Reserved by: " + it.label); return; }
-  }
-  // Persist. If the new key equals the default, drop the override so the row
-  // reads as unchanged and Reset-all can go fully clean.
-  if (_kbNorm(EDITOR_ACTIONS[id].defaultKey) === norm) delete overrides[id];
-  else overrides[id] = name;
-  localStorage.setItem(_KB_LS_KEY, JSON.stringify(overrides));
-  applyEditorKeybindings();
-  _kbEndCapture();
-}
-// Briefly show a rejection reason in the capturing button, then restore prompt.
-function _kbFlash(msg) {
-  if (_kbCaptureBtn) _kbCaptureBtn.innerHTML = `<span class="kb-capture-hint kb-conflict">${msg}</span>`;
-  setTimeout(() => {
-    if (_kbCapturingId && _kbCaptureBtn)
-      _kbCaptureBtn.innerHTML = '<span class="kb-capture-hint">Press keys… (Esc cancels)</span>';
-  }, 1500);
-}
-export function resetAllKeybindings() {
-  localStorage.removeItem(_KB_LS_KEY);
-  applyEditorKeybindings();
-  renderKeyboardShortcuts();
-}
-
-document.addEventListener("click", e => {
-  const panel = document.getElementById("settings-panel");
-  if (!panel.classList.contains("open")) return;
-  if (panel.contains(e.target)) return;
-  if (e.target.closest("#settings-btn")) return;
-  panel.classList.remove("open");
-});
+// ── COMPILE HISTORY PANEL ───────────────────────────────────
 
 // v5.0.0-beta.2.0 — PANELS lifted to static/panels.js (Phase 2 CM-light split). Loaded via <script defer> after editor.js.
 // v5.0.0-beta.2.0 — BIBTOOLS lifted to static/bibtools.js (Phase 2 CM-light split). Loaded via <script defer> after editor.js.
@@ -2001,18 +2028,4 @@ export function clearCompileHistory() {
 // v5.0.0-beta.0.0 — Popover. onOpen resets the keyboard-nav highlight before rendering.
 export function toggleHistoryPanel(e){ _togglePopover(e, { panelId: "history-panel", btnId: "history-btn", width: 540, onOpen: () => { _ssHistoryActiveIdx(-1); renderHistoryPanel(); } }); }
 
-// v5.0.0-beta.0.0 — Popover
-export function toggleSymbolPanel(e){ _togglePopover(e, { panelId: "symbol-panel", btnId: "sym-toggle-btn", width: 370, onOpen: renderSymbolPanel }); }
-
-// v5.0.0-beta.2.0 — SEARCH lifted to static/search.js (Phase 2 CM-light split). Loaded via <script defer> after editor.js.
-// v4.4.0 — PRE-COMPILE SYNTAX LINTER ───────────────────────────────
-// Checks for: unmatched {}, \begin/\end mismatches, unclosed $ (inline math).
-// Registered as CodeMirror "stex" lint helper; wavy underlines appear without
-// running pdflatex. Conservative by design — skips \verb|..| and verbatim envs.
-// False-positive risk noted in HANDOFF: \verb|{| is explicitly skipped here.
-
-// v5.0.0-beta.3.0 — SYNTAX LINTER (stex lint helper + gutters/lint setOption) lifted to static/linter.js (Phase 3 CM-heavy split).
-
-// v5.0.0-beta.2.0 — init() relocated to static/boot.js so it runs AFTER the lifted
-// Phase 2 modules load (boot.js is the last <script defer>). Keeping init()
-// here would call module fns (loadFiles/showPDF/...) before their scripts ran.
+//

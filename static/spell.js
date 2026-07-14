@@ -1,4 +1,5 @@
-import { CM, _ssCustomDict, _ssCustomDictMtime, _ssSpellChecker, _ssSpellEnabled, _ssSpellLoadingPromise, _ssSpellMarkers, _ssSpellScanTimer, _ssSpellSuggestEnabled, closeSettingsPanel, currentProject, customDict, customDictMtime, spellChecker, spellEnabled, spellLoadingPromise, spellMarkers, spellScanTimer, spellSuggestEnabled } from "editor";
+import { closeSettingsPanel } from "settings";
+import { CM, _ssCustomDict, _ssCustomDictMtime, _ssSpellChecker, _ssSpellEnabled, _ssSpellLoadingPromise, _ssSpellMarkers, _ssSpellScanTimer, _ssSpellSuggestEnabled, currentProject, customDict, customDictMtime, spellChecker, spellEnabled, spellLoadingPromise, spellMarkers, spellScanTimer, spellSuggestEnabled } from "editor";
 
 // static/spell.js — TexLocal Phase 3 module split (v5.0.0-beta.3.0)
 // English spell check (Typo.js, token-aware markText) + spell-suggest worker + right-click context menu + custom-dictionary manager. Shared toggle-state (spellChecker/spellEnabled/customDict/_spellHintTimer/…) intentionally left in editor.js core.

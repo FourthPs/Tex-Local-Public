@@ -162,6 +162,110 @@ export async function doSearch() {
   });
 }
 
+// v5.7.0p6 — shared math-detection helpers, lifted (dedented) out of
+// _attachKatexHover's closure so the caret overlay below can reuse them.
+// Logic unchanged.
+function _findMathAt(line, ch) {
+  // Walk the line with a small state machine to find the math span under ch.
+  const len = line.length;
+  let i = 0;
+  while (i < len) {
+    // $$ display math
+    if (line[i] === '$' && line[i+1] === '$') {
+      const start = i + 2;
+      const end   = line.indexOf('$$', start);
+      if (end < 0) break;
+      if (i <= ch && ch <= end + 2) return { src: line.slice(start, end), display: true };
+      i = end + 2; continue;
+    }
+    // $ inline math (not adjacent to another $)
+    if (line[i] === '$' && line[i-1] !== '$' && line[i+1] !== '$') {
+      const start = i + 1;
+      const end   = line.indexOf('$', start);
+      if (end < 0) break;
+      if (line[end+1] === '$') { i = end + 2; continue; }  // skip $$
+      if (i <= ch && ch <= end + 1) return { src: line.slice(start, end), display: false };
+      i = end + 1; continue;
+    }
+    // \[ display math
+    if (line[i] === '\\' && line[i+1] === '[') {
+      const start = i + 2;
+      const end   = line.indexOf('\\]', start);
+      if (end < 0) break;
+      if (i <= ch && ch <= end + 2) return { src: line.slice(start, end), display: true };
+      i = end + 2; continue;
+    }
+    // \( inline math
+    if (line[i] === '\\' && line[i+1] === '(') {
+      const start = i + 2;
+      const end   = line.indexOf('\\)', start);
+      if (end < 0) break;
+      if (i <= ch && ch <= end + 2) return { src: line.slice(start, end), display: false };
+      i = end + 2; continue;
+    }
+    i++;
+  }
+  return null;
+}
+
+
+// v4.4.0 — Detect cursor inside a multi-line math environment.
+// Scans up to 50 lines back for \begin{env}, then forward for \end{env}.
+// Returns { src: full environment including \begin/\end, display: true } or null.
+const _MATH_ENVS = new Set([
+  'equation','equation*','align','align*','gather','gather*',
+  'multline','multline*','math','displaymath','eqnarray','eqnarray*',
+  'alignat','alignat*','flalign','flalign*','split','cases',
+  'pmatrix','bmatrix','vmatrix','Bmatrix','matrix','array',
+]);
+
+// v5.7.0p9 — environments KaTeX auto-numbers. In the narrow caret/hover popup
+// that "(1)" tag overprints the equation body (the popup is much narrower than
+// the page, so the right-aligned number lands on top of the math). The popup is
+// a shape check, not a numbered reference, so we render the starred (unnumbered)
+// variant of these — see the strip in _findMathEnvAt.
+const _NUMBERED_ENVS = /^(equation|align|gather|multline|alignat|flalign|eqnarray)$/;
+function _findMathEnvAt(pos) {
+  const total = CM.lineCount();
+  const cur   = pos.line;
+  const endRe   = /\\end\{([^}]+)\}/;
+  const beginRe = /\\begin\{([^}]+)\}/;
+  // Scan backwards to find \begin{mathenv} — stop if \end found first
+  let beginLine = -1, env = null;
+  for (let i = cur; i >= Math.max(0, cur - 60); i--) {
+    const ln = CM.getLine(i) || '';
+    const bm = ln.match(beginRe);
+    if (bm && _MATH_ENVS.has(bm[1])) { beginLine = i; env = bm[1]; break; }
+    if (i < cur && endRe.test(ln)) break;  // hit \end before \begin — not inside
+  }
+  if (beginLine < 0) return null;
+  // Scan forward to find matching \end{env}
+  let endLine = -1;
+  for (let i = beginLine + 1; i <= Math.min(total - 1, cur + 60); i++) {
+    if ((CM.getLine(i) || '').includes('\\end{' + env + '}')) { endLine = i; break; }
+  }
+  if (endLine < 0 || cur > endLine) return null;
+  // Collect lines and render as display math
+  const lines = [];
+  for (let i = beginLine; i <= endLine; i++) lines.push(CM.getLine(i) || '');
+  let src = lines.join('\n');
+  // v5.7.0p10 — \label isn't a KaTeX command; with throwOnError:false it renders
+  // as raw red error text in the popup. Strip it — the preview needs no anchor.
+  src = src.replace(/\\label\s*\{[^}]*\}/g, '');
+  // v5.7.0p9 — drop the auto-number so it can't overprint the body in the popup
+  // (render the starred variant; keeps alignment, just no "(1)" tag).
+  if (_NUMBERED_ENVS.test(env)) {
+    src = src.replace('\\begin{' + env + '}', '\\begin{' + env + '*}')
+             .replace('\\end{' + env + '}',   '\\end{' + env + '*}');
+  }
+  return { src, display: true };
+}
+
+// v5.7.0p6 — true while the CARET overlay owns #katex-preview (typing inside
+// math). The hover handlers check it so a stray mousemove can't hide or
+// hijack the popup mid-keystroke; caret release hands the popup back.
+let _katexCaretOwns = false;
+
 // v4.4.0 — KaTeX MATH HOVER PREVIEW ────────────────────────────────
 // Shows a rendered popup when hovering over $...$ / $$...$$ / \[...\] / \(...\).
 // Single-line detection only — covers the vast majority of thesis inline math.
@@ -172,102 +276,64 @@ export function _attachKatexHover() {
   const popup = document.getElementById("katex-preview");
   if (!popup) return;
   let _hoverTimer = null;
+  let _hideTimer  = null;
   let _lastSrc    = null;
+  let _lastProbe  = 0;   // v5.7.0p10 — throttle the (up-to-120-line) math probe
 
-  function _findMathAt(line, ch) {
-    // Walk the line with a small state machine to find the math span under ch.
-    const len = line.length;
-    let i = 0;
-    while (i < len) {
-      // $$ display math
-      if (line[i] === '$' && line[i+1] === '$') {
-        const start = i + 2;
-        const end   = line.indexOf('$$', start);
-        if (end < 0) break;
-        if (i <= ch && ch <= end + 2) return { src: line.slice(start, end), display: true };
-        i = end + 2; continue;
-      }
-      // $ inline math (not adjacent to another $)
-      if (line[i] === '$' && line[i-1] !== '$' && line[i+1] !== '$') {
-        const start = i + 1;
-        const end   = line.indexOf('$', start);
-        if (end < 0) break;
-        if (line[end+1] === '$') { i = end + 2; continue; }  // skip $$
-        if (i <= ch && ch <= end + 1) return { src: line.slice(start, end), display: false };
-        i = end + 1; continue;
-      }
-      // \[ display math
-      if (line[i] === '\\' && line[i+1] === '[') {
-        const start = i + 2;
-        const end   = line.indexOf('\\]', start);
-        if (end < 0) break;
-        if (i <= ch && ch <= end + 2) return { src: line.slice(start, end), display: true };
-        i = end + 2; continue;
-      }
-      // \( inline math
-      if (line[i] === '\\' && line[i+1] === '(') {
-        const start = i + 2;
-        const end   = line.indexOf('\\)', start);
-        if (end < 0) break;
-        if (i <= ch && ch <= end + 2) return { src: line.slice(start, end), display: false };
-        i = end + 2; continue;
-      }
-      i++;
-    }
-    return null;
-  }
+  function _clearHide() { clearTimeout(_hideTimer); _hideTimer = null; }
 
-
-  // v4.4.0 — Detect cursor inside a multi-line math environment.
-  // Scans up to 50 lines back for \begin{env}, then forward for \end{env}.
-  // Returns { src: full environment including \begin/\end, display: true } or null.
-  const _MATH_ENVS = new Set([
-    'equation','equation*','align','align*','gather','gather*',
-    'multline','multline*','math','displaymath','eqnarray','eqnarray*',
-    'alignat','alignat*','flalign','flalign*','split','cases',
-    'pmatrix','bmatrix','vmatrix','Bmatrix','matrix','array',
-  ]);
-  function _findMathEnvAt(pos) {
-    const total = CM.lineCount();
-    const cur   = pos.line;
-    const endRe   = /\\end\{([^}]+)\}/;
-    const beginRe = /\\begin\{([^}]+)\}/;
-    // Scan backwards to find \begin{mathenv} — stop if \end found first
-    let beginLine = -1, env = null;
-    for (let i = cur; i >= Math.max(0, cur - 60); i--) {
-      const ln = CM.getLine(i) || '';
-      const bm = ln.match(beginRe);
-      if (bm && _MATH_ENVS.has(bm[1])) { beginLine = i; env = bm[1]; break; }
-      if (i < cur && endRe.test(ln)) break;  // hit \end before \begin — not inside
-    }
-    if (beginLine < 0) return null;
-    // Scan forward to find matching \end{env}
-    let endLine = -1;
-    for (let i = beginLine + 1; i <= Math.min(total - 1, cur + 60); i++) {
-      if ((CM.getLine(i) || '').includes('\\end{' + env + '}')) { endLine = i; break; }
-    }
-    if (endLine < 0 || cur > endLine) return null;
-    // Collect lines and render as display math
-    const lines = [];
-    for (let i = beginLine; i <= endLine; i++) lines.push(CM.getLine(i) || '');
-    return { src: lines.join('\n'), display: true };
+  // v5.7.0p10 — deliberate hide grace, DECOUPLED from the 280ms show debounce.
+  // Leaving a formula used to hide only once mouse movement paused (the show
+  // timer kept resetting on every move → popup lingered while the mouse roamed
+  // over prose). Now a per-move probe schedules a fixed short grace the moment
+  // the cursor leaves math, so it disappears predictably ~150 ms after.
+  function _scheduleHide() {
+    if (_hideTimer) return;   // grace already running — don't extend it
+    _hideTimer = setTimeout(() => {
+      _hideTimer = null;
+      if (_katexCaretOwns) return;   // caret typing took over the popup
+      popup.classList.remove("visible");
+      _lastSrc = null;
+    }, 150);
   }
 
   CM.getWrapperElement().addEventListener("mousemove", e => {
+    if (_katexCaretOwns) return;  // v5.7.0p6 — caret overlay owns the popup
+
+    // Cheap per-move check: is the cursor still over math? Throttled so the
+    // env probe doesn't run on every single mousemove event.
+    const now = (typeof performance !== "undefined" ? performance.now() : Date.now());
+    if (now - _lastProbe < 45) return;
+    _lastProbe = now;
+
+    const pos  = CM.coordsChar({ left: e.clientX, top: e.clientY });
+    const line = pos && CM.getLine(pos.line);
+    const math = line ? (_findMathAt(line, pos.ch) || _findMathEnvAt(pos)) : null;
+
+    if (!math) {
+      clearTimeout(_hoverTimer);                                  // cancel a pending show
+      if (popup.classList.contains("visible")) _scheduleHide();   // fixed grace, then hide
+      return;
+    }
+
+    // Over math → cancel any pending hide, (re)schedule the throttled render.
+    _clearHide();
     clearTimeout(_hoverTimer);
     _hoverTimer = setTimeout(() => {
-      const pos  = CM.coordsChar({ left: e.clientX, top: e.clientY });
-      const line = CM.getLine(pos.line);
-      if (!line) { popup.classList.remove("visible"); return; }
-      const math = _findMathAt(line, pos.ch) || _findMathEnvAt(pos);
-      if (!math) { popup.classList.remove("visible"); _lastSrc = null; return; }
-      if (math.src === _lastSrc) return;   // same formula still hovered — skip re-render
+      if (_katexCaretOwns) return;
+      if (math.src === _lastSrc) { popup.classList.add("visible"); return; }  // same formula — just ensure shown
       _lastSrc = math.src;
       popup.innerHTML = "";
       try {
         katex.render(math.src.trim(), popup, { displayMode: math.display, throwOnError: false });
       } catch (err) {
-        popup.innerHTML = `<span class="katex-error">${err.message}</span>`;
+        // v5.7.1 (#3, codex High) — render parser error text via textContent,
+        // not innerHTML (err.message is unescaped and could carry markup).
+        popup.replaceChildren();
+        const _ke = document.createElement("span");
+        _ke.className = "katex-error";
+        _ke.textContent = err.message;
+        popup.appendChild(_ke);
       }
       // Position: prefer above cursor, fall back to below if near top.
       const pw = Math.min(popup.scrollWidth + 28, 480);
@@ -284,7 +350,94 @@ export function _attachKatexHover() {
 
   CM.getWrapperElement().addEventListener("mouseleave", () => {
     clearTimeout(_hoverTimer);
+    _clearHide();
+    if (_katexCaretOwns) return;  // v5.7.0p6 — don't hide the caret overlay
     popup.classList.remove("visible");
     _lastSrc = null;
+  });
+}
+
+// v5.7.0p6 — KaTeX CARET OVERLAY — the "instant channel" of the live-preview
+// initiative (real_time_plan.md §7.4/§8.4). While the caret sits inside a math
+// span/env, every buffer change re-renders that equation into the shared
+// #katex-preview popup, throttled 150 ms — per-keystroke feedback for the one
+// content type that needs it, with zero subprocess/disk cost (KaTeX < 5 ms).
+// Show rule: only a buffer CHANGE shows the popup (arrowing through prose must
+// not pop previews); once shown, caret movement follows it into a different
+// equation and hides it when the caret leaves math. Independent of ⚡ Live mode
+// (engine-independent, always on — same spirit as the hover preview).
+export function _attachKatexCaret() {
+  if (typeof katex === "undefined") return;   // CDN failed — degrade silently
+  const popup = document.getElementById("katex-preview");
+  if (!popup) return;
+  let _timer   = null;
+  let _lastSrc = null;
+
+  function _mathAtCaret() {
+    const pos  = CM.getCursor();
+    const line = CM.getLine(pos.line) || "";
+    return _findMathAt(line, pos.ch) || _findMathEnvAt(pos);
+  }
+
+  function _hide() {
+    if (!_katexCaretOwns) return;
+    _katexCaretOwns = false;
+    _lastSrc = null;
+    popup.classList.remove("visible");
+  }
+
+  function _render(math) {
+    if (math.src !== _lastSrc) {
+      _lastSrc = math.src;
+      popup.innerHTML = "";
+      try {
+        katex.render(math.src.trim(), popup, { displayMode: math.display, throwOnError: false });
+      } catch (err) {
+        // v5.7.1 (#3, codex High) — render parser error text via textContent,
+        // not innerHTML (err.message is unescaped and could carry markup).
+        popup.replaceChildren();
+        const _ke = document.createElement("span");
+        _ke.className = "katex-error";
+        _ke.textContent = err.message;
+        popup.appendChild(_ke);
+      }
+    }
+    // Anchor above the caret (window coords — popup is position:fixed); flip
+    // below when clipped at the top, clamp inside the right edge. Re-measured
+    // every render — the popup grows as the equation does.
+    const c = CM.cursorCoords(true, "window");
+    if (!c) return;
+    const pw = Math.min(popup.scrollWidth + 28, 480);
+    const ph = popup.scrollHeight || 60;
+    let left = c.left + 12;
+    let top  = c.top - ph - 12;
+    if (left + pw > window.innerWidth - 8) left = Math.max(4, window.innerWidth - 8 - pw);
+    if (top < 8) top = (c.bottom != null ? c.bottom : c.top + 18) + 10;
+    popup.style.left = left + "px";
+    popup.style.top  = top + "px";
+    _katexCaretOwns = true;
+    popup.classList.add("visible");
+  }
+
+  const _sched = () => {
+    clearTimeout(_timer);
+    _timer = setTimeout(() => {
+      const math = _mathAtCaret();
+      if (math) _render(math); else _hide();
+    }, 150);  // plan §7.4 throttle
+  };
+
+  // Buffer change → (re)render or hide. File loads (setValue) also fire this,
+  // but land the caret at 0,0 — outside math → clean hide, no phantom popup.
+  CM.on("change", _sched);
+
+  // Caret movement without an edit: only relevant while the overlay is shown
+  // (follow into another equation / hide on leaving math). Never shows it.
+  CM.on("cursorActivity", () => { if (_katexCaretOwns) _sched(); });
+
+  // Click outside the editor (PDF pane, panels…) — caret didn't move, so
+  // cursorActivity won't fire; hide explicitly.
+  document.addEventListener("mousedown", (e) => {
+    if (_katexCaretOwns && !CM.getWrapperElement().contains(e.target)) _hide();
   });
 }

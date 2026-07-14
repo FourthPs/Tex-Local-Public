@@ -33,6 +33,11 @@
   <!-- v4.4.0 — Backup to GitHub (moved to the header). -->
   <button class="btn btn-ghost" id="github-btn" onclick="openGitHubModal()" title="Backup this project to GitHub — commit &amp; push"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none" aria-hidden="true" style="vertical-align:-3px"><path d="M7 18a4.6 4.4 0 0 1 0-9a5 4.5 0 0 1 11 2h1a3.5 3.5 0 0 1 0 7h-1"/><polyline points="9 15 12 12 15 15"/><line x1="12" y1="12" x2="12" y2="21"/></svg> Backup</button>
   <button class="btn btn-ghost" id="settings-btn" onclick="toggleSettingsPanel(event)" title="Settings"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none" aria-hidden="true"><path d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 0 0 2.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 0 0 1.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 0 0-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 0 0-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 0 0-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 0 0-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 0 0 1.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><circle cx="12" cy="12" r="3"/></svg></button>
+  <!-- v5.7.0p4 — Live mode toggle (⚡), second attempt. Separate first-class mode:
+       quiet chapter-preview compile on idle → _tlpreview.pdf (full PDF on disk is
+       NEVER overwritten). Enabling disables Auto-compile; re-enable manually. -->
+  <button class="btn btn-live" id="live-btn" onclick="onLiveModeToggle()"
+          title="Live mode — off (click for real-time chapter preview)"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none" aria-hidden="true" style="vertical-align:-3px"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg></button>
   <button class="btn btn-success" onclick="compile()" id="compile-btn">▶ Compile</button>
 </header>
 
@@ -238,41 +243,76 @@
   </div>
 </div>
 
-<!-- v4.4.0 — Backup to GitHub. Sign in once (device flow), then commit & push
-     the current project. TexLocal stores no token — gh/OAuth owns credentials. -->
-<div class="modal-overlay" id="modal-github">
-  <div class="modal" style="width:min(560px,92vw)">
-    <h3 style="margin-bottom:10px">☁ Backup to GitHub</h3>
-    <div id="gh-auth-row" style="display:flex;align-items:center;gap:10px;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:14px;font-size:13px">
-      <span id="gh-auth-text" style="flex:1">Checking GitHub sign-in…</span>
+<!-- v5.8.0 — Backup to GitHub with user-facing readiness and destination state. -->
+<div class="modal-overlay" id="modal-github" role="dialog" aria-modal="true" aria-labelledby="gh-modal-title">
+  <div class="modal" style="width:min(560px,92vw);max-height:92vh;overflow:auto">
+    <!-- v5.8.0p2 — stroke-SVG title icon (matches the header icon set; emoji ☁ removed per the v5.7.0p4 icon convention) -->
+    <h3 id="gh-modal-title" style="margin-bottom:10px;display:flex;align-items:center;gap:6px"><svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none" aria-hidden="true"><path d="M7 18a4.6 4.4 0 0 1 0-9a5 4.5 0 0 1 11 2h1a3.5 3.5 0 0 1 0 7h-1"/><polyline points="9 15 12 12 15 15"/><line x1="12" y1="12" x2="12" y2="21"/></svg> Backup to GitHub</h3>
+    <!-- v5.8.0p3 — single loading line shown while the modal decides its layout (see .gh-loading-row / gh-veiled in editor.css) -->
+    <div class="gh-loading-row"><span class="spinner"></span> Checking GitHub…</div>
+    <div id="gh-auth-row" class="gh-veiled" style="display:flex;align-items:center;gap:10px;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:14px;font-size:13px">
+      <span id="gh-auth-text" style="flex:1;min-width:0;overflow-wrap:anywhere">Checking GitHub sign-in…</span>
       <button class="btn btn-ghost" id="gh-login-btn" onclick="githubLogin()" style="display:none">Sign in with GitHub</button>
       <button class="btn btn-ghost" id="gh-logout-btn" onclick="githubLogout()" style="display:none">Log out</button>
     </div>
-    <!-- v4.4.0 — Remote sync status + Pull. Hidden until the project has a
-         connected GitHub remote. -->
-    <div id="gh-sync-row" style="display:none;align-items:center;gap:10px;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:9px 12px;margin-bottom:14px;font-size:12.5px">
-      <span id="gh-sync-text" style="flex:1">Checking for remote changes…</span>
-      <button class="btn btn-ghost" id="gh-pull-btn" onclick="githubPull()" style="display:none"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none" aria-hidden="true" style="vertical-align:-3px"><circle cx="6" cy="18" r="2"/><circle cx="18" cy="6" r="2"/><path d="M8 16a10 10 0 0 0 10-10"/><polyline points="14 6 18 6 18 10"/></svg> Pull</button>
+    <div id="gh-git-row" class="gh-status-row gh-veiled" data-state="checking">
+      <span id="gh-git-text">Checking Git…</span>
     </div>
-    <label style="display:block;font-size:12px;color:var(--text-dim,#8a8f98);margin-bottom:4px">Repository name</label>
-    <input id="gh-repo-name" autocomplete="off" spellcheck="false" placeholder="my-thesis"
-      style="width:100%;box-sizing:border-box;background:var(--bg);border:1px solid var(--border);color:var(--text);font-family:var(--font-ui);font-size:14px;padding:9px 12px;border-radius:8px;outline:none;margin-bottom:12px">
-    <div style="display:flex;gap:12px;margin-bottom:12px">
-      <div style="flex:1">
-        <label style="display:block;font-size:12px;color:var(--text-dim,#8a8f98);margin-bottom:4px">Visibility</label>
+    <!-- v5.8.0 — Existing origins are destinations, not editable creation options. -->
+    <div id="gh-connected-row" class="gh-connected-card gh-veiled" style="display:none">
+      <span class="gh-field-label">Connected repository</span>
+      <strong id="gh-connected-repo"></strong>
+      <small>Future backups will be sent here.</small>
+    </div>
+    <!-- Remote sync status + download action. Hidden until origin exists. -->
+    <div id="gh-sync-row" class="gh-status-row gh-veiled" style="display:none">
+      <span id="gh-sync-text" style="flex:1">Checking for GitHub changes…</span>
+      <button class="btn btn-ghost" id="gh-pull-btn" onclick="githubPull()" style="display:none">Get GitHub changes</button>
+    </div>
+    <div id="gh-repo-create-fields" class="gh-veiled">
+      <label class="gh-field-label" for="gh-repo-name">Repository name</label>
+      <input id="gh-repo-name" autocomplete="off" spellcheck="false" placeholder="my-thesis"
+        style="width:100%;box-sizing:border-box;background:var(--bg);border:1px solid var(--border);color:var(--text);font-family:var(--font-ui);font-size:14px;padding:9px 12px;border-radius:8px;outline:none;margin-bottom:6px">
+      <div id="gh-visibility-field" style="display:flex;gap:12px;margin-bottom:12px">
+        <div style="flex:1">
+        <label class="gh-field-label" for="gh-visibility">Visibility</label>
         <select id="gh-visibility" style="width:100%;box-sizing:border-box;background:var(--bg);border:1px solid var(--border);color:var(--text);font-family:var(--font-ui);font-size:14px;padding:9px 12px;border-radius:8px;outline:none">
           <option value="private" selected>Private</option>
           <option value="public">Public</option>
         </select>
       </div>
+      </div>
+      <p class="gh-help-text">A new GitHub repository will be created on your first backup.</p>
     </div>
-    <label style="display:block;font-size:12px;color:var(--text-dim,#8a8f98);margin-bottom:4px">Commit message</label>
-    <input id="gh-commit-msg" autocomplete="off" value="Backup from TexLocal"
+    <label class="gh-field-label gh-veiled" for="gh-commit-msg">Backup note <span>(optional)</span></label>
+    <!-- v5.8.0p2 — optional means empty: default note is a placeholder, not a value (JS + backend both fall back to it) -->
+    <input id="gh-commit-msg" class="gh-veiled" autocomplete="off" placeholder="Backup from TexLocal"
       style="width:100%;box-sizing:border-box;background:var(--bg);border:1px solid var(--border);color:var(--text);font-family:var(--font-ui);font-size:14px;padding:9px 12px;border-radius:8px;outline:none;margin-bottom:6px">
-    <div id="gh-result" style="display:none;font-size:12.5px;line-height:1.5;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-top:10px;max-height:180px;overflow:auto;white-space:pre-wrap;font-family:var(--font-code)"></div>
+    <div id="gh-result" class="gh-result gh-veiled" data-state="info" style="display:none" role="status" aria-live="polite">
+      <div id="gh-result-summary" class="gh-result-summary"></div>
+      <a id="gh-result-link" class="gh-result-link" target="_blank" rel="noopener" style="display:none">View on GitHub</a>
+      <details id="gh-result-details" style="display:none">
+        <summary>Technical details</summary>
+        <pre id="gh-result-technical"></pre>
+      </details>
+    </div>
     <div class="modal-actions" style="margin-top:16px">
       <button class="btn btn-ghost" onclick="closeModal('modal-github')">Close</button>
-      <button class="btn btn-primary" id="gh-backup-btn" onclick="githubBackup()">⬆ Commit &amp; push</button>
+      <button class="btn btn-primary gh-veiled" id="gh-backup-btn" onclick="githubBackup()" disabled>Create repository &amp; back up</button>
+    </div>
+  </div>
+</div>
+
+<!-- v5.8.0 — App-owned confirmation for the account-wide gh CLI logout. -->
+<div class="modal-overlay" id="modal-github-logout" style="z-index:110" role="dialog" aria-modal="true" aria-labelledby="gh-logout-confirm-title">
+  <div class="modal" style="width:min(420px,92vw)">
+    <h3 id="gh-logout-confirm-title" style="margin-bottom:8px">Sign out of GitHub?</h3>
+    <p style="font-size:13px;line-height:1.55;color:var(--text-dim,#8a8f98);margin:0">
+      This signs GitHub CLI out on this Windows account, including other terminal sessions. You will need to sign in again before the next backup.
+    </p>
+    <div class="modal-actions" style="margin-top:20px">
+      <button class="btn btn-ghost" onclick="closeModal('modal-github-logout')">Cancel</button>
+      <button class="btn btn-danger gh-danger-action" id="gh-logout-confirm-btn" onclick="githubLogoutConfirm()">Sign out</button>
     </div>
   </div>
 </div>
@@ -377,21 +417,36 @@
     </div>
     <!-- v3.2.3 — Editor theme is independent of UI theme so users can pair
          dark UI with light editor (good for long writing sessions) or vice versa. -->
+    <!-- v5.3.0 — Editor theme is now a named-preset dropdown (grouped Light/Dark),
+         each preset bundling background + syntax palette. Options are populated
+         from the CM6 theme registry by _populateEditorThemes() at init. Renders
+         under CM6; CM5 (?cm=5) degrades to the preset's light/dark appearance. -->
     <div class="setting-row">
-      <span class="setting-label" title="Color theme for the code editor (independent of UI theme)">Editor theme</span>
+      <span class="setting-label" title="Named color theme for the code editor — each preset pairs a background with a matching syntax palette (independent of UI theme)">Editor theme</span>
+      <select id="editor-theme-select" class="settings-select" onchange="setEditorScheme(this.value)" aria-label="Editor theme"></select>
+    </div>
+    <!-- v5.2.0 — PDF preview darkness is independent of the editor theme.
+         "Paper" = always white (the document as it prints), "Match" = follow
+         the editor theme (pre-v5.2.0 behavior), "Dark" = always inverted. -->
+    <div class="setting-row">
+      <span class="setting-label" title="Background of the PDF preview — independent of the editor theme. Paper = always white, Match = follow editor theme, Dark = always inverted.">PDF preview</span>
       <div class="theme-opt-group">
-        <button class="theme-opt" id="editor-theme-light-btn" onclick="setEditorTheme('light')" title="Light" aria-label="Light editor theme"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none" aria-hidden="true" style="vertical-align:-3px"><circle cx="12" cy="12" r="4"/><line x1="12" y1="3" x2="12" y2="4"/><line x1="12" y1="20" x2="12" y2="21"/><line x1="3" y1="12" x2="4" y2="12"/><line x1="20" y1="12" x2="21" y2="12"/><line x1="5.64" y1="5.64" x2="6.35" y2="6.35"/><line x1="17.65" y1="17.65" x2="18.36" y2="18.36"/><line x1="5.64" y1="18.36" x2="6.35" y2="17.65"/><line x1="17.65" y1="6.35" x2="18.36" y2="5.64"/></svg> Light</button>
-        <button class="theme-opt" id="editor-theme-dark-btn" onclick="setEditorTheme('dark')" title="Dark" aria-label="Dark editor theme"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none" aria-hidden="true" style="vertical-align:-3px"><path d="M12 3c.132 0 .263 0 .393 0a7.5 7.5 0 0 0 7.92 12.446a9 9 0 1 1-8.313-12.454z"/></svg> Dark</button>
+        <button class="theme-opt" id="pdf-preview-paper-btn" onclick="setPdfPreview('paper')" title="Always white paper" aria-label="Paper PDF preview"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none" aria-hidden="true" style="vertical-align:-3px"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg> Paper</button>
+        <button class="theme-opt" id="pdf-preview-match-btn" onclick="setPdfPreview('match')" title="Follow the editor theme" aria-label="Match editor theme"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none" aria-hidden="true" style="vertical-align:-3px"><path d="M12 3a9 9 0 0 0 0 18 9 9 0 0 0 0-18z"/><path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor" stroke="none"/></svg> Match</button>
+        <button class="theme-opt" id="pdf-preview-dark-btn" onclick="setPdfPreview('dark')" title="Always dark (inverted)" aria-label="Dark PDF preview"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none" aria-hidden="true" style="vertical-align:-3px"><path d="M12 3c.132 0 .263 0 .393 0a7.5 7.5 0 0 0 7.92 12.446a9 9 0 1 1-8.313-12.454z"/></svg> Dark</button>
       </div>
     </div>
-    <!-- v4.7.9 — Appearance theme: accent color scheme for UI text & buttons.
-         Independent of the dark/light Theme above. Does NOT change the app icon. -->
+    <!-- v5.x — Accent color: UI accent scheme for text, buttons, links & icons.
+         Independent of the dark/light Theme above. Does NOT change the app icon.
+         Dropdown so new accent colors can be added without UI churn (add an
+         <option> here + a [data-appearance="name"] block in editor.css + the
+         name to APPEARANCE_SCHEMES in editor.js). -->
     <div class="setting-row">
-      <span class="setting-label" title="Accent color scheme for UI text & buttons — independent of the dark/light theme. Does not change the app icon.">Appearance</span>
-      <div class="theme-opt-group">
-        <button class="theme-opt" id="appearance-default-btn" onclick="setAppearance('default')" title="Original blue scheme"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none" aria-hidden="true" style="vertical-align:-3px"><circle cx="12" cy="12" r="9"/></svg> Default</button>
-        <button class="theme-opt" id="appearance-cerulean-btn" onclick="setAppearance('cerulean')" title="Cerulean gradient scheme"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none" aria-hidden="true" style="vertical-align:-3px"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 0 0 18z" fill="currentColor" stroke="none"/></svg> Cerulean</button>
-      </div>
+      <span class="setting-label" title="Accent color scheme for UI text, buttons, links & icons — independent of the dark/light theme. Does not change the app icon or the LaTeX editor colors.">Accent color</span>
+      <select id="appearance-select" class="settings-select" onchange="setAppearance(this.value)" aria-label="Accent color">
+        <option value="default">Default</option>
+        <option value="cerulean">Cerulean</option>
+      </select>
     </div>
     </div>
       <div class="settings-pane" id="settings-pane-compile">
@@ -415,6 +470,39 @@
       <span class="setting-label" title="Skip figure rendering — much faster compile. Figures appear as empty boxes.">Draft mode (skip figures)</span>
       <label class="toggle-sw">
         <input type="checkbox" id="draft-mode-toggle" onchange="onDraftModeToggle()">
+        <div class="toggle-track"></div>
+      </label>
+    </div>
+    <!-- v5.6.0 — include the STATS.md project summary (word/citation/figure counts)
+         in the export ZIP. Global pref, default on. -->
+    <div class="setting-row">
+      <span class="setting-label" title="Include a STATS.md summary (word counts, citations, figures, equations, bib cross-check) in the exported ZIP.">Export STATS.md in ZIP</span>
+      <label class="toggle-sw">
+        <input type="checkbox" id="export-stats-toggle" onchange="onExportStatsToggle()">
+        <div class="toggle-track"></div>
+      </label>
+    </div>
+    <!-- v5.7.0p4 — Live mode fine-tuning (the ⚡ toolbar button is the on/off switch).
+         Previews compile the current chapter to _tlpreview.pdf; the full PDF is
+         never overwritten. Draft-in-live defaults OFF (real figures). -->
+    <!-- v5.8.4 — labelled divider: the two Live rows read as one group, and the
+         header explains what Live mode IS (real-time compile) since its on/off
+         switch lives in the toolbar, not here. Icon = same stroke-SVG as #live-btn. -->
+    <div class="settings-subhead">
+      <div class="settings-subhead-title"><svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none" aria-hidden="true"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>Live mode</div>
+      <div class="settings-subhead-desc">Real-time compile — previews the chapter you're editing as you type. Turn it on or off with the Live button in the toolbar; your full PDF is never overwritten.</div>
+    </div>
+    <div class="setting-row">
+      <span class="setting-label" title="How long Live mode waits after your last keystroke before compiling the preview (ms). On slow cycles the interval adapts upward automatically.">Live mode debounce (ms)</span>
+      <input type="number" id="live-debounce-input" class="settings-number"
+             min="500" max="30000" step="100" value="1000"
+             onchange="onLiveDebounceChange(this.value)"
+             title="Base debounce for Live mode (500–30000 ms)">
+    </div>
+    <div class="setting-row">
+      <span class="setting-label" title="Use draft mode (empty figure boxes) during Live previews — faster, but figures appear blank in the preview only. Your full PDF is unaffected either way.">Draft figures in Live preview</span>
+      <label class="toggle-sw">
+        <input type="checkbox" id="live-draft-toggle" onchange="onLiveDraftToggle()">
         <div class="toggle-track"></div>
       </label>
     </div>
@@ -707,8 +795,12 @@
 {
   "imports": {
     "editor": "{{ url_for('static', filename='editor.js') }}?v={{ texlocal_version }}",
+    "settings": "{{ url_for('static', filename='settings.js') }}?v={{ texlocal_version }}",
+    "quickopen": "{{ url_for('static', filename='quickopen.js') }}?v={{ texlocal_version }}",
+    "grammar": "{{ url_for('static', filename='grammar.js') }}?v={{ texlocal_version }}",
     "cm6": "{{ url_for('static', filename='vendor/cm6/cm6.bundle.js') }}?v={{ texlocal_version }}",
     "cm6-adapter": "{{ url_for('static', filename='cm6/adapter.js') }}?v={{ texlocal_version }}",
+    "cm6-themes": "{{ url_for('static', filename='cm6/themes.js') }}?v={{ texlocal_version }}",
     "files": "{{ url_for('static', filename='files.js') }}?v={{ texlocal_version }}",
     "pdfviewer": "{{ url_for('static', filename='pdfviewer.js') }}?v={{ texlocal_version }}",
     "github": "{{ url_for('static', filename='github.js') }}?v={{ texlocal_version }}",
@@ -720,7 +812,8 @@
     "autocomplete": "{{ url_for('static', filename='autocomplete.js') }}?v={{ texlocal_version }}",
     "synctex": "{{ url_for('static', filename='synctex.js') }}?v={{ texlocal_version }}",
     "spell": "{{ url_for('static', filename='spell.js') }}?v={{ texlocal_version }}",
-    "boot": "{{ url_for('static', filename='boot.js') }}?v={{ texlocal_version }}"
+    "boot": "{{ url_for('static', filename='boot.js') }}?v={{ texlocal_version }}",
+    "dropdown": "{{ url_for('static', filename='dropdown.js') }}?v={{ texlocal_version }}"
   }
 }
 </script>

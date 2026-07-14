@@ -27,6 +27,7 @@ import {
   autocompletion, completionKeymap, startCompletion, acceptCompletion,
   tags as t,
 } from "cm6"; // bare specifier → static/vendor/cm6/cm6.bundle.js via import map (added in increment 2)
+import { CM6_THEMES } from "cm6-themes"; // v5.3.0 — registry of named CM6 themes (pure data)
 
 // ── position conversion (the keystone) ───────────────────────────────
 // CM5 {line(0-based), ch} ↔ CM6 offset. `st` is an EditorState.
@@ -189,27 +190,20 @@ const _helpers = { fold: {}, hint: {}, lint: {} };
 // ── LaTeX token highlight — light + dark, matching CM5's stex token colors
 // (editor.css `.cm-s-default .cm-*` + its `[data-editor-theme="dark"]` set).
 // CM6 needs explicit HighlightStyles; CM5 shipped default token CSS.
-function _mkHighlight(dark) {
-  return HighlightStyle.define(dark ? [
-    { tag: t.keyword,   color: "#7eb6ff", fontWeight: "600" },   // \commands — sky
-    { tag: t.tagName,   color: "#6ee7b7", fontWeight: "600" },   // \begin \end — mint
-    { tag: t.comment,   color: "#6b7585", fontStyle: "italic" }, // % — muted
-    { tag: t.string,    color: "#f4a574" },                      // peach
-    { tag: t.atom,      color: "#c8a4ff" },                      // $math$ — lilac
-    { tag: t.namespace, color: "#fbbf24" },                      // builtin — amber
-    { tag: t.bracket,   color: "#93c5fd" },                      // {} [] — pale
-  ] : [
-    { tag: t.keyword,   color: "#0057b8", fontWeight: "600" },   // \commands — blue
-    { tag: t.tagName,   color: "#007a4d", fontWeight: "600" },   // \begin \end — green
-    { tag: t.comment,   color: "#8a9ab0", fontStyle: "italic" }, // % — grey
-    { tag: t.string,    color: "#9c3a00" },                      // brown
-    { tag: t.atom,      color: "#7b35b8" },                      // $math$ — purple
-    { tag: t.namespace, color: "#c07000" },                      // builtin — amber
-    { tag: t.bracket,   color: "#2a7de1" },                      // {} [] — blue
+// v5.3.0 — built from a theme registry entry's `tokens` (see cm6/themes.js).
+// Each token def is a CM6 style spec ({color, fontWeight?, fontStyle?}) keyed by
+// the 7 stex tags TexLocal colors; spread straight onto the tag row.
+function _mkHighlightFrom(tk) {
+  return HighlightStyle.define([
+    { tag: t.keyword,   ...tk.keyword },   // \commands
+    { tag: t.tagName,   ...tk.tagName },   // \begin \end
+    { tag: t.comment,   ...tk.comment },   // %
+    { tag: t.string,    ...tk.string },
+    { tag: t.atom,      ...tk.atom },      // $math$
+    { tag: t.namespace, ...tk.namespace }, // builtin
+    { tag: t.bracket,   ...tk.bracket },   // {} []
   ]);
 }
-const _hlLight = _mkHighlight(false);
-const _hlDark  = _mkHighlight(true);
 
 // ── CM6 editor theme — light + dark, mirroring editor.css's `.CodeMirror-*`
 // rules (which target CM5's DOM and never reach CM6's `.cm-*`). Native CM6
@@ -233,7 +227,11 @@ const _themeShared = {
     padding: "8px 8px 8px 6px",
   },
   ".cm-scroller": {
-    overflow: "auto", fontFamily: "var(--font-code)", lineHeight: "1.7",
+    // v5.0.2 — cursor:text over the editor area. CM5's editor.css gave `.CodeMirror`
+    // an I-beam; under CM6 that rule doesn't reach `.cm-*`, so the editor showed the
+    // default arrow. Set it on the scroller so the whole code area reads as editable
+    // (the fold-gutter overrides back to `pointer` on its own elements).
+    overflow: "auto", fontFamily: "var(--font-code)", lineHeight: "1.7", cursor: "text",
   },
   ".cm-cursor, .cm-dropCursor": { borderLeftColor: "var(--accent)", borderLeftWidth: "2px" },
   // v-CM6 vp.4 — tighten the gutter toward CM5: CM6's default line-number padding
@@ -295,34 +293,41 @@ const _themeShared = {
   ".cm-scroller::-webkit-scrollbar": { width: "10px", height: "10px" },
   ".cm-scroller::-webkit-scrollbar-thumb": { backgroundColor: "var(--border)", borderRadius: "5px" },
 };
-function _mkTheme(dark) {
-  const specific = dark ? {
-    "&": { height: "100%", backgroundColor: "#161922", color: "#e2e8f0", fontSize: "13.5px" },
-    ".cm-gutters": { backgroundColor: "#11141b", color: "#4a5365", border: "none", borderRight: "1px solid #1f2330" },
-    ".cm-lineNumbers .cm-gutterElement": { color: "#4a5365" },
-    ".cm-activeLine": { backgroundColor: "rgba(var(--accent-rgb),.07)" },
-    ".cm-activeLineGutter": { backgroundColor: "rgba(var(--accent-rgb),.10)", color: "var(--accent)" },
-    "&.cm-focused .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection": { backgroundColor: "rgba(var(--accent-rgb),.22)" },
-    ".cm-selectionMatch": { backgroundColor: "rgba(var(--accent-rgb),.18)" },
-  } : {
-    "&": { height: "100%", backgroundColor: "#ffffff", color: "#1a1a2e", fontSize: "13.5px" },
-    ".cm-gutters": { backgroundColor: "#f4f5f7", color: "#a0aab8", border: "none", borderRight: "1px solid #dde1ea" },
-    ".cm-lineNumbers .cm-gutterElement": { color: "#a0aab8" },
-    ".cm-activeLine": { backgroundColor: "rgba(var(--accent-rgb),.05)" },
-    ".cm-activeLineGutter": { backgroundColor: "rgba(var(--accent-rgb),.08)", color: "var(--accent)" },
-    "&.cm-focused .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection": { backgroundColor: "rgba(var(--accent-rgb),.18)" },
-    ".cm-selectionMatch": { backgroundColor: "rgba(var(--accent-rgb),.15)" },
+// v5.3.0 — built from a registry entry's `chrome` (bg/gutter/activeLine/selection).
+// `_themeShared` (theme-independent, var(--…)-driven chrome + caret=accent) is
+// merged in for every theme; only these hardcoded surfaces vary per theme.
+function _mkThemeFrom(c, dark) {
+  const specific = {
+    "&": { height: "100%", backgroundColor: c.bg, color: c.fg, fontSize: "13.5px" },
+    ".cm-gutters": { backgroundColor: c.gutterBg, color: c.gutterFg, border: "none", borderRight: "1px solid " + c.gutterBorder },
+    ".cm-lineNumbers .cm-gutterElement": { color: c.gutterFg },
+    ".cm-activeLine": { backgroundColor: c.activeLine },
+    ".cm-activeLineGutter": { backgroundColor: c.activeLineGutter, color: "var(--accent)" },
+    "&.cm-focused .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection": { backgroundColor: c.selection },
+    ".cm-selectionMatch": { backgroundColor: c.selectionMatch },
   };
   return EditorView.theme(Object.assign({}, _themeShared, specific), { dark });
 }
-const _themeLight = _mkTheme(false);
-const _themeDark  = _mkTheme(true);
-function _isDarkEditor() {
-  return typeof document !== "undefined" && !!document.documentElement &&
-    document.documentElement.getAttribute("data-editor-theme") === "dark";
+
+// v5.3.0 — the fine theme id lives on <html data-editor-scheme>; only the CM6
+// adapter reads it. Fall back to the coarse data-editor-theme (light|dark) so a
+// first paint before the scheme attr is set, or an old install, still resolves.
+function _currentSchemeId() {
+  if (typeof document === "undefined" || !document.documentElement) return "paper";
+  const s = document.documentElement.getAttribute("data-editor-scheme");
+  if (s && CM6_THEMES[s]) return s;
+  return document.documentElement.getAttribute("data-editor-theme") === "dark" ? "midnight" : "paper";
 }
-function _themeBundle(dark) {
-  return [ dark ? _themeDark : _themeLight, syntaxHighlighting(dark ? _hlDark : _hlLight) ];
+
+// Built themes memoized per id (rebuilding the EditorView.theme + HighlightStyle
+// on every toggle is wasteful; the color data is static).
+const _themeCache = {};
+function _buildTheme(id) {
+  const th = CM6_THEMES[id] || CM6_THEMES.paper;
+  if (!_themeCache[id]) {
+    _themeCache[id] = [ _mkThemeFrom(th.chrome, th.appearance === "dark"), syntaxHighlighting(_mkHighlightFrom(th.tokens)) ];
+  }
+  return _themeCache[id];
 }
 
 // One MutationObserver watches <html data-editor-theme> and live-reconfigures the
@@ -333,9 +338,11 @@ function _ensureThemeObserver() {
   if (_themeObserver || typeof MutationObserver === "undefined" || typeof document === "undefined") return;
   _themeObserver = new MutationObserver(() => {
     if (_activeView && _activeThemeComp)
-      _activeView.dispatch({ effects: _activeThemeComp.reconfigure(_themeBundle(_isDarkEditor())) });
+      _activeView.dispatch({ effects: _activeThemeComp.reconfigure(_buildTheme(_currentSchemeId())) });
   });
-  _themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["data-editor-theme"] });
+  // v5.3.0 — watch the fine scheme id (primary) + the coarse light/dark attr (so
+  // a bare setEditorTheme still repaints CM6). Either change reconfigures.
+  _themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["data-editor-scheme", "data-editor-theme"] });
 }
 
 // ── the facade factory ───────────────────────────────────────────────
@@ -367,6 +374,12 @@ function makeCM(view, comps, hub) {
     setSelection:      (anchor, head) => view.dispatch({ selection: { anchor: _posToOffset(st(), anchor), head: _posToOffset(st(), head != null ? head : anchor) } }), // v-CM6 inc8 — snippet placeholder select
     scrollIntoView:    (pos, margin) => view.dispatch({ effects: EditorView.scrollIntoView(_posToOffset(st(), pos), { y: "center", yMargin: (typeof margin === "number") ? margin : 0 }) }),
     coordsChar:        (c) => { const off = view.posAtCoords({ x: c.left, y: c.top }); return off == null ? { line: 0, ch: 0 } : _offsetToPos(st(), off); },
+    cursorCoords:      (where, _mode) => { // v5.7.0p6 — caret overlay anchor; CM6 coordsAtPos returns client coords = CM5 mode "window"
+                          const s = st().selection.main;
+                          const off = (where == null || where === true) ? s.head : where === false ? s.anchor : _posToOffset(st(), where);
+                          const r = view.coordsAtPos(off);
+                          return r ? { left: r.left, top: r.top, bottom: r.bottom } : null;
+                        },
     getViewport:       () => { const v = view.viewport; return { from: st().doc.lineAt(v.from).number - 1, to: st().doc.lineAt(v.to).number - 1 }; },
     // focus / DOM
     focus:             () => view.focus(),
@@ -624,7 +637,7 @@ export function createCm6Editor(host, { value = "", tabSize = 2, lineWrapping = 
       comps.indent.of(indentUnit.of(" ".repeat(tabSize))),
       comps.wrap.of(lineWrapping ? EditorView.lineWrapping : []),
       comps.readOnly.of(EditorState.readOnly.of(false)),
-      comps.theme.of(_themeBundle(_isDarkEditor())), // v-CM6 vp — light/dark editor theme + token highlight
+      comps.theme.of(_buildTheme(_currentSchemeId())), // v5.3.0 — named editor theme (registry) + token highlight
       // v-CM6 inc8 — Tab accepts completion FIRST (higher precedence than the
       // appKeys snippet-Tab below); if no completion is active it returns false
       // and Tab falls through to the snippet handler in appKeys.

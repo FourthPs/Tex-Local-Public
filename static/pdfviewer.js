@@ -1,5 +1,6 @@
-import { CM, compile, currentFile, currentProject, desktopSave, escapeHtml, mainFile } from "editor";
+import { CM, compile, currentFile, currentProject, desktopSave, escapeHtml, mainFile, switchGen } from "editor";
 import { openFile } from "files";
+import { syncForwardQuiet } from "synctex"; // v5.7.0p7 — caret anchor on full↔preview swaps (call-time only, cycle-safe)
 
 // static/pdfviewer.js — TexLocal Phase 2 module split (v5.0.0-beta.2.0)
 // Lifted verbatim from editor.js (CM-light cluster). Interim shared-scope:
@@ -17,11 +18,21 @@ let pdfJsPageHts    = [null]; // page heights in pt (1-indexed), for coordinate 
 let pdfJsUrl        = null;   // last loaded url (for zoom re-render)
 let pdfJsLastUrl    = null;   // url that pdfJsDoc was loaded from (skip refetch on zoom)
 let pdfJsRendering  = false;
-let pdfPendingScale = null;   // queued zoom request that hit the rendering lock
+let pdfPendingRender = null;  // latest render request queued behind the rendering lock
 let pdfTextCache    = {};     // page number → TextContent items cache (reused across zooms)
 let pdfZoomTimer    = null;   // debounce timer for zoom re-render
 let pdfMeasureCtx   = null;   // offscreen 2d ctx for fast text-width measurement
 let pdfRenderToken  = 0;      // monotonically incremented; cancels stale renders on rapid zoom
+
+// v5.7.0p7 — name of the file the viewer is currently displaying (parsed from
+// the last-loaded /pdf URL). Lets SyncTeX + swapPDF distinguish the ⚡ preview
+// (_tlpreview.pdf) from the full document without a second piece of state to
+// keep in sync — pdfJsUrl is already the single source of truth.
+export function pdfDisplayedName() {
+  if (!pdfJsUrl) return null;
+  try { return new URL(pdfJsUrl, location.origin).searchParams.get("file"); }
+  catch (_) { return null; }
+}
 
 // Offscreen canvas for measuring glyph widths during text-layer build.
 // Replaces the previous probe.getBoundingClientRect() approach — that call
@@ -268,7 +279,10 @@ function _attachPdfBackwardSearch(wrap, pageNum) {
     const clickY = e.clientY - rect.top;
     const pdf_x = clickX / pdfJsScale;
     const pdf_y = clickY / pdfJsScale;
-    const pdfName = mainFile.replace(/\.tex$/, ".pdf");
+    // v5.7.0p7 — sync against what the viewer is SHOWING: while ⚡ Live displays
+    // _tlpreview.pdf, the full document's synctex is a different doc (chapter-
+    // only, different physical pages) → wrong-line jumps on fresh text.
+    const pdfName = pdfDisplayedName() || mainFile.replace(/\.tex$/, ".pdf");
 
     const status = document.getElementById("compile-status");
     status.textContent = "\u21a9 Searching\u2026";
@@ -393,8 +407,10 @@ export function pdfScrollToPage(pageNum) {
 }
 
 export async function showPDF(filename) {
+  const context = { project: currentProject, generation: switchGen };
+  if (!context.project) return false;
   const ts  = Date.now();
-  const url = `/api/projects/${currentProject}/pdf?file=${encodeURIComponent(filename)}&t=${ts}`;
+  const url = `/api/projects/${encodeURIComponent(context.project)}/pdf?file=${encodeURIComponent(filename)}&t=${ts}`;
   pdfJsUrl  = url;
   pdfTextCache = {};  // clear text cache on new PDF load
   pdfOutlineLoaded = false;
@@ -406,11 +422,12 @@ export async function showPDF(filename) {
 
   ph.style.display        = "none";
   container.style.display = "flex";
+  container.style.color   = "";
   container.innerHTML     = '<div style="color:var(--muted);padding:32px;text-align:center;font-size:12px">Loading PDF…</div>';
   showZoomControls(true);
   document.getElementById("pdf-zoom-label").textContent = Math.round(pdfJsScale * 100) + "%";
 
-  dl.href = `/api/projects/${currentProject}/pdf?file=${encodeURIComponent(filename)}`;
+  dl.href = `/api/projects/${encodeURIComponent(context.project)}/pdf?file=${encodeURIComponent(filename)}`;
   dl.download = filename;
   dl.style.display = "inline";
   // v4.7.6 — the WebView2 desktop build ignores <a download> (no download
@@ -421,17 +438,147 @@ export async function showPDF(filename) {
     ? (e) => { e.preventDefault(); desktopSave(dl.getAttribute("href"), filename); }
     : null;
 
-  await renderPdfFromUrl(url, true);   // force reload — new compile output
+  await renderPdfFromUrl(url, true, context);   // force reload — new compile output
+  return currentProject === context.project && switchGen === context.generation;
+}
+
+// v5.7.0 — Layer D (real_time_plan.md §2): seamless in-place PDF refresh.
+// showPDF() blanks the container ("Loading PDF…") and rebuilds from scratch —
+// right for a first open / project switch, wrong for a recompile of the SAME
+// document, where it kills the reading position and restarts lazy raster from
+// page 1 (the #1 "not seamless" symptom, plan §1). swapPDF instead:
+//   1. awaits getDocument() fully BEFORE any DOM change — old pages stay
+//      visible and interactive during the download/parse;
+//   2. snapshots the scroll fraction and restores it right after the wraps
+//      are rebuilt (pdfZoom's "frac" restore pattern);
+//   3. keeps the last-good pages untouched on load failure (no error blank);
+//   4. falls back to showPDF() when nothing is on screen yet or the target
+//      file changed (scroll restore is meaningless across documents).
+// v5.7.0p5 — pixel snapshot of the pages currently in view, fixed over the
+// container. Held on top while swapPDF rebuilds + re-rasterises underneath,
+// so the user never sees the white placeholders (plan §0: keep the old DOM
+// visible until the new pages are ready). Canvas cloneNode() does NOT copy
+// the bitmap — drawImage does. The computed CSS filter is copied so the
+// dark-mode inverted view doesn't flash un-inverted.
+function _swapSnapshotOverlay(container) {
+  const rect = container.getBoundingClientRect();
+  const ov = document.createElement("div");
+  ov.style.cssText = "position:fixed;left:" + rect.left + "px;top:" + rect.top +
+    "px;width:" + rect.width + "px;height:" + rect.height +
+    "px;overflow:hidden;z-index:50;pointer-events:none;";
+  container.querySelectorAll(".pdf-page-wrap canvas").forEach(cv => {
+    const r = cv.getBoundingClientRect();
+    if (r.bottom < rect.top || r.top > rect.bottom) return;   // off-screen
+    const copy = document.createElement("canvas");
+    copy.width  = cv.width;
+    copy.height = cv.height;
+    try { copy.getContext("2d").drawImage(cv, 0, 0); } catch (_) { return; }
+    copy.style.cssText = "position:absolute;left:" + (r.left - rect.left) +
+      "px;top:" + (r.top - rect.top) + "px;width:" + r.width +
+      "px;height:" + r.height + "px;";
+    copy.style.filter = getComputedStyle(cv).filter;   // dark-mode invert
+    ov.appendChild(copy);
+  });
+  document.body.appendChild(ov);
+  return ov;
+}
+
+export async function swapPDF(filename, opts = {}) {
+  const context = { project: currentProject, generation: switchGen };
+  const contextIsCurrent = () => currentProject === context.project &&
+                                  switchGen === context.generation;
+  const container = document.getElementById("pdf-canvas-container");
+  const dl        = document.getElementById("pdf-download");
+  // v5.7.0p4 — opts.preview (live cycles): the swapped-in file is _tlpreview.pdf
+  // while the Download button stays pointed at the REAL full PDF, so the
+  // download-name guard must be skipped (and dl is deliberately not touched —
+  // downloading during Live mode gives the full document, not the preview).
+  const dlMismatch = !opts.preview && (!dl || dl.download !== filename);
+  if (!pdfJsDoc || !container || container.style.display === "none"
+      || !container.querySelector(".pdf-page-wrap") || dlMismatch) {
+    return showPDF(filename);
+  }
+  const ts  = Date.now();
+  const url = `/api/projects/${encodeURIComponent(context.project)}/pdf?file=${encodeURIComponent(filename)}&t=${ts}`;
+
+  let newDoc;
+  try {
+    newDoc = await pdfjsLib.getDocument(url).promise;
+  } catch (_) {
+    return;   // keep last-good pages; the compile-status line reports state
+  }
+  if (!contextIsCurrent()) return;
+
+  const frac = container.scrollTop / (container.scrollHeight || 1);
+  // v5.7.0p7 — is this swap a full↔preview TRANSITION? (document shape changes:
+  // the preview is chapter-only, so a scroll fraction is meaningless across it)
+  const nameChanged = pdfDisplayedName() !== filename;
+
+  // Commit. renderPdfFromUrl(url, false) sees pdfJsLastUrl === url with an
+  // already-loaded pdfJsDoc, so it skips getDocument and only rebuilds the
+  // cheap correctly-sized placeholders + re-attaches the lazy-raster observer.
+  pdfJsDoc         = newDoc;
+  pdfJsUrl         = url;
+  pdfJsLastUrl     = url;
+  pdfTextCache     = {};
+  pdfOutlineLoaded = false;
+  pdfOutlineData   = [];
+  // Page-jump labels normally refresh inside the getDocument branch we skip.
+  const ptl = document.getElementById("pdf-page-total");
+  if (ptl) ptl.textContent = "/ " + newDoc.numPages;
+  const pin = document.getElementById("pdf-page-input");
+  if (pin) pin.max = newDoc.numPages;
+
+  // v5.7.0p5 — double-buffer: hold a pixel copy of the visible pages on top
+  // while the wrap rebuild + re-raster happens underneath; drop it only when
+  // the pages now in view are fully rendered → zero visible flash. On any
+  // error the finally still removes the overlay (worst case = old behavior).
+  const overlay = _swapSnapshotOverlay(container);
+  try {
+    await renderPdfFromUrl(url, false, context);
+    if (!contextIsCurrent()) return;
+    // v5.7.0p7 — on full↔preview transitions the frac restore landed on an
+    // arbitrary page (looked like "page 1 then auto-scroll", PoL 2026-07-11).
+    // Anchor by SyncTeX from the caret instead — the preview opens right at
+    // the paragraph being edited. Same-document swaps keep the frac restore;
+    // any anchor miss (file not in \includeonly, no synctex) falls back too.
+    let anchored = false;
+    if (nameChanged) {
+      try { anchored = await syncForwardQuiet(filename); } catch (_) { anchored = false; }
+      if (!contextIsCurrent()) return;
+    }
+    // Explicit instant scroll — never rely on the container's CSS scroll
+    // behavior (a CSS smooth here = visible glide from page 1 + the raster
+    // pass below reading a mid-animation scrollTop; bit us in v5.7.0p7).
+    if (!anchored) container.scrollTo({ top: frac * container.scrollHeight, behavior: "auto" });
+    // Rasterise the pages now in view BEFORE dropping the snapshot (the lazy
+    // observer would get there too, but we must know when they're done).
+    const top = container.scrollTop, bot = top + container.clientHeight;
+    const jobs = [];
+    container.querySelectorAll(".pdf-page-wrap").forEach(w => {
+      if (w.offsetTop < bot && w.offsetTop + w.offsetHeight > top)
+        jobs.push(_renderPdfPageContent(parseInt(w.dataset.page, 10)));
+    });
+    await Promise.all(jobs);
+    if (!contextIsCurrent()) return;
+  } finally {
+    overlay.remove();
+  }
 }
 
 // `forceReload`: re-fetch the PDF (called from showPDF after compile).
 // When false (zoom), skip getDocument() and reuse the loaded pdfJsDoc — saves
 // the network round-trip on each zoom step.
-async function renderPdfFromUrl(url, forceReload) {
+async function renderPdfFromUrl(url, forceReload, context) {
+  const renderContext = context || { project: currentProject, generation: switchGen };
+  const contextIsCurrent = () => currentProject === renderContext.project &&
+                                  switchGen === renderContext.generation;
+  if (!contextIsCurrent()) return false;
   if (pdfJsRendering) {
-    // Remember the most recent zoom request so it isn't dropped silently.
-    pdfPendingScale = pdfJsScale;
-    return;
+    // Remember the newest request, including its project generation. This lets
+    // a project-B render queue behind project A without inheriting A's context.
+    pdfPendingRender = { url, forceReload, context: renderContext };
+    return false;
   }
   pdfJsRendering = true;
   // Bump the render token; any in-flight async work that finishes after a
@@ -440,7 +587,9 @@ async function renderPdfFromUrl(url, forceReload) {
   const container = document.getElementById("pdf-canvas-container");
   try {
     if (forceReload || !pdfJsDoc || pdfJsLastUrl !== url) {
-      pdfJsDoc     = await pdfjsLib.getDocument(url).promise;
+      const loadedDoc = await pdfjsLib.getDocument(url).promise;
+      if (myToken !== pdfRenderToken || !contextIsCurrent()) return false;
+      pdfJsDoc     = loadedDoc;
       pdfJsLastUrl = url;
       pdfTextCache = {};   // PDF changed → text content cache is now stale
       // v3.2.3 — Refresh the page-jump total label NOW that we know numPages
@@ -469,7 +618,7 @@ async function renderPdfFromUrl(url, forceReload) {
     // pdfJsPageHts entry are corrected then — a mixed-size doc just gets a
     // small one-time scroll nudge on the odd page.
     const _p1   = await pdfJsDoc.getPage(1);
-    if (myToken !== pdfRenderToken) return;
+    if (myToken !== pdfRenderToken || !contextIsCurrent()) return false;
     const _vp1  = _p1.getViewport({ scale: 1 });
     const _vpS  = _p1.getViewport({ scale: pdfJsScale });
     const cssW  = Math.floor(_vpS.width);
@@ -477,7 +626,7 @@ async function renderPdfFromUrl(url, forceReload) {
     const uniH1 = _vp1.height;   // scale-1 height estimate used for jumps
 
     for (let n = 1; n <= pdfJsDoc.numPages; n++) {
-      if (myToken !== pdfRenderToken) return;
+      if (myToken !== pdfRenderToken || !contextIsCurrent()) return false;
       pdfJsPageHts.push(uniH1);
 
       const wrap = document.createElement("div");
@@ -494,25 +643,32 @@ async function renderPdfFromUrl(url, forceReload) {
 
     // Rasterise on-screen (and soon-to-be-on-screen) pages lazily.
     _attachPdfLazyRenderObserver();
+    return true;
   } catch (err) {
-    container.innerHTML = `<div style="color:var(--red);padding:24px;font-size:12px">PDF load error: ${err.message}</div>`;
+    if (contextIsCurrent()) {
+      container.textContent = "PDF load error: " + (err.message || err);
+      container.style.color = "var(--red)";
+    }
+    return false;
   } finally {
     pdfJsRendering = false;
     // v3.2.3 — Re-attach the page-visibility observer to the freshly-rendered
     // pages. Done in `finally` so zoom re-renders also re-bind, and so the
     // observer never lingers on detached nodes from a previous render.
-    _attachPdfPageObserver();
+    if (contextIsCurrent()) _attachPdfPageObserver();
     // Drain a queued zoom that arrived while we were busy. We re-render at
     // whatever pdfJsScale currently holds — pdfZoom() updated it synchronously
     // before queuing, so the latest user intent wins.
-    if (pdfPendingScale !== null) {
-      pdfPendingScale = null;
-      if (pdfJsUrl) setTimeout(() => renderPdfFromUrl(pdfJsUrl, false), 0);
+    if (pdfPendingRender) {
+      const pending = pdfPendingRender;
+      pdfPendingRender = null;
+      setTimeout(() => renderPdfFromUrl(
+        pending.url, pending.forceReload, pending.context), 0);
     }
     // v3.2.2 — refresh PDF outline button visibility. We only show 🗂
     // when the loaded PDF actually has bookmarks (most LaTeX docs with
     // hyperref do; raw beamer or quick test docs may not).
-    if (pdfJsDoc && !pdfOutlineLoaded) {
+    if (contextIsCurrent() && pdfJsDoc && !pdfOutlineLoaded) {
       loadPdfOutline().then(() => {
         const btn = document.getElementById("pdf-outline-btn");
         if (btn) btn.style.display = pdfOutlineData.length ? "inline-block" : "none";
@@ -608,7 +764,8 @@ export async function pdfZoom(delta, anchor) {
   pdfZoomTimer = setTimeout(async () => {
     pdfZoomTimer = null;
     // forceReload=false → reuse pdfJsDoc (no network refetch on zoom)
-    await renderPdfFromUrl(pdfJsUrl, false);
+    const rendered = await renderPdfFromUrl(pdfJsUrl, false);
+    if (!rendered) return;
     if (restore.kind === "frac") {
       container.scrollTop = restore.frac * container.scrollHeight;
     }
@@ -670,7 +827,7 @@ attachPdfWheelZoom();
 //   y2 = baseline of bottommost visual line (from TOP of page) = max(baseline) across records
 //   h  = glyph ascent of one line (~8-12pt), used for descent calculation
 // w — optional text width in pt (word-level highlight)
-export function pdfScrollToPosition(page, x, y, h, w, y2) {
+export function pdfScrollToPosition(page, x, y, h, w, y2, opts = {}) {
   const wrap = document.getElementById(`pdf-page-${page}`);
   if (!wrap) return;
   // v4.5.0 — with lazy rendering the synctex target page may not be rasterised
@@ -687,25 +844,34 @@ export function pdfScrollToPosition(page, x, y, h, w, y2) {
   const canvasYtop = Math.max(0, y * pdfJsScale);
   const canvasHpx  = (yBot - y + descent) * pdfJsScale;
 
-  const hl = document.createElement("div");
-  hl.className = "pdf-highlight";
-  hl.style.top    = canvasYtop + "px";
-  hl.style.height = canvasHpx + "px";
+  // v5.7.0p9 — opts.noHighlight: quiet transition anchors (⚡ on/off swaps) scroll
+  // to the caret but must NOT flash a highlight box — that read as a phantom blink
+  // on leaving Live mode. The stale-highlight clear above still runs, so any
+  // lingering box is removed either way.
+  if (!opts.noHighlight) {
+    const hl = document.createElement("div");
+    hl.className = "pdf-highlight";
+    hl.style.top    = canvasYtop + "px";
+    hl.style.height = canvasHpx + "px";
 
-  if (w && w > 0) {
-    // word-level highlight: position and width from text item
-    hl.style.left  = (x * pdfJsScale) + "px";
-    hl.style.right = "auto";
-    hl.style.width = (w * pdfJsScale) + "px";
+    if (w && w > 0) {
+      // word-level highlight: position and width from text item
+      hl.style.left  = (x * pdfJsScale) + "px";
+      hl.style.right = "auto";
+      hl.style.width = (w * pdfJsScale) + "px";
+    }
+    // else: full-width (left:0; right:0 from CSS)
+
+    wrap.appendChild(hl);
+    setTimeout(() => hl.remove(), 2500);
   }
-  // else: full-width (left:0; right:0 from CSS)
-
-  wrap.appendChild(hl);
-  setTimeout(() => hl.remove(), 2500);
 
   // scroll so the FIRST line of the highlight is in the upper-centre of the PDF pane
   const container  = document.getElementById("pdf-canvas-container");
   const firstLineY = canvasYtop + glyphH * pdfJsScale / 2;  // centre of first (topmost) line
   const target     = wrap.offsetTop + firstLineY - container.clientHeight / 3;
-  container.scrollTo({ top: Math.max(0, target), behavior: "smooth" });
+  // v5.7.0p7 — opts.instant: swapPDF's transition anchor runs under the
+  // snapshot overlay and the in-view raster pass reads scrollTop right after,
+  // so the scroll must land synchronously; smooth stays for user sync clicks.
+  container.scrollTo({ top: Math.max(0, target), behavior: opts.instant ? "auto" : "smooth" });
 }

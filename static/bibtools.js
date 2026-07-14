@@ -304,10 +304,22 @@ export async function renderOutlinePanel() {
     data.forEach(item => {
       const div = document.createElement("div");
       div.className = `ol-row ol-indent-${_OL_INDENT[item.level] || 0}`;
-      div.innerHTML =
-        `<span class="ol-level">${_OL_LEVEL_LABEL[item.level] || item.level}</span>` +
-        `<span class="ol-title" title="${item.title.replace(/"/g,'&quot;')}">${item.title || '(untitled)'}</span>` +
-        `<span class="ol-file" title="${item.file}">${item.file.split('/').pop()}</span>`;
+      // v5.7.1 (#3, codex High) — section titles come from editable .tex source,
+      // so build these with textContent/title (DOM) instead of innerHTML. An
+      // apostrophe/quote/angle-bracket/handler in a \section title used to reach
+      // an HTML sink here.
+      const _lvl = document.createElement("span");
+      _lvl.className = "ol-level";
+      _lvl.textContent = _OL_LEVEL_LABEL[item.level] || item.level;
+      const _ttl = document.createElement("span");
+      _ttl.className = "ol-title";
+      _ttl.title = item.title || "";
+      _ttl.textContent = item.title || "(untitled)";
+      const _fl = document.createElement("span");
+      _fl.className = "ol-file";
+      _fl.title = item.file || "";
+      _fl.textContent = (item.file || "").split("/").pop();
+      div.append(_lvl, _ttl, _fl);
       div.addEventListener("click", async () => {
         await openFile(item.file);
         // v4.7.10 — /outline now returns 1-based lines (was 0-based); convert

@@ -1,5 +1,5 @@
 import { CM, compile, currentFile, currentProject, mainFile } from "editor";
-import { pdfScrollToPosition } from "pdfviewer";
+import { pdfDisplayedName, pdfScrollToPosition } from "pdfviewer";
 
 // static/synctex.js — TexLocal Phase 3 module split (v5.0.0-beta.3.0)
 // SyncTeX forward search (editor → PDF). Backward search already lives in pdfviewer.js (Phase 2).
@@ -29,7 +29,13 @@ export async function syncForward() {
   const cur  = CM.getCursor();
   const line = cur.line + 1;
   const col  = cur.ch  + 1;
-  const pdfName = mainFile.replace(/\.tex$/, ".pdf");
+  // v5.7.0p7 — sync against what the viewer is SHOWING. While ⚡ Live displays
+  // _tlpreview.pdf, the full document's .synctex is a DIFFERENT doc (chapter-
+  // only preview, different physical pages) → the old behavior jumped to weird
+  // lines on fresh text; _tlpreview.synctex.gz exists (quick compiles keep
+  // -synctex=1) and matches the preview exactly, so fresh text is syncable
+  // as soon as the live cycle lands.
+  const pdfName = pdfDisplayedName() || mainFile.replace(/\.tex$/, ".pdf");
 
   const container = document.getElementById("pdf-canvas-container");
   if (container.style.display === "none") {
@@ -84,3 +90,29 @@ export async function syncForward() {
   }
 }
 
+// v5.7.0p7 — quiet forward sync, used by swapPDF as the caret anchor on
+// full↔preview transitions: same backend resolve as syncForward but no
+// button/status side-effects, INSTANT scroll (it runs under the swap snapshot
+// overlay, which reads scrollTop right after), and resolves false on any miss
+// (file not in \includeonly's Input map, no synctex yet, network) so the
+// caller can fall back to the fraction restore.
+export async function syncForwardQuiet(pdfName) {
+  if (!currentProject || !currentFile || !currentFile.endsWith(".tex")) return false;
+  const cur = CM.getCursor();
+  try {
+    const res = await fetch(
+      `/api/projects/${encodeURIComponent(currentProject)}/synctex/forward` +
+      `?file=${encodeURIComponent(currentFile)}&line=${cur.line + 1}&col=${cur.ch + 1}` +
+      `&pdf=${encodeURIComponent(pdfName)}`
+    );
+    const data = await res.json();
+    if (!data.ok) return false;
+    // Stale synctex can point past the new doc's last page (no wrap) —
+    // report a miss so the caller's frac fallback still positions something.
+    if (!document.getElementById(`pdf-page-${data.page}`)) return false;
+    pdfScrollToPosition(data.page, data.x, data.y, data.h || 10, 0, data.y2 || 0, { instant: true, noHighlight: true });
+    return true;
+  } catch (_) {
+    return false;
+  }
+}

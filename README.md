@@ -3,8 +3,8 @@
 A lightweight, self-hosted LaTeX editor that runs entirely on your own machine — no internet dependency, no compile timeout, full multi-file project support. Use it as a browser app or install the standalone Windows desktop build with bundled MiKTeX.
 
 ![Version](https://img.shields.io/badge/version-5.8.4-informational)
-![Python](https://img.shields.io/badge/Python-3.8%2B-blue)
-![Flask](https://img.shields.io/badge/Flask-2.x-lightgrey)
+![Python](https://img.shields.io/badge/Python-3.10--3.12-blue)
+![Flask](https://img.shields.io/badge/Flask-3.1-lightgrey)
 ![Platform](https://img.shields.io/badge/Desktop-Windows-0078d6)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
@@ -122,7 +122,7 @@ Source mode uses whatever LaTeX distribution is on your system PATH.
 
 ## Requirements (source mode only)
 
-- Python 3.8+
+- Python 3.10–3.12
 - A LaTeX distribution:
   - **Windows** — [MiKTeX](https://miktex.org/download)
   - **macOS** — [MacTeX](https://www.tug.org/mactex/) or `brew install --cask mactex`

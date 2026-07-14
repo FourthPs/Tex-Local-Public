@@ -13,6 +13,7 @@ import { openPackageManager } from "panels";
 let lastParsedLog = null;   // เก็บ parsed result ล่าสุดไว้เปิด Logs panel ได้เสมอ
 export function _ssLastParsedLog(v){ lastParsedLog = v; }  // v5.0.0-beta.4.0 — Phase 4 ESM prep (see editor.js)
 let logsActiveTab = "all";  // tab ที่เลือกอยู่ใน Logs panel
+let errorPanelPdfState = { available: false, fresh: false };
 
 export function parseLatexErrors(log) {
   const errors = [], warnings = [], infos = [];
@@ -202,9 +203,13 @@ function renderErrorCards(items, cards) {
   });
 }
 
-export function showErrorPanel({ errors, warnings }) {
+export function showErrorPanel({ errors, warnings }, pdfState = {}) {
   const panel = document.getElementById("error-panel");
   const title = document.getElementById("pdf-pane-title");
+  errorPanelPdfState = {
+    available: Boolean(pdfState.available),
+    fresh: Boolean(pdfState.fresh),
+  };
 
   document.getElementById("pdf-canvas-container").style.display = "none";
   document.getElementById("pdf-placeholder").style.display = "none";
@@ -219,6 +224,7 @@ export function showErrorPanel({ errors, warnings }) {
         ${errCount && warnCount ? "<span style='color:var(--muted)'>&nbsp;·&nbsp;</span>" : ""}
         ${warnCount ? `<span style="color:var(--yellow)">! ${warnCount} warning${warnCount>1?"s":""}</span>` : ""}
       </span>
+      ${errorPanelPdfState.available ? `<button type="button" class="err-view-pdf">${errorPanelPdfState.fresh ? "View PDF" : "View previous PDF"}</button>` : ""}
     </div>
     <div class="err-cards" id="err-cards"></div>
   `;
@@ -227,6 +233,8 @@ export function showErrorPanel({ errors, warnings }) {
   panel.classList.add("visible");
 
   title.textContent = "Compile Errors";
+  const viewPdf = panel.querySelector(".err-view-pdf");
+  if (viewPdf) viewPdf.addEventListener("click", () => hideErrorPanel({ restorePdf: true }));
 
   const cards = document.getElementById("err-cards");
 
@@ -341,11 +349,22 @@ function _groupErrorItems(items) {
   return [...groups.values()];
 }
 
-export function hideErrorPanel() {
+export function hideErrorPanel({ restorePdf = false } = {}) {
   const panel = document.getElementById("error-panel");
   panel.classList.remove("visible");
   panel.innerHTML = "";
   document.getElementById("pdf-pane-title").textContent = "PDF Preview";
+  if (restorePdf) {
+    const canvas = document.getElementById("pdf-canvas-container");
+    const placeholder = document.getElementById("pdf-placeholder");
+    if (errorPanelPdfState.available) {
+      canvas.style.display = "flex";
+      placeholder.style.display = "none";
+    } else {
+      canvas.style.display = "none";
+      placeholder.style.display = "flex";
+    }
+  }
 }
 
 // ── LOGS PANEL ────────────────────────────────────────────────
@@ -404,16 +423,23 @@ export function showLogsPanel(parsed) {
   panel.innerHTML = `
     <div class="logs-tabs">
       ${tabData.map(t => `
-        <button class="logs-tab${logsActiveTab === t.id ? " active" : ""}"
-                onclick="logsActiveTab='${t.id}'; showLogsPanel(lastParsedLog)">
+        <button type="button" data-logs-tab="${t.id}" class="logs-tab${logsActiveTab === t.id ? " active" : ""}">
           ${t.label}
           <span class="lbadge ${t.bclass}">${t.items.length}</span>
         </button>`).join("")}
-      <button class="logs-close" onclick="hideLogsPanel()">✕</button>
+      <button type="button" class="logs-close">✕</button>
     </div>
     <div class="logs-cards" id="logs-cards"></div>
   `;
   panel.classList.add("visible");
+
+  panel.querySelectorAll("[data-logs-tab]").forEach(button => {
+    button.addEventListener("click", () => {
+      logsActiveTab = button.dataset.logsTab;
+      showLogsPanel(lastParsedLog);
+    });
+  });
+  panel.querySelector(".logs-close")?.addEventListener("click", hideLogsPanel);
 
   const activeTab = tabData.find(t => t.id === logsActiveTab) || tabData[0];
   renderLogsCards(activeTab.items);

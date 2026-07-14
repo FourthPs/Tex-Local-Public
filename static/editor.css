@@ -55,6 +55,21 @@
   .btn-success:hover { background: #2ec98a; transform: translateY(-1px); }
   .btn-ghost { background: transparent; color: var(--muted); border: 1px solid var(--border); }
   .btn-ghost:hover { color: var(--text); border-color: var(--accent); }
+  .btn:disabled { opacity: .48; cursor: default; transform: none; }
+  .btn:disabled:hover { transform: none; }
+  /* v5.7.0p4 — ⚡ Live mode button. Ghost by default; amber tint when active.
+     Status text (⚡ ⏳ / ⚡ ✓ / ⚡ ⚠) grows slightly — allow min-width. */
+  .btn-live { background: transparent; color: var(--muted); border: 1px solid var(--border); min-width: 38px; }
+  .btn-live:hover { color: var(--text); border-color: var(--accent); }
+  .btn-live.active { background: rgba(251,191,36,.12); color: #f59e0b; border-color: #f59e0b; }
+  .btn-live.active:hover { background: rgba(251,191,36,.22); }
+  /* v5.7.0p4 — live-cycle status = icon/border color (no emoji label swap):
+     amber pulse while compiling, green up-to-date, red error. Declared AFTER
+     .active (same specificity) so the status color wins while ⚡ is on. */
+  .btn-live.live-compiling { color: #f59e0b; border-color: #f59e0b; animation: live-pulse 1.2s ease-in-out infinite; }
+  .btn-live.live-ok  { color: var(--green); border-color: var(--green); }
+  .btn-live.live-err { color: var(--red);   border-color: var(--red); }
+  @keyframes live-pulse { 50% { opacity: .45; } }
   .btn-danger { background: transparent; color: var(--red); border: 1px solid var(--border); font-size: 11px; padding: 4px 10px; }
   .btn-danger:hover { background: var(--red); color: #fff; }
   .compile-status { font-size: 11px; color: var(--muted); }
@@ -339,9 +354,16 @@
   #pdf-canvas-container {
     position: absolute; inset: 0; z-index: 1;
     display: none; overflow-y: auto; overflow-x: auto;
-    background: #525659; padding: 16px;
+    /* v5.4.0 — desk (area around the page). --pdf-desk-bg is set by
+       setPdfPreview "match" to the editor theme's bg; unset (paper/dark) → default. */
+    background: var(--pdf-desk-bg, #525659); padding: 16px;
     flex-direction: column; align-items: center; gap: 12px;
-    scroll-behavior: smooth;
+    /* v5.7.0p7 — scroll-behavior:smooth REMOVED. It silently animated every
+       bare `scrollTop =` assignment: swapPDF's scroll restore became a visible
+       glide from page 1 on EVERY live cycle (the raster pass read scrollTop
+       mid-animation ≈ 0 → page 1 rendered → overlay dropped early). All
+       intentional smooth scrolls already use scrollTo({behavior:"smooth"})
+       explicitly (page-jump, outline, synctex), so nothing is lost. */
     transition: left .15s ease;
   }
   /* v3.2.2 — PDF outline / TOC sidebar. Slides in from the left edge
@@ -393,11 +415,17 @@
      Caveat: photographs / color figures look slightly off — this is the
      standard trick web PDF viewers use, and users can switch the editor
      back to Light when reviewing figure-heavy chapters. */
-  [data-editor-theme="dark"] .pdf-page-wrap canvas {
+  /* v5.2.0 — PDF preview darkness is now driven by its OWN attribute
+     `data-pdf-theme="dark"`, independent of the editor theme. Previously
+     these selectors keyed off `[data-editor-theme="dark"]`, which forced the
+     PDF (the actual document) to follow the code editor's palette. The
+     `setPdfPreview()` mode "match" re-applies data-pdf-theme when the editor
+     theme changes, preserving the old coupled behavior as an opt-in. */
+  [data-pdf-theme="dark"] .pdf-page-wrap canvas {
     filter: invert(1) hue-rotate(180deg) brightness(.92);
   }
-  [data-editor-theme="dark"] .pdf-page-wrap { background: #111418; }
-  [data-editor-theme="dark"] #pdf-canvas-container { background: #0d0f14; }
+  [data-pdf-theme="dark"] .pdf-page-wrap { background: #111418; }
+  [data-pdf-theme="dark"] #pdf-canvas-container { background: var(--pdf-desk-bg, #0d0f14); }
   /* PDF.js text layer — overlays the canvas with invisible-but-selectable text
      so the user can select / copy and gets a text cursor over text. */
   .textLayer {
@@ -472,6 +500,12 @@
   .err-summary {
     font-size: 11px; font-family: var(--font-ui); color: var(--muted);
   }
+  .err-view-pdf {
+    margin-left: auto; background: none; border: 1px solid var(--border);
+    border-radius: 5px; color: var(--muted); cursor: pointer;
+    font: 600 11px var(--font-ui); padding: 4px 9px; transition: all .15s;
+  }
+  .err-view-pdf:hover { color: var(--accent); border-color: var(--accent); }
   .err-cards {
     flex: 1; min-height: 0;
     overflow-y: auto;
@@ -778,6 +812,60 @@
   }
   .modal input:focus { border-color: var(--accent); }
   .modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
+
+  /* v5.8.0 — GitHub Backup readiness, destination, and friendly result UI. */
+  .gh-status-row {
+    display: flex; align-items: center; gap: 10px; background: var(--bg);
+    border: 1px solid var(--border); border-radius: 8px; padding: 9px 12px;
+    margin-bottom: 12px; font-size: 12.5px;
+  }
+  .gh-status-row[data-state="ok"] { color: var(--green); border-color: rgba(52,211,153,.35); }
+  .gh-status-row[data-state="error"] { color: var(--red); border-color: rgba(248,113,113,.4); }
+  .gh-connected-card {
+    flex-direction: column; align-items: flex-start; gap: 4px; background: var(--bg);
+    border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px;
+    margin-bottom: 12px;
+  }
+  .gh-connected-card strong {
+    font: 600 12.5px var(--font-code); overflow-wrap: anywhere;
+  }
+  .gh-connected-card small, .gh-help-text {
+    color: var(--muted); font-size: 11.5px; line-height: 1.45;
+  }
+  .gh-field-label {
+    display: block; color: var(--muted); font-size: 12px; margin-bottom: 4px;
+  }
+  .gh-field-label span { font-weight: 400; opacity: .85; }
+  .gh-help-text { margin: -4px 0 12px; }
+  .gh-result {
+    background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+    padding: 10px 12px; margin-top: 10px; max-height: 190px; overflow: auto;
+    font-size: 12.5px; line-height: 1.5;
+  }
+  .gh-result[data-state="ok"] { border-color: rgba(52,211,153,.4); }
+  .gh-result[data-state="error"] { border-color: rgba(248,113,113,.45); }
+  .gh-result[data-state="warn"] { border-color: rgba(251,191,36,.45); }
+  .gh-result-summary { font-weight: 600; }
+  .gh-result[data-state="ok"] .gh-result-summary { color: var(--green); }
+  .gh-result[data-state="error"] .gh-result-summary { color: var(--red); }
+  .gh-result[data-state="warn"] .gh-result-summary { color: var(--yellow); }
+  .gh-result-link { color: var(--accent); margin-top: 5px; text-decoration: none; }
+  .gh-result-link:hover { text-decoration: underline; }
+  .gh-result details { color: var(--muted); margin-top: 7px; }
+  .gh-result details summary { cursor: pointer; user-select: none; }
+  .gh-result pre {
+    color: var(--text); font: 11px/1.5 var(--font-code); margin-top: 6px;
+    white-space: pre-wrap; overflow-wrap: anywhere;
+  }
+  .gh-danger-action { font-size: 12px; padding: 6px 14px; border-color: var(--red); }
+  /* v5.8.0p3 — loading veil: while data-gh-loading is set the body shows one calm
+     "Checking GitHub…" line; everything dynamic is hidden until the layout is
+     decided, so the modal appears once in its final shape (no morphing).
+     !important beats the inline display styles JS keeps on the veiled rows —
+     removing the attribute hands control straight back to those inline styles. */
+  .gh-loading-row { display: none; align-items: center; gap: 10px; color: var(--muted); font-size: 12.5px; padding: 6px 2px 14px; }
+  #modal-github[data-gh-loading="1"] .gh-loading-row { display: flex; }
+  #modal-github[data-gh-loading="1"] .gh-veiled { display: none !important; }
 
   /* ── PROJECT LIST MODAL ── */
   .project-list { display: flex; flex-direction: column; gap: 6px; max-height: 340px; overflow-y: auto; margin-bottom: 16px; }
@@ -1648,6 +1736,13 @@
   .settings-body { padding: 14px; display: flex; flex-direction: column; gap: 16px; }
   .setting-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
   .setting-label { font-size: 12px; color: var(--text); }
+  /* v5.8.4 — labelled divider grouping related rows inside a settings pane
+     (first use: Live mode in Settings ▸ Compile). border-top IS the divider;
+     margin-top adds a little air above it beyond the pane's 16px row gap. */
+  .settings-subhead { margin-top: 4px; padding-top: 14px; border-top: 1px solid var(--border); }
+  .settings-subhead-title { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: var(--text); }
+  .settings-subhead-title svg { flex-shrink: 0; }
+  .settings-subhead-desc { margin-top: 3px; font-size: 11px; color: var(--muted); line-height: 1.5; }
   .theme-opt-group { display: flex; gap: 4px; }
   .theme-opt {
     padding: 4px 7px; font-size: 11px; font-weight: 600;
@@ -1662,6 +1757,77 @@
     border-radius: 6px; cursor: pointer; outline: none;
   }
   .settings-select:focus { border-color: var(--accent); }
+  /* v5.9.0 — number input for Live mode debounce setting */
+  .settings-number {
+    background: var(--bg); border: 1px solid var(--border); color: var(--text);
+    font-family: var(--font-code); font-size: 12px; padding: 4px 8px;
+    border-radius: 6px; outline: none; width: 80px; text-align: right;
+  }
+  .settings-number:focus { border-color: var(--accent); }
+
+  /* ── v5.x — Custom dropdown (tl-dd) ──────────────────────────────────────
+     Floating card menu that replaces the flat native <select> popup, matching
+     the cite-hint (.CodeMirror-hints) + spell-context-menu language: a raised
+     var(--surface) card with --border, rounded corners, soft shadow, and
+     accent-tinted selection/hover. The native <select> stays in the DOM as the
+     hidden source of truth (.tl-dd-native) — see dropdown.js. */
+  .tl-dd { position: relative; display: inline-block; }
+  .tl-dd-native { display: none !important; }
+  .tl-dd-trigger {
+    display: inline-flex; align-items: center; justify-content: space-between;
+    gap: 8px; min-width: 130px;
+    background: var(--bg); border: 1px solid var(--border); color: var(--text);
+    font-family: var(--font-code); font-size: 12px;
+    padding: 4px 8px; border-radius: 6px; cursor: pointer; outline: none;
+    transition: border-color .12s, background-color .12s;
+  }
+  .tl-dd-trigger:hover { border-color: var(--accent); }
+  .tl-dd-trigger:focus-visible { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(var(--accent-rgb),.25); }
+  .tl-dd-trigger[aria-expanded="true"] { border-color: var(--accent); background: rgba(var(--accent-rgb),.06); }
+  .tl-dd-trigger .tl-dd-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tl-dd-trigger .tl-dd-chev { flex-shrink: 0; color: var(--muted); transition: transform .12s, color .12s; }
+  .tl-dd-trigger[aria-expanded="true"] .tl-dd-chev { transform: rotate(180deg); color: var(--accent); }
+
+  .tl-dd-menu {
+    position: fixed; z-index: 1000;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 6px; padding: 4px;
+    box-shadow: 0 6px 18px rgba(0,0,0,.35);
+    font: 12px var(--font-code); color: var(--text);
+    max-height: 320px; overflow-y: auto; outline: none;
+  }
+  .tl-dd-group {
+    padding: 6px 10px 3px; font-family: var(--font-ui); font-size: 10px;
+    font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--muted);
+  }
+  .tl-dd-item {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 10px; border-radius: 4px; cursor: pointer;
+    white-space: nowrap; transition: background-color .1s;
+  }
+  .tl-dd-item:hover { background: var(--bg); }
+  .tl-dd-item.hi { background: rgba(var(--accent-rgb),.14); }
+  .tl-dd-item .tl-dd-check { display: inline-flex; width: 14px; flex-shrink: 0; color: var(--accent); opacity: 0; }
+  .tl-dd-item.sel .tl-dd-check { opacity: 1; }
+  .tl-dd-item.sel .tl-dd-text { color: var(--accent); font-weight: 600; }
+
+  /* Size variants — the trigger matches the native control it replaced. */
+  .tl-dd--compact .tl-dd-trigger {
+    font-family: var(--font-ui); font-size: 11px; padding: 2px 6px;
+    height: 24px; min-width: 62px; gap: 4px;
+    background: var(--panel); color: var(--muted);
+  }
+  .tl-dd--compact .tl-dd-trigger:hover,
+  .tl-dd--compact .tl-dd-trigger[aria-expanded="true"] { color: var(--text); }
+  .tl-dd--prominent .tl-dd-trigger {
+    font-family: var(--font-ui); font-size: 13px; padding: 5px 10px;
+    max-width: 200px; min-width: 0; background: var(--panel);
+  }
+  .tl-dd--block { display: block; }
+  .tl-dd--block .tl-dd-trigger {
+    width: 100%; min-width: 0; box-sizing: border-box;
+    font-family: var(--font-ui); font-size: 14px; padding: 9px 12px; border-radius: 8px;
+  }
   /* toggle switch */
   .toggle-sw { position: relative; width: 36px; height: 20px; cursor: pointer; flex-shrink: 0; display: inline-block; }
   .toggle-sw input { opacity: 0; width: 0; height: 0; }

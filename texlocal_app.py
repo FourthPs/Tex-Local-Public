@@ -144,7 +144,10 @@ def _run_flask(port: int) -> None:
     """Run Flask in this thread. debug=False + use_reloader=False are
     critical: the reloader would fork and break webview's IPC, and debug
     mode exposes the Werkzeug debugger to anyone on localhost."""
-    app.run(host="127.0.0.1", port=port, debug=False, use_reloader=False)
+    # v5.0.2 — threaded=True so the editor's ~15 ESM modules + CM6 bundle are
+    # served in parallel instead of serially (faster first load; WebView2's cache
+    # already masks this on later launches).
+    app.run(host="127.0.0.1", port=port, debug=False, use_reloader=False, threaded=True)
 
 
 # -- v4.7.6: WebView2 download bridge ---------------------------------

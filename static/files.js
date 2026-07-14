@@ -1,4 +1,5 @@
-import { CM, _ssCurrentFile, _ssMainFile, _ssOpenTabs, _ssSaveTimer, closeModal, compile, currentFile, currentProject, isImageFile, loadIncludes, loadProjects, mainFile, openModal, openTabs, saveTimer, setQuickOpenFiles, switchProject, updateWordCount } from "editor";
+import { setQuickOpenFiles } from "quickopen";
+import { CM, _ssCurrentFile, _ssEditorDirty, _ssMainFile, _ssOpenTabs, _ssSaveTimer, closeModal, compile, currentFile, currentProject, editorDirty, escapeAttr, escapeHtml, isImageFile, loadIncludes, loadProjects, mainFile, openModal, openTabs, saveTimer, switchGen, switchProject, updateWordCount } from "editor";
 import { clearErrorMarkers } from "errors";
 
 // static/files.js — TexLocal Phase 2 module split (v5.0.0-beta.2.0)
@@ -67,7 +68,7 @@ function renderFileTree(node, container, depth = 0, prefix = "") {
     div.innerHTML = `
       <span class="folder-arrow ${isOpen ? "open" : ""}">${_svgIcon(FILE_TREE_ICONS.arrow, {size: 12})}</span>
       <span class="file-icon">${_svgIcon(isOpen ? FILE_TREE_ICONS.folderOpen : FILE_TREE_ICONS.folder)}</span>
-      <span style="overflow:hidden;text-overflow:ellipsis">${folder}</span>
+      <span style="overflow:hidden;text-overflow:ellipsis">${escapeHtml(folder)}</span>
     `;
     div.onclick = () => {
       if (openFolders.has(fullPath)) openFolders.delete(fullPath);
@@ -110,7 +111,7 @@ function renderFileTree(node, container, depth = 0, prefix = "") {
     const isTex  = filePath.endsWith(".tex");
     div.innerHTML = `
       <span class="file-icon">${_svgIcon(icon)}</span>
-      <span class="file-label" style="overflow:hidden;text-overflow:ellipsis;flex:1">${filename}</span>
+      <span class="file-label" style="overflow:hidden;text-overflow:ellipsis;flex:1">${escapeHtml(filename)}</span>
       ${isTex ? `<span class="file-star${isMain ? " is-main" : ""}" title="${isMain ? "Main file" : "Set as main file"}">${_svgIcon(FILE_TREE_ICONS.star, {size: 13})}</span>` : ""}
       <span class="file-ren" title="Rename">${_svgIcon(FILE_TREE_ICONS.rename, {size: 13})}</span>
       <span class="file-del" title="Delete">${_svgIcon(FILE_TREE_ICONS.del, {size: 13})}</span>
@@ -154,8 +155,13 @@ function isGeneratedFile(path) {
 
 export async function loadFiles() {
   if (!currentProject) return;
-  const res = await fetch(`/api/projects/${currentProject}/files`);
+  const _gen = switchGen;   // v5.7.1 (#5) — capture; drop the paint if a newer switch lands
+  const res = await fetch(`/api/projects/${encodeURIComponent(currentProject)}/files`);
   const allFiles = await res.json();
+  // v5.7.1 (#5, codex Medium) — a newer project switch happened mid-fetch, so
+  // this file list is for the OLD project; don't repaint the tree (and return
+  // nothing so _restoreLastFile falls back to its mainFile path, itself guarded).
+  if (switchGen !== _gen) return;
   const files = allFiles.filter(f => !isGeneratedFile(f));   // ซ่อนไฟล์ขยะ
   // v3.2.3 — keep a flat cache for the Ctrl+P quick-open modal so it doesn't
   // need its own fetch on every invocation.
@@ -172,6 +178,11 @@ export async function loadFiles() {
 
 export async function openFile(name) {
   if (!currentProject) return;
+  // v5.7.1 (#5, codex Medium) — capture the switch generation at entry; if a
+  // project switch lands during either await below, this open is for the old
+  // project and must not paint its content into the new one (the review's
+  // cross-project "stale openFile" hazard). Re-checked after each await.
+  const _gen = switchGen;
   // CRITICAL: cancel any pending auto-save BEFORE we change `currentFile`.
   // Without this, a saveTimer queued for the OLD file can fire during the
   // async fetch below, while currentFile already points to the NEW file but
@@ -180,6 +191,7 @@ export async function openFile(name) {
   clearTimeout(saveTimer);
   _ssSaveTimer(null);
   await saveCurrentFile();
+  if (switchGen !== _gen) return;   // v5.7.1 (#5) — switched projects mid-save
   _ssCurrentFile(name);
   localStorage.setItem(`texlocal_last_file_${currentProject}`, name);
 
@@ -193,15 +205,15 @@ export async function openFile(name) {
     const fname = name.split("/").pop();
     if (ext === "pdf") {
       viewer.innerHTML = `
-        <div class="img-info">${fname} — เปิดดูได้ใน PDF Preview panel</div>
+        <div class="img-info">${escapeHtml(fname)} — เปิดดูได้ใน PDF Preview panel</div>
         <iframe src="${url}" style="flex:1;width:100%;border:none;border-radius:4px;"></iframe>`;
     } else {
       const img = new Image();
       img.src = url;
       img.onload = () => {
         viewer.innerHTML = `
-          <img src="${url}" alt="${fname}">
-          <div class="img-info">${fname} &nbsp;·&nbsp; ${img.naturalWidth} × ${img.naturalHeight} px</div>`;
+          <img src="${url}" alt="${escapeAttr(fname)}">
+          <div class="img-info">${escapeHtml(fname)} &nbsp;·&nbsp; ${img.naturalWidth} × ${img.naturalHeight} px</div>`;
       };
       img.onerror = () => {
         viewer.innerHTML = `<div class="img-info" style="color:var(--red)">ไม่สามารถแสดงรูปภาพนี้ได้</div>`;
@@ -217,8 +229,9 @@ export async function openFile(name) {
   // ── TEXT EDITOR ───────────────────────────────────────
   document.getElementById("image-viewer").style.display  = "none";
   document.getElementById("editor-host").style.display   = "";
-  const res  = await fetch(`/api/projects/${currentProject}/file?path=${encodeURIComponent(name)}`);
+  const res  = await fetch(`/api/projects/${encodeURIComponent(currentProject)}/file?path=${encodeURIComponent(name)}`);
   const data = await res.json();
+  if (switchGen !== _gen) return;   // v5.7.1 (#5) — switched projects mid-fetch
   // v4.7.3 — guard against a missing/unreadable file (e.g. detect-main fell back
   // to "main.tex" but no such file exists → backend 404 → data.content undefined).
   // setValue(undefined) throws and leaves the editor blank ("stuck"); show an
@@ -228,6 +241,10 @@ export async function openFile(name) {
   else openTabs.find(t => t.name === name).content = content;
   CM.setValue(content);
   CM.clearHistory();
+  // v5.0.3 — setValue() above fires a synchronous "change" that sets editorDirty;
+  // this is a freshly-loaded buffer that already matches disk, so clear it. Any
+  // real edit after this re-sets it, so the next save still fires correctly.
+  _ssEditorDirty(false);
   clearErrorMarkers();
   const ext = name.split(".").pop();
   CM.setOption("mode", ext === "bib" ? "bibtex" : "stex");
@@ -312,7 +329,14 @@ async function closeTab(name, e) {
   const idx = openTabs.findIndex(t => t.name === name);
   if (idx === -1) return;
   const wasActive = (name === currentFile);
-  if (wasActive) { try { await saveCurrentFile(); } catch (_) {} }
+  if (wasActive) {
+    // v5.0.1 — was `catch (_) {}`, which swallowed a failed save and then closed
+    // the tab below, discarding the visible unsaved buffer while the on-disk file
+    // stayed old. saveCurrentFile() now throws + flashes the save-error indicator;
+    // abort the close so the user keeps their content and can retry.
+    try { await saveCurrentFile(); }
+    catch (_) { return; }
+  }
   openTabs.splice(idx, 1);
   if (!wasActive) { renderTabs(); return; }
   if (openTabs.length) {
@@ -327,20 +351,63 @@ async function closeTab(name, e) {
   }
 }
 
+// v5.0.1 — save-failure surface (code-review: silent save + stale compile).
+// Flashes the compile-status strip so a failed write is visible; _clearSaveError
+// only clears a message it set (dataset flag) so it never stomps compile status.
+function _showSaveError(file, msg) {
+  const s = document.getElementById("compile-status");
+  if (!s) return;
+  s.textContent = `⚠ Save failed (${file}): ${msg}`;
+  s.className    = "compile-status err";
+  s.dataset.saveError = "1";
+}
+function _clearSaveError() {
+  const s = document.getElementById("compile-status");
+  if (s && s.dataset.saveError === "1") {
+    s.textContent = "";
+    s.className    = "compile-status";
+    delete s.dataset.saveError;
+  }
+}
+
 export async function saveCurrentFile() {
   if (!currentProject || !currentFile) return;
   if (isImageFile(currentFile)) return;   // ห้าม save ทับไฟล์รูปภาพ
+  // v5.0.3 — nothing changed since the last save/open → skip the disk write.
+  // This is what removes the click-delay in the file tree: openFile()'s
+  // `await saveCurrentFile()` now returns instantly for an unedited buffer
+  // instead of POSTing the whole file and bumping its mtime (which had been
+  // invalidating the cite/bib/synctex mtime caches on every plain file switch).
+  if (!editorDirty) return;
   // Snapshot the path/project at call-time. If `currentFile` flips while the
   // POST is in flight, we still write the editor's content to the file the
   // editor was actually displaying — never to the next file we just opened.
   const fileAtSave = currentFile;
   const projAtSave = currentProject;
   const content    = CM.getValue();
-  await fetch(`/api/projects/${encodeURIComponent(projAtSave)}/file`, {
-    method: "POST",
-    headers: {"Content-Type":"application/json"},
-    body: JSON.stringify({ path: fileAtSave, content })
-  });
+  // v5.0.1 — was fire-and-forget (never checked res.ok). On disk-full /
+  // permission / 500, the editor kept the newer buffer while compile read the
+  // OLDER on-disk content → PDF/log that didn't match the screen. Now throw on
+  // failure so callers (compile / cross-file replace) can abort instead.
+  let res;
+  try {
+    res = await fetch(`/api/projects/${encodeURIComponent(projAtSave)}/file`, {
+      method: "POST",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({ path: fileAtSave, content })
+    });
+  } catch (e) {
+    _showSaveError(fileAtSave, e.message || "network error");
+    throw e;
+  }
+  if (!res.ok) {
+    let msg = `HTTP ${res.status}`;
+    try { const d = await res.json(); if (d && d.error) msg = d.error; } catch (_) {}
+    _showSaveError(fileAtSave, msg);
+    throw new Error(`Save failed: ${msg}`);
+  }
+  _clearSaveError();
+  _ssEditorDirty(false);   // v5.0.3 — buffer now matches disk
 }
 
 // auto-save และ tab key ถูก handle โดย CodeMirror แล้ว
@@ -423,7 +490,7 @@ function startRenameFile(div, filePath) {
 
 async function moveFile(src, dst) {
   if (!src || !dst || src === dst) return;
-  const res = await fetch(`/api/projects/${currentProject}/movefile`, {
+  const res = await fetch(`/api/projects/${encodeURIComponent(currentProject)}/movefile`, {
     method: "POST",
     headers: {"Content-Type": "application/json"},
     body: JSON.stringify({ src, dst })
@@ -477,7 +544,7 @@ export async function handleUpload(fileList) {
   const form = new FormData();
   for (const f of fileList) form.append("files", f);
 
-  const res  = await fetch(`/api/projects/${currentProject}/upload`, { method: "POST", body: form });
+  const res  = await fetch(`/api/projects/${encodeURIComponent(currentProject)}/upload`, { method: "POST", body: form });
   const data = await res.json();
   if (data.ok) {
     status.textContent = `✓ Uploaded ${data.files.length} file(s)`;
@@ -580,7 +647,7 @@ export function showNewFolder() {
 export async function createFolder() {
   const name = document.getElementById("input-folder-name").value.trim();
   if (!name) return;
-  await fetch(`/api/projects/${currentProject}/newfolder`, {
+  await fetch(`/api/projects/${encodeURIComponent(currentProject)}/newfolder`, {
     method: "POST", headers: {"Content-Type": "application/json"},
     body: JSON.stringify({ path: name })
   });
@@ -599,7 +666,7 @@ export function showNewFile() {
 export async function createFile() {
   const name = document.getElementById("input-file-name").value.trim();
   if (!name) return;
-  await fetch(`/api/projects/${currentProject}/newfile`, {
+  await fetch(`/api/projects/${encodeURIComponent(currentProject)}/newfile`, {
     method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({path:name})
   });
   closeModal("modal-file");
@@ -616,7 +683,7 @@ async function deleteFile(e, name) {
     clearTimeout(saveTimer);
     _ssSaveTimer(null);
   }
-  await fetch(`/api/projects/${currentProject}/file?path=${encodeURIComponent(name)}`, { method:"DELETE" });
+  await fetch(`/api/projects/${encodeURIComponent(currentProject)}/file?path=${encodeURIComponent(name)}`, { method:"DELETE" });
   if (currentFile === name) {
     _ssCurrentFile(null);
     _ssOpenTabs(openTabs.filter(t => t.name !== name));
