@@ -4,6 +4,19 @@ All notable changes to TexLocal are documented here.
 
 ---
 
+## v5.8.5 — 2026-07-16
+
+### Fixes
+- Clicking an error or warning in the Logs panel now jumps to the **correct file and line** — including errors inside `\input`-ed chapters and undefined-citation/reference warnings, which previously landed in whatever file was open. Error markers now follow you to the right file as you switch.
+- Undefined-citation messages are grouped by citation key and point back to your actual `\cite`, telling you clearly whether the key is missing from your `.bib` or just needs a Full Compile. Repeated log noise no longer creates duplicate cards.
+- Live preview no longer shows valid citations and references as `[?]` — it reuses the last full compile's bibliography data (newly added cites still need one Full Compile to appear).
+- The line-number gutter no longer briefly blanks out when jumping to an error.
+
+### Reliability
+- A failed compile now stops immediately instead of running extra passes, so errors surface faster.
+- A broken or half-written PDF is never shown: the last good PDF is kept and restored if a compile is interrupted or runs out of memory.
+- Switching projects while a compile is running no longer mixes state between projects.
+
 ## v5.8.4 — 2026-07-14
 
 ### Fixes
