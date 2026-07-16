@@ -4,6 +4,19 @@ All notable changes to TexLocal are documented here.
 
 ---
 
+## v5.8.6 — 2026-07-17
+
+### New
+- **Choose where a new project is saved.** The New Project dialog is now a cleaner two-step flow — pick a template, then name the project and choose its folder. Projects can be stored outside the default TexLocal projects folder.
+- **Move a project to another folder.** A new folder action on each dashboard project relocates its files to a folder you pick, with a safe verified move (nothing is deleted until the copy is confirmed).
+- **Export the raw compile log** to a file from the Compile Log panel.
+
+### Improvements
+- Dashboard dialogs (rename, duplicate, delete, and error messages) now use TexLocal's own themed dialogs instead of browser pop-ups.
+
+### Fixes
+- **Desktop app:** bundled MiKTeX fonts now resolve correctly after installation. This fixes spurious font errors — and the resulting "all citations undefined" — that could appear on a freshly installed app.
+
 ## v5.8.5 — 2026-07-16
 
 ### Fixes
