@@ -103,8 +103,16 @@ const _pointField = StateField.define({
 // (errors.js) fleshes this out; the field + effects exist now so setGutterMarker
 // / clearGutter on the facade are non-throwing from the start.
 class _ElMarker extends GutterMarker {
-  constructor(el) { super(); this._el = el; }
-  toDOM() { return this._el; }
+  constructor(source) {
+    super();
+    // v5.8.5p8 — CM6 may call toDOM more than once while recycling gutter cells. Returning
+    // the same Element moves it out of the old cell and corrupts CM6's marker
+    // DOM bookkeeping (eventually setMarkers reads nextSibling from null).
+    this._factory = (typeof source === "function")
+      ? source
+      : () => source.cloneNode(true);
+  }
+  toDOM(view) { return this._factory(view); }
 }
 const setGutterEff   = StateEffect.define(); // {gid, from, marker}
 const clearGutterEff = StateEffect.define(); // {gid}
@@ -349,6 +357,21 @@ function _ensureThemeObserver() {
 // Returns an object matching the CM5 facade's member shape, bound to `view`.
 function makeCM(view, comps, hub) {
   const st = () => view.state;
+  // v5.8.5p5 — effect batching. CM5's cm.operation(f) coalesced many DOM
+  // mutations into a single repaint; the CM6 equivalent is folding many
+  // view.dispatch() calls into ONE transaction. Without it, showErrorMarkers/
+  // clearErrorMarkers fired one dispatch PER gutter marker and PER line class —
+  // hundreds on a large file (clearErrorMarkers alone looped every line). Running
+  // that storm inside openFile, around a full-doc setValue + scrollIntoView on a
+  // cross-file jump, left the CM6 lineNumbers gutter rendering blank cells until a
+  // reflow (the recurring "gray bar + numbers vanish, reload fixes it" bug). When
+  // a batch is open, the gutter/line-class ops PUSH their effect instead of
+  // dispatching; operation() flushes the lot in one transaction => one measure.
+  let _batch = null;
+  const _emit = (eff) => {
+    if (_batch) _batch.push(...(Array.isArray(eff) ? eff : [eff]));
+    else view.dispatch({ effects: eff });
+  };
   const CM = {
     // text / document
     getValue:          () => st().doc.toString(),
@@ -386,6 +409,13 @@ function makeCM(view, comps, hub) {
     hasFocus:          () => view.hasFocus,
     getWrapperElement: () => view.dom,
     refresh:           () => view.requestMeasure(),
+    // v5.8.5p6 — force the lineNumbers gutter to tear down + rebuild (reconfigure
+    // its compartment with a fresh instance). requestMeasure only re-measures
+    // geometry; on a fast cross-file jump the number cells can still render EMPTY
+    // (the gray bar/error gutter are fine — those were fixed by p5 batching). A
+    // compartment reconfigure is what a reload effectively does for this gutter,
+    // so it reliably repaints the numbers. No-op-cheap; call it from the jump heal.
+    forceLineNumbers:  () => view.dispatch({ effects: comps.lineNums.reconfigure(lineNumbers()) }),
     // marks / line classes / gutters  → decoration effects
     markText:          (a, b, opts = {}) => {
                           const id = _handleSeq++;
@@ -426,19 +456,24 @@ function makeCM(view, comps, hub) {
                           const id = _handleSeq++;
                           const pos = st().doc.line(Math.min(Math.max(n + 1, 1), st().doc.lines)).from;
                           const deco = Decoration.line({ class: cls, _hid: id, _group: "line:" + cls });
-                          view.dispatch({ effects: addLineEff.of({ id, pos, deco }) });
+                          _emit(addLineEff.of({ id, pos, deco }));   // v5.8.5p5 — batchable
                           return { id };
                         },
-    removeLineClass:   (_n, _where, cls) => view.dispatch({ effects: clearGroupEff.of({ group: "line:" + cls }) }),
-    setGutterMarker:   (n, gid, el) => view.dispatch({ effects: setGutterEff.of({ gid, from: st().doc.line(n + 1).from, marker: el ? new _ElMarker(el) : null }) }),
-    clearGutter:       (gid) => view.dispatch({ effects: clearGutterEff.of({ gid }) }),
+    removeLineClass:   (_n, _where, cls) => _emit(clearGroupEff.of({ group: "line:" + cls })),   // v5.8.5p5 — batchable
+    setGutterMarker:   (n, gid, el) => _emit(setGutterEff.of({ gid, from: st().doc.line(n + 1).from, marker: el ? new _ElMarker(el) : null })),   // v5.8.5p5 — batchable
+    clearGutter:       (gid) => _emit(clearGutterEff.of({ gid })),   // v5.8.5p5 — batchable
     // config / events / batching / history
     setOption:         (k, v) => _setOption(view, comps, k, v),
     getOption:         (name) => (name === "indentWithTabs") ? false : ((name === "indentUnit" || name === "tabSize") ? (st().tabSize || 2) : undefined), // v-CM6 inc6 — used by env-block insert
     showHint:          () => startCompletion(view),  // v-CM6 inc6 — CM5 showHint(opts) → CM6 startCompletion (sources drive; opts ignored)
     on:                (ev, cb) => hub.on(ev, cb),
     off:               (ev, cb) => hub.off(ev, cb),
-    operation:         (f) => f(),                 // CM6 batches natively via transactions
+    operation:         (f) => {                     // v5.8.5p5 — coalesce batchable effects into one transaction
+                          if (_batch) return f();    // nested call — join the already-open batch
+                          _batch = [];
+                          try { return f(); }
+                          finally { const e = _batch; _batch = null; if (e.length) view.dispatch({ effects: e }); }
+                        },
     clearHistory:      () => view.dispatch({ effects: comps.history.reconfigure(history()) }),
     changeGeneration:  () => _changeGen,           // monotonic; bumped by updateListener below
     // statics
@@ -593,6 +628,7 @@ export function createCm6Editor(host, { value = "", tabSize = 2, lineWrapping = 
     tab: new Compartment(), indent: new Compartment(), wrap: new Compartment(),
     readOnly: new Compartment(), appKeys: new Compartment(), history: new Compartment(),
     theme: new Compartment(),
+    lineNums: new Compartment(),  // v5.8.5p6 — so the line-number gutter can be force-rebuilt (heal blank cells)
   };
   const hub = _makeEventHub();
 
@@ -616,7 +652,7 @@ export function createCm6Editor(host, { value = "", tabSize = 2, lineWrapping = 
   const state = EditorState.create({
     doc: value,
     extensions: [
-      lineNumbers(),
+      comps.lineNums.of(lineNumbers()),   // v5.8.5p6 — compartment so forceLineNumbers() can rebuild it
       highlightActiveLine(), highlightActiveLineGutter(),
       drawSelection(),
       // v5.0.0-beta.8.0 — multi-cursor (free in CM6): Alt-click adds cursors, Alt-drag

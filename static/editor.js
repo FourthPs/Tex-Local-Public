@@ -62,6 +62,26 @@ let liveLastCycleMs   = 2800;  // adaptive debounce seed; updated each cycle (§
 export let liveDebounceMs    = 1000;  // base debounce ms; user-configurable in Settings ▸ Compile (v5.7.0p7 — 2000→1000, §6 step 5 tune from PoL's real use)
 export let liveDraftOn       = false; // v2: default OFF — real figures in the preview
 
+// v5.8.7 — Latest completed manual-compile view, scoped to this Editor page session.
+// Project switches can restore their own diagnostics without persisting stale
+// line/file locations across Dashboard navigation or an app restart.
+const projectCompileViews = new Map();
+
+function _rememberProjectCompileView(project, rawLog, parsed) {
+  if (!project || !parsed) return;
+  projectCompileViews.set(project, {
+    rawLog: String(rawLog || ""),
+    parsed,
+  });
+}
+
+function _restoreProjectCompileView(project) {
+  const cached = projectCompileViews.get(project) || null;
+  _setRawCompileLog(cached ? cached.rawLog : "");
+  _ssLastParsedLog(cached ? cached.parsed : null);
+  updateLogsBadge(cached ? cached.parsed : null);
+}
+
 function _newCompileJobId(prefix) {
   const id = globalThis.crypto?.randomUUID?.()
     || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -70,11 +90,14 @@ function _newCompileJobId(prefix) {
 
 function _requestCompileCancel(active) {
   if (!active) return Promise.resolve();
+  if (active.cancelPromise) return active.cancelPromise;
+  active.cancelling = true;
   active.controller?.abort();
-  return fetch(`/api/projects/${encodeURIComponent(active.project)}/compile/cancel`, {
+  active.cancelPromise = fetch(`/api/projects/${encodeURIComponent(active.project)}/compile/cancel`, {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ job_id: active.jobId }),
   }).catch(() => {});
+  return active.cancelPromise;
 }
 
 // v5.7.1 (#1, codex High) — last-resort unsaved-work guard. autosave is
@@ -93,6 +116,8 @@ if (typeof window !== "undefined") {
 // every compile. The hint helper below filters on the typed prefix.
 export let bibkeysCache      = [];   // [{key, type, author, year, title}]
 export let labelsCache       = [];   // [{name, file, line}]
+export let citationLocationsCache = []; // [{key, file, line}] for compile-warning jumps
+export let citeDataReady     = false;
 // v4.4.0 — user-defined commands/environments (project-wide) for \cmd and
 // \begin{} autocomplete, populated by loadCiteData.
 export let userCmdCache      = [];   // ["\\foo", ...]  // v5.0.0-beta.7.4 — export: autocomplete.js imports these (were ReferenceError under ESM → \begin/\cmd hint threw)
@@ -564,7 +589,9 @@ export async function loadProjects() {
   sel.innerHTML = '<option value="">— select project —</option>';
   list.forEach(p => {
     const opt = document.createElement("option");
-    opt.value = p.name; opt.textContent = p.name;
+    opt.value = p.name;
+    opt.textContent = p.name + (p.unavailable ? " (unavailable)" : "");
+    opt.disabled = !!p.unavailable;
     sel.appendChild(opt);
   });
   if (currentProject) sel.value = currentProject;
@@ -819,20 +846,25 @@ export function toggleChaptersPanel(e){ _togglePopover(e, { panelId: "chapters-p
 // the server side, so frequent calls are cheap when nothing has changed.
 export async function loadCiteData() {
   if (!currentProject) {
-    bibkeysCache = []; labelsCache = []; userCmdCache = []; userEnvCache = [];
+    bibkeysCache = []; labelsCache = []; citationLocationsCache = [];
+    citeDataReady = false; userCmdCache = []; userEnvCache = [];
     lintCrossRefs();   // clear any stale marks
     return;
   }
+  citeDataReady = false;
   try {
     const r = await fetch(`/api/projects/${encodeURIComponent(currentProject)}/cite-data`);
     if (!r.ok) throw new Error("cite-data " + r.status);
     const d = await r.json();
     bibkeysCache = d.bibkeys || [];
     labelsCache  = d.labels  || [];
+    citationLocationsCache = d.citations || [];
+    citeDataReady = true;
     userCmdCache = d.commands || [];
     userEnvCache = d.environments || [];
   } catch (_) {
-    bibkeysCache = []; labelsCache = []; userCmdCache = []; userEnvCache = [];
+    bibkeysCache = []; labelsCache = []; citationLocationsCache = [];
+    citeDataReady = false; userCmdCache = []; userEnvCache = [];
   }
   // v3.2.3 — refresh the cross-ref linter once the cache lands.
   lintCrossRefs();
@@ -916,9 +948,43 @@ export async function switchProject(name, opts) {
   // from the project we're leaving so a late result can't land in the new one.
   liveGen++;
   _requestCompileCancel(liveRequest);
+
+  // v5.8.5p10 — a manual compile owns files in the outgoing project. Stop it
+  // before flipping currentProject so the new project never inherits a Cancel
+  // button for the old job (or has its first Compile click consumed by it).
+  const outgoingManual = manualCompileRequest;
+  if (outgoingManual) {
+    const status = document.getElementById("compile-status");
+    const btn = document.getElementById("compile-btn");
+    if (status) {
+      status.textContent = "Stopping compile before switching project...";
+      status.className = "compile-status";
+    }
+    if (btn) btn.disabled = true;
+    await _requestCompileCancel(outgoingManual);
+    if (manualCompileRequest === outgoingManual) {
+      manualCompileRequest = null;
+      if (btn) { btn.textContent = "▶ Compile"; btn.disabled = false; }
+    }
+    if (requestGen !== switchRequestGen) return;
+  }
+
   switchGen++;
   const _gen = switchGen;
+  // Close the outgoing overlays, then restore only the target project's latest
+  // compile view.  A project with no completed compile in this Editor session
+  // starts clean; persistent history remains a separate per-project feature.
   currentProject = name;
+  // v5.8.7 — The visible project picker is a custom trigger layered over the native
+  // select. Startup/modal/import paths set select.value programmatically, so
+  // commit the native value here and explicitly refresh the visible label.
+  const projectSelect = document.getElementById("project-select");
+  if (projectSelect) {
+    projectSelect.value = name;
+    _tlddSync();
+  }
+  hideLogsPanel();
+  _restoreProjectCompileView(name);
   localStorage.setItem("texlocal_last_project", name);
   loadCompilerPref(name);
   loadDraftPref(name);       // v3.2.2 — restore per-project draft toggle
@@ -1027,8 +1093,65 @@ export async function switchProject(name, opts) {
   await Promise.allSettled(_startupTasks);
 }
 
+let _editorProjectLocationToken = null;
+
+function _syncEditorProjectLocationChooser() {
+  const button = document.getElementById("editor-project-location-choose");
+  const available = !!(window.pywebview && window.pywebview.api
+                       && window.pywebview.api.choose_project_folder);
+  if (button) button.hidden = !available;
+}
+
+export function useDefaultEditorProjectLocation() {
+  _editorProjectLocationToken = null;
+  const value = document.getElementById("editor-project-location-value");
+  const hint = document.getElementById("editor-project-location-hint");
+  const reset = document.getElementById("editor-project-location-default");
+  const error = document.getElementById("editor-project-location-error");
+  if (value) { value.textContent = "Default project folder"; value.title = ""; }
+  if (hint) hint.textContent = "The project will be stored with your existing TexLocal projects.";
+  if (reset) reset.hidden = true;
+  if (error) error.textContent = "";
+}
+
+export async function chooseEditorProjectLocation() {
+  const api = window.pywebview && window.pywebview.api;
+  if (!api || typeof api.choose_project_folder !== "function") return;
+  const button = document.getElementById("editor-project-location-choose");
+  const error = document.getElementById("editor-project-location-error");
+  const previous = button.textContent;
+  button.disabled = true;
+  button.textContent = "Choosing…";
+  if (error) error.textContent = "";
+  try {
+    const result = await api.choose_project_folder();
+    if (result && result.cancelled) return;
+    if (!result || !result.ok) {
+      if (error) error.textContent = (result && result.error) || "Could not choose that folder.";
+      return;
+    }
+    _editorProjectLocationToken = result.token;
+    const value = document.getElementById("editor-project-location-value");
+    const hint = document.getElementById("editor-project-location-hint");
+    value.textContent = result.path;
+    value.title = result.path;
+    hint.textContent = "A new project folder will be created inside this location.";
+    document.getElementById("editor-project-location-default").hidden = false;
+  } catch (caught) {
+    if (error) error.textContent = String(caught);
+  } finally {
+    button.disabled = false;
+    button.textContent = previous;
+  }
+}
+
+// pywebview dispatches this non-bubbling event on window (not document).
+window.addEventListener("pywebviewready", _syncEditorProjectLocationChooser);
+
 export function showNewProject() {
   document.getElementById("input-project-name").value = "";
+  useDefaultEditorProjectLocation();
+  _syncEditorProjectLocationChooser();
   openModal("modal-project");
   setTimeout(() => document.getElementById("input-project-name").focus(), 100);
 }
@@ -1036,7 +1159,29 @@ export function showNewProject() {
 export async function createProject() {
   const name = document.getElementById("input-project-name").value.trim();
   if (!name) return;
-  await fetch("/api/projects", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({name}) });
+  const button = document.getElementById("create-project-btn");
+  const error = document.getElementById("editor-project-location-error");
+  button.disabled = true;
+  button.textContent = "Creating…";
+  let data;
+  try {
+    const response = await fetch("/api/projects", {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({name, location_token: _editorProjectLocationToken || undefined})
+    });
+    data = await response.json();
+  } catch (caught) {
+    if (error) error.textContent = `Could not create project: ${caught}`;
+    return;
+  } finally {
+    button.disabled = false;
+    button.textContent = "Create";
+  }
+  if (data.error) {
+    if (data.location_token_consumed) useDefaultEditorProjectLocation();
+    if (error) error.textContent = data.error;
+    return;
+  }
   closeModal("modal-project");
   await loadProjects();
   document.getElementById("project-select").value = name;
@@ -1051,8 +1196,6 @@ export async function createProject() {
 export async function compile() {
   if (manualCompileRequest) {
     const active = manualCompileRequest;
-    if (active.cancelling) return;
-    active.cancelling = true;
     const btn = document.getElementById("compile-btn");
     const status = document.getElementById("compile-status");
     btn.disabled = true;
@@ -1062,6 +1205,10 @@ export async function compile() {
     return;
   }
   if (!currentProject) return alert("Select a project first.");
+  // Snapshot before the pre-compile save awaits. If a project switch wins
+  // during that small window there is no registered job to cancel yet, so the
+  // only safe outcome is to decline to start a compile for either project.
+  const requestedProject = currentProject;
   // Cancel any pending auto-save so it can't race with our explicit save below
   // (otherwise an in-flight POST could clobber our save with a stale snapshot).
   clearTimeout(saveTimer);
@@ -1078,15 +1225,17 @@ export async function compile() {
     }
     return;
   }
+  if (currentProject !== requestedProject) return;
 
   const btn    = document.getElementById("compile-btn");
   const status = document.getElementById("compile-status");
-  const projectAtStart = currentProject;
+  const projectAtStart = requestedProject;
   const active = {
     project: projectAtStart,
     jobId: _newCompileJobId("manual"),
     controller: new AbortController(),
     cancelling: false,
+    cancelPromise: null,
   };
   manualCompileRequest = active;
   btn.textContent = "■ Cancel";
@@ -1138,7 +1287,7 @@ export async function compile() {
     if (data.cancelled) {
       status.textContent = "Compile stopped";
       status.className = "compile-status";
-      document.getElementById("log-content").textContent = data.log || "";
+      _setRawCompileLog(data.log || "");
       return;
     }
     if (currentProject !== projectAtStart) return;
@@ -1152,6 +1301,10 @@ export async function compile() {
     status.className    = "compile-status err";
     return;
   } finally {
+    // Keep ownership/the disabled Cancel button until the backend confirms it
+    // has received the stop request. This also makes a simultaneous project
+    // switch wait for the same promise rather than racing ahead of the worker.
+    if (active.cancelPromise) await active.cancelPromise;
     if (manualCompileRequest === active) {
       manualCompileRequest = null;
       btn.textContent = "▶ Compile";
@@ -1160,9 +1313,15 @@ export async function compile() {
   }
 
   const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
-  document.getElementById("log-content").textContent = data.log || "";
+  _setRawCompileLog(data.log || "");
 
-  const parsed = parseLatexErrors(data.log || "");
+  // v5.8.6 — `log` is the complete multi-pass transcript for Raw Logs and
+  // history.  The backend's diagnostic view contains the final compiler pass
+  // plus BibTeX/Biber output, so warnings resolved later in this SAME click do
+  // not survive in the Error panel.  Fall back for older/dev backends.
+  const diagnosticLog = data.diagnostic_log ?? data.log ?? "";
+  const parsed = parseLatexErrors(diagnosticLog);
+  _rememberProjectCompileView(projectAtStart, data.log || "", parsed);
   _ssLastParsedLog(parsed);
   updateLogsBadge(parsed);
   // v3.2.3 — Push this run into the compile history (last 10 per project).
@@ -1238,7 +1397,7 @@ export async function compile() {
   // v4.9.0 — prepend a one-line citation-health summary to the log so bib
   // problems surface without opening the panel. Async, fire-and-forget; runs
   // on success and failure alike (citation health is independent of compile).
-  _appendBibAuditBreadcrumb();
+  _appendBibAuditBreadcrumb(projectAtStart);
 }
 
 // v3.3.0 — Parse pdflatex's "Output written on <pdf> (N pages, M bytes)."
@@ -1285,6 +1444,91 @@ export function toggleLog() {
   document.getElementById("log-panel").classList.toggle("open");
 }
 
+function _setRawCompileLog(log) {
+  const text = String(log || "");
+  const content = document.getElementById("log-content");
+  const button = document.getElementById("export-raw-log-btn");
+  if (content) content.textContent = text;
+  if (button) {
+    button.disabled = !text;
+    button.title = text
+      ? "Export the complete raw log from the latest compile"
+      : "Compile once to export the raw log";
+  }
+}
+
+function _safeRawLogNamePart(value, fallback, maxLength) {
+  const cleaned = String(value || "")
+    .replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_")
+    .replace(/\s+/g, "_")
+    .replace(/[. ]+$/g, "")
+    .slice(0, maxLength);
+  return cleaned || fallback;
+}
+
+function _rawLogExportName() {
+  const now = new Date();
+  const pad = value => String(value).padStart(2, "0");
+  const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}`
+              + `-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+  const project = _safeRawLogNamePart(currentProject, "TexLocal", 80);
+  const mainStem = _safeRawLogNamePart(
+    String(mainFile || "main.tex").replace(/\.tex$/i, ""), "main", 60
+  );
+  return `${project}-${mainStem}-${stamp}.log`;
+}
+
+export async function exportRawLog() {
+  const content = document.getElementById("log-content");
+  const button = document.getElementById("export-raw-log-btn");
+  const text = content ? content.textContent : "";
+  if (!text || !button) return;
+
+  const filename = _rawLogExportName();
+  const originalTitle = "Export the complete raw log from the latest compile";
+  let feedback = "";
+  button.disabled = true;
+  button.textContent = "Exporting…";
+
+  try {
+    if (window.pywebview) {
+      const appApi = window.pywebview.api;
+      if (!appApi || typeof appApi.save_text !== "function") {
+        throw new Error("Text export is unavailable in this desktop build.");
+      }
+      const result = await appApi.save_text(text, filename);
+      if (result && result.cancelled) return;
+      if (!result || !result.ok) {
+        throw new Error((result && result.error) || "Unknown export error");
+      }
+      feedback = "Saved";
+    } else {
+      const blobUrl = URL.createObjectURL(
+        new Blob([text], { type: "text/plain;charset=utf-8" })
+      );
+      const anchor = document.createElement("a");
+      anchor.href = blobUrl;
+      anchor.download = filename;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+      feedback = "Exported";
+    }
+  } catch (error) {
+    feedback = "Export failed";
+    button.title = `Raw log export failed: ${error.message || error}`;
+  } finally {
+    if (feedback) button.textContent = feedback;
+    const resetDelay = feedback ? 1600 : 0;
+    setTimeout(() => {
+      button.textContent = "Export Log";
+      button.disabled = !(document.getElementById("log-content")?.textContent || "");
+      button.title = button.disabled ? "Compile once to export the raw log" : originalTitle;
+    }, resetDelay);
+  }
+}
+
 // ── PROJECT MANAGEMENT MODAL ─────────────────────────────────
 export async function openProjectsModal() {
   await renderProjectList();
@@ -1305,20 +1549,23 @@ async function renderProjectList() {
   list.forEach(p => {
     const row = document.createElement("div");
     row.className = "project-row" + (p.name === currentProject ? " active-proj" : "");
+    if (p.unavailable) row.classList.add("project-unavailable");
 
     const date = new Date(p.modified * 1000);
-    const dateStr = date.toLocaleDateString(undefined, { day:"numeric", month:"short", year:"numeric" })
-                  + " " + date.toLocaleTimeString(undefined, { hour:"2-digit", minute:"2-digit" });
+    const dateStr = p.unavailable
+      ? "Location unavailable"
+      : date.toLocaleDateString(undefined, { day:"numeric", month:"short", year:"numeric" })
+        + " " + date.toLocaleTimeString(undefined, { hour:"2-digit", minute:"2-digit" });
 
     row.innerHTML = `
-      <span class="project-row-name" title="${escapeAttr(p.name)}">${escapeHtml(p.name)}</span>
+      <span class="project-row-name" title="${escapeAttr(p.location || p.name)}">${escapeHtml(p.name)}</span>
       <span class="project-row-date">${dateStr}</span>
-      <button class="project-row-del" title="Delete project">🗑</button>
+      <button class="project-row-del" title="Delete project" ${p.unavailable ? "disabled" : ""}>🗑</button>
     `;
 
     // คลิกชื่อ = เปิด project
     row.addEventListener("click", e => {
-      if (e.target.classList.contains("project-row-del")) return;
+      if (p.unavailable || e.target.classList.contains("project-row-del")) return;
       document.getElementById("project-select").value = p.name;
       switchProject(p.name);
       closeModal("modal-projects");
@@ -1329,9 +1576,15 @@ async function renderProjectList() {
       e.stopPropagation();
       if (!confirm(`Delete project "${p.name}"?\n\nThis cannot be undone.`)) return;
       await fetch(`/api/projects/${encodeURIComponent(p.name)}`, { method: "DELETE" });
+      projectCompileViews.delete(p.name);
       // ถ้าเป็น project ที่กำลังเปิดอยู่ ให้ reset
       if (p.name === currentProject) {
         currentProject = null;
+        _setRawCompileLog("");
+        _ssLastParsedLog(null);
+        updateLogsBadge(null);
+        hideLogsPanel();
+        clearErrorMarkers();
         currentFile    = null;
         openTabs       = [];
         mainFile       = "main.tex";
@@ -1574,7 +1827,9 @@ async function _liveFire(hash) {
     if (_gen !== liveGen || _proj !== currentProject || !liveMode) return;
     if (data.pdf_fresh && data.pdf_available) {
       // v5.8.1 — only a PDF proven fresh for this cycle may replace the preview.
-      const _errs = parseLatexErrors(data.log || "").errors;
+      const _errs = parseLatexErrors(
+        data.diagnostic_log ?? data.log ?? ""
+      ).errors;
       liveLastHash = hash;    // fixed text will hash differently → recompiles
       swapPDF(data.pdf, { preview: true });  // seamless; Download stays = full PDF
       _liveStatusSet(data.ok && !_errs.length ? "ok" : "err");

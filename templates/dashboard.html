@@ -44,7 +44,7 @@
   <button class="btn btn-ghost" onclick="openModal('modal-import-zip')" title="Import a ZIP from Overleaf"><svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none" aria-hidden="true" style="vertical-align:-2px"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/><polyline points="7 9 12 4 17 9"/><line x1="12" y1="4" x2="12" y2="16"/></svg> Import ZIP</button>
   <!-- v4.4.0 — Clone a GitHub repo as a new project. -->
   <button class="btn btn-ghost" onclick="openGitHubImport()" title="Clone a GitHub repository as a new project"><svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none" aria-hidden="true" style="vertical-align:-2px"><path d="M9 19c-4.3 1.4-4.3-2.5-6-3m12 5v-3.5c0-1 .1-1.4-.5-2c2.8-.3 5.5-1.4 5.5-6a4.6 4.6 0 0 0-1.3-3.2a4.2 4.2 0 0 0-.1-3.2s-1.1-.3-3.5 1.3a12.3 12.3 0 0 0-6.2 0c-2.4-1.6-3.5-1.3-3.5-1.3a4.2 4.2 0 0 0-.1 3.2a4.6 4.6 0 0 0-1.3 3.2c0 4.6 2.7 5.7 5.5 6c-.6.6-.6 1.2-.5 2v3.5"/></svg> Import from GitHub</button>
-  <button class="btn btn-primary" onclick="openModal('modal-new-project')"><svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none" aria-hidden="true" style="vertical-align:-2px"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg> New Project</button>
+  <button class="btn btn-primary" onclick="openNewProjectModal()"><svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none" aria-hidden="true" style="vertical-align:-2px"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg> New Project</button>
   <!-- v4.2.3 - About / version info -->
   <button class="btn btn-ghost about-btn" onclick="openAboutModal()" title="About TexLocal" aria-label="About">
     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle">
@@ -89,15 +89,16 @@
 
 </div>
 
-<!-- MODAL: New Project -->
-<div class="modal-overlay" id="modal-new-project">
+<!-- MODAL: New Project (v5.8.6p4 — Template → Details wizard) -->
+<div class="modal-overlay" id="modal-new-project" role="dialog" aria-modal="true"
+     aria-labelledby="new-project-title">
   <div class="modal" style="width:480px">
-    <h3>New Project</h3>
-    <input id="input-project-name" placeholder="Project name"
-           onkeydown="if(event.key==='Enter')createProject()">
-    <div style="margin-bottom:16px">
-      <div style="font-size:11px;color:var(--muted);margin-bottom:8px;font-weight:600;letter-spacing:.5px;text-transform:uppercase">Template</div>
-      <div class="template-grid" id="template-list">
+    <h3 id="new-project-title">New Project</h3>
+
+    <div class="new-project-step" id="new-project-step-template" data-step="1">
+      <div class="new-project-step-label">Choose a template</div>
+      <div class="template-grid" id="template-list" role="radiogroup"
+           aria-label="Project template">
 
         <!-- ARTICLE — single page with title + section heads + paragraph lines -->
         <label class="template-opt">
@@ -167,10 +168,79 @@
         </label>
 
       </div>
+      <div class="modal-actions new-project-template-actions">
+        <button class="btn btn-ghost" onclick="closeNewProjectModal()">Cancel</button>
+      </div>
     </div>
+
+    <div class="new-project-step" id="new-project-step-details" data-step="2" hidden>
+      <div class="new-project-template-echo" aria-live="polite">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M6 3h8l4 4v14H6z"/><path d="M14 3v5h5"/>
+        </svg>
+        <div>
+          <span class="new-project-template-echo-label">Template</span>
+          <strong id="new-project-template-name">Article</strong>
+          <span id="new-project-template-description">Standard article with sections</span>
+        </div>
+      </div>
+
+      <input id="input-project-name" placeholder="Project name"
+             onkeydown="if(event.key==='Enter')createProject()">
+      <div class="project-location-card">
+        <div class="project-location-head">
+          <span>Location</span>
+          <div class="project-location-actions">
+            <button class="btn btn-ghost btn-sm" id="new-project-location-default"
+                    onclick="useDefaultNewProjectLocation()" hidden>Use default</button>
+            <button class="btn btn-ghost btn-sm" id="new-project-location-choose"
+                    onclick="chooseNewProjectLocation()" hidden>Choose folder…</button>
+          </div>
+        </div>
+        <div class="project-location-value" id="new-project-location-value">Default project folder</div>
+        <div class="project-location-hint" id="new-project-location-hint">The project will be stored with your existing TexLocal projects.</div>
+      </div>
+      <div class="modal-actions new-project-detail-actions">
+        <button class="btn btn-ghost new-project-back" onclick="showNewProjectTemplateStep()">&larr; Back</button>
+        <button class="btn btn-ghost" onclick="closeNewProjectModal()">Cancel</button>
+        <button class="btn btn-primary" id="create-project-btn" onclick="createProject()">Create</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL: Move Project (v5.8.6p5 — one-step per-project relocation) -->
+<div class="modal-overlay" id="modal-move-project" role="dialog" aria-modal="true"
+     aria-labelledby="move-project-title">
+  <div class="modal" style="width:500px">
+    <h3 id="move-project-title">Move project</h3>
+    <div class="move-project-name" id="move-project-name"></div>
+
+    <div class="move-location-card">
+      <div class="move-location-label">Current location</div>
+      <div class="move-location-value" id="move-project-current"></div>
+    </div>
+
+    <div class="move-location-card move-location-destination">
+      <div class="move-location-head">
+        <span>Destination</span>
+        <div class="move-location-actions">
+          <button class="btn btn-ghost btn-sm" id="move-project-use-default"
+                  onclick="useDefaultMoveProjectLocation()" hidden>Use default folder</button>
+          <button class="btn btn-ghost btn-sm" id="move-project-choose-folder"
+                  onclick="chooseMoveProjectLocation()" hidden>Choose folder…</button>
+        </div>
+      </div>
+      <div class="move-location-value is-placeholder" id="move-project-destination">Choose a destination folder</div>
+      <div class="move-location-hint" id="move-project-hint">Select where this project should be stored.</div>
+    </div>
+
+    <div class="move-project-notice">All project files will be moved. Nothing will remain in the current location.</div>
+    <div class="move-project-error" id="move-project-error" role="status" aria-live="polite"></div>
     <div class="modal-actions">
-      <button class="btn btn-ghost" onclick="closeModal('modal-new-project')">Cancel</button>
-      <button class="btn btn-primary" onclick="createProject()">Create</button>
+      <button class="btn btn-ghost" id="move-project-cancel" onclick="closeMoveProjectModal()">Cancel</button>
+      <button class="btn btn-primary" id="move-project-confirm" onclick="moveProject()" disabled>Move Project</button>
     </div>
   </div>
 </div>
@@ -257,6 +327,22 @@
     <div class="modal-actions">
       <button class="btn btn-ghost" onclick="closeModal('modal-import-zip')">Cancel</button>
       <button class="btn btn-primary" id="import-zip-btn" onclick="importZip()">Import</button>
+    </div>
+  </div>
+</div>
+
+<!-- v5.8.6p1 — app-owned replacement for browser alert/confirm/prompt on the
+     dashboard. One dialog handles messages, destructive confirmations, and
+     project-name input while inheriting the active TexLocal theme. -->
+<div class="modal-overlay" id="modal-dashboard-dialog" role="dialog" aria-modal="true"
+     aria-labelledby="dashboard-dialog-title" aria-describedby="dashboard-dialog-message">
+  <div class="modal dashboard-dialog" style="width:430px">
+    <h3 id="dashboard-dialog-title">Notice</h3>
+    <p id="dashboard-dialog-message" class="dashboard-dialog-message"></p>
+    <input id="dashboard-dialog-input" type="text" autocomplete="off" hidden>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="dashboard-dialog-cancel">Cancel</button>
+      <button class="btn btn-primary" id="dashboard-dialog-confirm">OK</button>
     </div>
   </div>
 </div>
@@ -376,26 +462,39 @@ function renderTable() {
   tbody.innerHTML = "";
   filteredProjects.forEach(p => {
     const tr = document.createElement("tr");
-    const texLabel = p.tex_files ? `${p.tex_files} .tex file${p.tex_files !== 1 ? "s" : ""}` : "no .tex files";
+    const texLabel = p.unavailable
+      ? "Location unavailable"
+      : (p.tex_files ? `${p.tex_files} .tex file${p.tex_files !== 1 ? "s" : ""}` : "no .tex files");
+    const locationLine = p.external
+      ? `<div class="proj-location" title="${esc(p.location || "")}">${esc(p.location || "External location")}</div>`
+      : "";
+    if (p.unavailable) tr.classList.add("project-unavailable");
     tr.innerHTML = `
       <td>
         <div class="proj-name">${esc(p.name)}</div>
         <div class="proj-sub">${texLabel}</div>
+        ${locationLine}
       </td>
       <td>
-        <div class="proj-date">${timeAgo(p.modified)}</div>
-        <div class="proj-date-full">${dateStr(p.modified)}</div>
+        <div class="proj-date">${p.unavailable ? "Unavailable" : timeAgo(p.modified)}</div>
+        <div class="proj-date-full">${p.unavailable ? "Reconnect the drive to use this project" : dateStr(p.modified)}</div>
       </td>
       <td>
         <div class="proj-actions">
           <button class="btn btn-ghost btn-sm" data-act="open">Open</button>
           <button class="btn btn-ghost btn-sm" data-act="rename" title="Rename"><svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none" aria-hidden="true"><path d="M4 20h4l10.5-10.5a1.5 1.5 0 0 0-4-4L4 16v4"/><line x1="13.5" y1="6.5" x2="17.5" y2="10.5"/></svg></button>
           <button class="btn btn-ghost btn-sm" data-act="duplicate" title="Duplicate"><svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8v-2a2 2 0 0 0-2-2h-8a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg></button>
+          <button class="btn btn-ghost btn-sm" data-act="move"
+                  title="Moving project folders is available in the Desktop app only."
+                  aria-label="Move project folder" aria-disabled="true" disabled><svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none" aria-hidden="true"><path d="M3 7h7l2 2h9v10H3z"/><path d="M8 14h8"/><path d="m13 11 3 3-3 3"/></svg></button>
           <button class="btn btn-ghost btn-sm" data-act="export" title="Export ZIP"><svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none" aria-hidden="true"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/><polyline points="7 11 12 16 17 11"/><line x1="12" y1="4" x2="12" y2="16"/></svg></button>
           <button class="btn btn-danger btn-sm" data-act="delete" title="Delete"><svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>
         </div>
       </td>
     `;
+    if (p.unavailable) {
+      tr.querySelectorAll("button[data-act]").forEach(button => { button.disabled = true; });
+    }
     // v5.7.1 (#3, codex High) — bind row actions in JS with the raw name held
     // in a closure, instead of interpolating it into inline onclick="...'${name}'".
     // esc() escaped & < > " but NOT ' or backslash, so a project named
@@ -404,21 +503,24 @@ function renderTable() {
     tr.querySelectorAll("button[data-act]").forEach(b => {
       b.addEventListener("click", e => {
         e.stopPropagation();
+        if (p.unavailable) return;
         switch (b.dataset.act) {
           case "open":      openProject(e, p.name); break;
           case "rename":    renameProject(e, p.name); break;
           case "duplicate": duplicateProject(e, p.name); break;
+          case "move":      openMoveProjectModal(e, p); break;
           case "export":    exportZip(e, p.name); break;
-          case "delete":    deleteProject(e, p.name); break;
+          case "delete":    deleteProject(e, p.name, p.location); break;
         }
       });
     });
     tr.addEventListener("click", e => {
-      if (e.target.closest("button")) return;
+      if (p.unavailable || e.target.closest("button")) return;
       openProject(e, p.name);
     });
     tbody.appendChild(tr);
   });
+  _syncMoveProjectActions();
 }
 
 function esc(s) {
@@ -426,6 +528,87 @@ function esc(s) {
 }
 
 // ── ACTIONS ──────────────────────────────────────────────────
+let _dashboardDialogResolve = null;
+let _dashboardDialogLastFocus = null;
+
+function _finishDashboardDialog(value) {
+  const overlay = document.getElementById("modal-dashboard-dialog");
+  if (!overlay.classList.contains("open")) return;
+  overlay.classList.remove("open");
+
+  const resolve = _dashboardDialogResolve;
+  const lastFocus = _dashboardDialogLastFocus;
+  _dashboardDialogResolve = null;
+  _dashboardDialogLastFocus = null;
+  if (lastFocus && lastFocus.isConnected) {
+    setTimeout(() => lastFocus.focus(), 0);
+  }
+  if (resolve) resolve(value);
+}
+
+function _showDashboardDialog(options) {
+  if (_dashboardDialogResolve) _finishDashboardDialog(null);
+
+  return new Promise(resolve => {
+    const overlay = document.getElementById("modal-dashboard-dialog");
+    const title = document.getElementById("dashboard-dialog-title");
+    const message = document.getElementById("dashboard-dialog-message");
+    const input = document.getElementById("dashboard-dialog-input");
+    const cancel = document.getElementById("dashboard-dialog-cancel");
+    const confirm = document.getElementById("dashboard-dialog-confirm");
+    const hasInput = Object.prototype.hasOwnProperty.call(options, "value");
+
+    _dashboardDialogResolve = resolve;
+    _dashboardDialogLastFocus = document.activeElement;
+    title.textContent = options.title || "Notice";
+    message.textContent = options.message || "";
+    message.hidden = !options.message;
+    input.hidden = !hasInput;
+    input.value = hasInput ? String(options.value ?? "") : "";
+    input.placeholder = options.placeholder || "";
+    cancel.hidden = options.cancelText === null;
+    cancel.textContent = options.cancelText || "Cancel";
+    confirm.textContent = options.confirmText || "OK";
+    confirm.className = `btn ${options.danger ? "btn-danger-solid" : "btn-primary"}`;
+    overlay.classList.add("open");
+
+    requestAnimationFrame(() => {
+      if (hasInput) {
+        input.focus();
+        input.select();
+      } else {
+        confirm.focus();
+      }
+    });
+  });
+}
+
+function dashboardMessage(message, title = "Notice") {
+  return _showDashboardDialog({ title, message, cancelText: null, confirmText: "OK" });
+}
+
+function dashboardConfirm(title, message, { confirmText = "Confirm", danger = false } = {}) {
+  return _showDashboardDialog({ title, message, confirmText, danger });
+}
+
+function dashboardPrompt(title, message, value, { confirmText = "Save", placeholder = "" } = {}) {
+  return _showDashboardDialog({ title, message, value, confirmText, placeholder });
+}
+
+document.getElementById("dashboard-dialog-confirm").addEventListener("click", () => {
+  const input = document.getElementById("dashboard-dialog-input");
+  _finishDashboardDialog(input.hidden ? true : input.value);
+});
+document.getElementById("dashboard-dialog-cancel").addEventListener("click", () => {
+  _finishDashboardDialog(null);
+});
+document.getElementById("dashboard-dialog-input").addEventListener("keydown", event => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    document.getElementById("dashboard-dialog-confirm").click();
+  }
+});
+
 function openProject(e, name) {
   e.stopPropagation();
   window.location.href = `/editor?project=${encodeURIComponent(name)}`;
@@ -444,53 +627,377 @@ function exportZip(e, name) {
   document.body.removeChild(a);
 }
 
-async function deleteProject(e, name) {
+async function deleteProject(e, name, location = "") {
   e.stopPropagation();
-  if (!confirm(`Delete project "${name}"?\n\nThis cannot be undone.`)) return;
+  const confirmed = await dashboardConfirm(
+    "Delete project?",
+    location
+      ? `"${name}" will be permanently deleted from:\n${location}\n\nThis cannot be undone.`
+      : `"${name}" will be permanently deleted. This cannot be undone.`,
+    { confirmText: "Delete", danger: true }
+  );
+  if (!confirmed) return;
   await fetch(`/api/projects/${encodeURIComponent(name)}`, { method: "DELETE" });
   await loadProjects();
 }
 
 async function renameProject(e, name) {
   e.stopPropagation();
-  const newName = prompt(`Rename "${name}" to:`, name);
-  if (!newName || newName.trim() === name) return;
+  const newName = await dashboardPrompt(
+    "Rename project",
+    `Enter a new name for "${name}".`,
+    name,
+    { confirmText: "Rename", placeholder: "Project name" }
+  );
+  if (newName === null || !newName.trim() || newName.trim() === name) return;
   const res  = await fetch(`/api/projects/${encodeURIComponent(name)}/rename`, {
     method: "POST", headers: {"Content-Type":"application/json"},
     body: JSON.stringify({ name: newName.trim() })
   });
   const data = await res.json();
-  if (data.error) { alert(data.error); return; }
+  if (data.error) { await dashboardMessage(data.error, "Could not rename project"); return; }
   await loadProjects();
 }
 
 async function duplicateProject(e, name) {
   e.stopPropagation();
-  const newName = prompt(`Duplicate "${name}" as:`, name + "-copy");
-  if (!newName || !newName.trim()) return;
+  const newName = await dashboardPrompt(
+    "Duplicate project",
+    `Choose a name for the copy of "${name}".`,
+    name + "-copy",
+    { confirmText: "Duplicate", placeholder: "Project name" }
+  );
+  if (newName === null || !newName.trim()) return;
   const res  = await fetch(`/api/projects/${encodeURIComponent(name)}/duplicate`, {
     method: "POST", headers: {"Content-Type":"application/json"},
     body: JSON.stringify({ name: newName.trim() })
   });
   const data = await res.json();
-  if (data.error) { alert(data.error); return; }
+  if (data.error) { await dashboardMessage(data.error, "Could not duplicate project"); return; }
   await loadProjects();
 }
 
+// ── MOVE PROJECT ──────────────────────────────────────────────
+let _moveProjectState = null;
+let _moveProjectLocationToken = null;
+let _moveProjectUseDefault = false;
+let _moveProjectBusy = false;
+
+function _desktopFolderPickerAvailable() {
+  return !!(window.pywebview && window.pywebview.api
+            && window.pywebview.api.choose_project_folder);
+}
+
+function _syncMoveProjectActions() {
+  const available = _desktopFolderPickerAvailable();
+  document.querySelectorAll('[data-act="move"]').forEach(button => {
+    const projectUnavailable = !!button.closest("tr.project-unavailable");
+    button.disabled = !available || projectUnavailable;
+    button.setAttribute("aria-disabled", String(button.disabled));
+    button.title = projectUnavailable
+      ? "This project is unavailable."
+      : available
+        ? "Move location"
+        : "Moving project folders is available in the Desktop app only.";
+  });
+}
+
+function _moveProjectDisplayPath(parent, name) {
+  const trimmed = String(parent || "").replace(/[\\/]+$/, "");
+  const separator = trimmed.includes("\\") ? "\\" : "/";
+  return `${trimmed}${separator}${name}`;
+}
+
+function _setMoveProjectDestination(value, hint, { placeholder = false } = {}) {
+  const destination = document.getElementById("move-project-destination");
+  destination.textContent = value;
+  destination.title = placeholder ? "" : value;
+  destination.classList.toggle("is-placeholder", placeholder);
+  document.getElementById("move-project-hint").textContent = hint;
+  document.getElementById("move-project-confirm").disabled = placeholder;
+  document.getElementById("move-project-error").textContent = "";
+}
+
+function _resetMoveProjectDestination() {
+  _moveProjectLocationToken = null;
+  _moveProjectUseDefault = false;
+  _setMoveProjectDestination(
+    "Choose a destination folder",
+    "Select where this project should be stored.",
+    { placeholder: true }
+  );
+}
+
+function _setMoveProjectBusy(busy) {
+  _moveProjectBusy = busy;
+  const confirm = document.getElementById("move-project-confirm");
+  confirm.textContent = busy ? "Moving…" : "Move Project";
+  document.getElementById("move-project-cancel").disabled = busy;
+  document.getElementById("move-project-use-default").disabled = busy;
+  document.getElementById("move-project-choose-folder").disabled = busy;
+  if (busy) confirm.disabled = true;
+}
+
+function openMoveProjectModal(e, project) {
+  e.stopPropagation();
+  if (!_desktopFolderPickerAvailable() || project.unavailable) return;
+  _moveProjectState = {
+    name: project.name,
+    external: !!project.external,
+    location: project.location || "",
+  };
+  _setMoveProjectBusy(false);
+  document.getElementById("move-project-name").textContent = project.name;
+  const current = document.getElementById("move-project-current");
+  current.textContent = project.location || "Default project folder";
+  current.title = project.location || "";
+  const useDefault = document.getElementById("move-project-use-default");
+  useDefault.hidden = !project.external;
+  document.getElementById("move-project-choose-folder").hidden = false;
+  document.getElementById("move-project-error").textContent = "";
+  _resetMoveProjectDestination();
+  openModal("modal-move-project");
+  requestAnimationFrame(() => {
+    const focusTarget = project.external
+      ? document.getElementById("move-project-use-default")
+      : document.getElementById("move-project-choose-folder");
+    focusTarget.focus();
+  });
+}
+
+function closeMoveProjectModal() {
+  if (_moveProjectBusy) return;
+  closeModal("modal-move-project");
+  _moveProjectState = null;
+  _moveProjectLocationToken = null;
+  _moveProjectUseDefault = false;
+  document.getElementById("move-project-error").textContent = "";
+}
+
+function useDefaultMoveProjectLocation() {
+  if (!_moveProjectState || !_moveProjectState.external || _moveProjectBusy) return;
+  _moveProjectLocationToken = null;
+  _moveProjectUseDefault = true;
+  _setMoveProjectDestination(
+    "Default project folder",
+    "The project will be moved back with your existing TexLocal projects."
+  );
+}
+
+async function chooseMoveProjectLocation() {
+  if (!_moveProjectState || _moveProjectBusy) return;
+  const api = window.pywebview && window.pywebview.api;
+  if (!api || typeof api.choose_project_folder !== "function") return;
+  const button = document.getElementById("move-project-choose-folder");
+  const previous = button.textContent;
+  button.disabled = true;
+  button.textContent = "Choosing…";
+  document.getElementById("move-project-error").textContent = "";
+  try {
+    const result = await api.choose_project_folder();
+    if (result && result.cancelled) return;
+    if (!result || !result.ok) {
+      document.getElementById("move-project-error").textContent =
+        (result && result.error) || "Could not choose that folder.";
+      return;
+    }
+    if (!_moveProjectState) return;
+    _moveProjectLocationToken = result.token;
+    _moveProjectUseDefault = false;
+    const finalPath = _moveProjectDisplayPath(result.path, _moveProjectState.name);
+    _setMoveProjectDestination(
+      finalPath,
+      "The complete project folder will be moved to this location."
+    );
+  } catch (error) {
+    document.getElementById("move-project-error").textContent = String(error);
+  } finally {
+    button.disabled = false;
+    button.textContent = previous;
+  }
+}
+
+async function moveProject() {
+  if (!_moveProjectState || _moveProjectBusy
+      || (!_moveProjectUseDefault && !_moveProjectLocationToken)) return;
+  const state = _moveProjectState;
+  const body = _moveProjectUseDefault
+    ? { use_default: true }
+    : { location_token: _moveProjectLocationToken };
+  _setMoveProjectBusy(true);
+  document.getElementById("move-project-error").textContent = "";
+  let data;
+  try {
+    const response = await fetch(`/api/projects/${encodeURIComponent(state.name)}/move`, {
+      method: "POST", headers: {"Content-Type":"application/json"},
+      body: JSON.stringify(body),
+    });
+    data = await response.json();
+  } catch (error) {
+    document.getElementById("move-project-error").textContent = `Could not move project: ${error}`;
+    _setMoveProjectBusy(false);
+    document.getElementById("move-project-confirm").disabled = false;
+    return;
+  }
+  if (data.error) {
+    if (data.location_token_consumed && !_moveProjectUseDefault) {
+      _resetMoveProjectDestination();
+    }
+    document.getElementById("move-project-error").textContent = data.error;
+    _setMoveProjectBusy(false);
+    if (_moveProjectUseDefault || _moveProjectLocationToken) {
+      document.getElementById("move-project-confirm").disabled = false;
+    }
+    return;
+  }
+  _setMoveProjectBusy(false);
+  closeMoveProjectModal();
+  await loadProjects();
+  if (data.warning) await dashboardMessage(data.warning, "Project moved with a cleanup warning");
+}
+
 // ── NEW PROJECT ───────────────────────────────────────────────
+let _newProjectLocationToken = null;
+let _newProjectStep = 1;
+
+function _selectedNewProjectTemplate() {
+  return document.querySelector('#template-list input[name="template"]:checked');
+}
+
+function _updateNewProjectTemplateEcho() {
+  const selected = _selectedNewProjectTemplate();
+  const card = selected && selected.closest(".template-opt");
+  if (!card) return;
+  const title = card.querySelector(".template-info span:first-child");
+  const description = card.querySelector(".template-desc");
+  document.getElementById("new-project-template-name").textContent = title ? title.textContent : selected.value;
+  document.getElementById("new-project-template-description").textContent = description ? description.textContent : "";
+}
+
+function _focusNewProjectStep() {
+  requestAnimationFrame(() => {
+    const modal = document.getElementById("modal-new-project");
+    if (!modal.classList.contains("open")) return;
+    const target = _newProjectStep === 1
+      ? _selectedNewProjectTemplate()
+      : document.getElementById("input-project-name");
+    if (target) target.focus();
+  });
+}
+
+function _setNewProjectStep(step, { focus = true } = {}) {
+  _newProjectStep = step === 2 ? 2 : 1;
+  document.getElementById("new-project-step-template").hidden = _newProjectStep !== 1;
+  document.getElementById("new-project-step-details").hidden = _newProjectStep !== 2;
+  document.getElementById("modal-new-project").dataset.step = String(_newProjectStep);
+  if (_newProjectStep === 2) _updateNewProjectTemplateEcho();
+  if (focus) _focusNewProjectStep();
+}
+
+function showNewProjectTemplateStep() {
+  _setNewProjectStep(1);
+}
+
+function showNewProjectDetailsStep() {
+  _setNewProjectStep(2);
+}
+
+function closeNewProjectModal() {
+  closeModal("modal-new-project");
+  _setNewProjectStep(1, { focus: false });
+}
+
+const _newProjectTemplateList = document.getElementById("template-list");
+_newProjectTemplateList.addEventListener("click", event => {
+  if (_newProjectStep !== 1) return;
+  const card = event.target.closest(".template-opt");
+  if (!card || !_newProjectTemplateList.contains(card)) return;
+  const input = card.querySelector('input[name="template"]');
+  if (!input) return;
+  input.checked = true;
+  showNewProjectDetailsStep();
+});
+_newProjectTemplateList.addEventListener("keydown", event => {
+  if (_newProjectStep !== 1 || (event.key !== "Enter" && event.key !== " ")) return;
+  const input = event.target.closest('input[name="template"]');
+  if (!input) return;
+  event.preventDefault();
+  input.checked = true;
+  showNewProjectDetailsStep();
+});
+
+function _syncNewProjectLocationChooser() {
+  const button = document.getElementById("new-project-location-choose");
+  const available = _desktopFolderPickerAvailable();
+  if (button) button.hidden = !available;
+}
+
+function useDefaultNewProjectLocation() {
+  _newProjectLocationToken = null;
+  const value = document.getElementById("new-project-location-value");
+  const hint = document.getElementById("new-project-location-hint");
+  const reset = document.getElementById("new-project-location-default");
+  if (value) { value.textContent = "Default project folder"; value.title = ""; }
+  if (hint) hint.textContent = "The project will be stored with your existing TexLocal projects.";
+  if (reset) reset.hidden = true;
+}
+
+function openNewProjectModal() {
+  useDefaultNewProjectLocation();
+  document.getElementById("input-project-name").value = "";
+  _setNewProjectStep(1, { focus: false });
+  openModal("modal-new-project");
+  _syncNewProjectLocationChooser();
+  _focusNewProjectStep();
+}
+
+async function chooseNewProjectLocation() {
+  const api = window.pywebview && window.pywebview.api;
+  if (!api || typeof api.choose_project_folder !== "function") return;
+  const button = document.getElementById("new-project-location-choose");
+  const previous = button.textContent;
+  button.disabled = true;
+  button.textContent = "Choosing…";
+  try {
+    const result = await api.choose_project_folder();
+    if (result && result.cancelled) return;
+    if (!result || !result.ok) {
+      await dashboardMessage((result && result.error) || "Could not choose that folder.", "Folder unavailable");
+      return;
+    }
+    _newProjectLocationToken = result.token;
+    const value = document.getElementById("new-project-location-value");
+    const hint = document.getElementById("new-project-location-hint");
+    value.textContent = result.path;
+    value.title = result.path;
+    hint.textContent = "A new project folder will be created inside this location.";
+    document.getElementById("new-project-location-default").hidden = false;
+  } catch (error) {
+    await dashboardMessage(String(error), "Folder unavailable");
+  } finally {
+    button.disabled = false;
+    button.textContent = previous;
+  }
+}
+
 async function createProject() {
   const name = document.getElementById("input-project-name").value.trim();
-  if (!name) return;
+  if (!name) { document.getElementById("input-project-name").focus(); return; }
   const template = document.querySelector('input[name="template"]:checked')?.value || "article";
-  const btn = document.querySelector('#modal-new-project .btn-primary');
+  const btn = document.getElementById("create-project-btn");
   btn.textContent = "Creating…"; btn.disabled = true;
   const res  = await fetch("/api/projects", {
-    method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({name, template})
+    method: "POST", headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({name, template, location_token: _newProjectLocationToken || undefined})
   });
   const data = await res.json();
   btn.textContent = "Create"; btn.disabled = false;
-  if (data.error) { alert(data.error); return; }
-  closeModal("modal-new-project");
+  if (data.error) {
+    if (data.location_token_consumed) useDefaultNewProjectLocation();
+    await dashboardMessage(data.error, "Could not create project");
+    return;
+  }
+  closeNewProjectModal();
   window.location.href = `/editor?project=${encodeURIComponent(name)}`;
 }
 
@@ -510,7 +1017,10 @@ function onZipSelected(input) {
   zone.addEventListener("drop", e => {
     e.preventDefault(); zone.classList.remove("over");
     const file = e.dataTransfer.files[0];
-    if (!file || !file.name.endsWith(".zip")) return alert("Please drop a .zip file");
+    if (!file || !file.name.toLowerCase().endsWith(".zip")) {
+      void dashboardMessage("Please drop a .zip file.", "Unsupported file");
+      return;
+    }
     const dt = new DataTransfer(); dt.items.add(file);
     document.getElementById("zip-file-input").files = dt.files;
     onZipSelected(document.getElementById("zip-file-input"));
@@ -520,8 +1030,8 @@ function onZipSelected(input) {
 async function importZip() {
   const fileInput = document.getElementById("zip-file-input");
   const name      = document.getElementById("input-zip-name").value.trim();
-  if (!fileInput.files[0]) return alert("Please select a ZIP file.");
-  if (!name)               return alert("Please enter a project name.");
+  if (!fileInput.files[0]) { await dashboardMessage("Please select a ZIP file.", "Missing file"); return; }
+  if (!name)               { await dashboardMessage("Please enter a project name.", "Missing project name"); return; }
 
   const btn = document.getElementById("import-zip-btn");
   btn.innerHTML = '<span class="spinner"></span> Importing…'; btn.disabled = true;
@@ -538,7 +1048,7 @@ async function importZip() {
     closeModal("modal-import-zip");
     window.location.href = `/editor?project=${encodeURIComponent(data.name)}`;
   } else {
-    alert("Import failed: " + data.error);
+    await dashboardMessage(data.error || "Unknown error", "Import failed");
   }
 }
 
@@ -650,7 +1160,7 @@ function onGhRepoPicked() {
 async function importFromGitHub() {
   const url  = document.getElementById("input-gh-url").value.trim();
   const name = document.getElementById("input-gh-proj-name").value.trim();
-  if (!url) return alert("Enter a GitHub repository URL.");
+  if (!url) { await dashboardMessage("Enter a GitHub repository URL.", "Missing repository URL"); return; }
   const btn = document.getElementById("gh-import-btn");
   btn.innerHTML = '<span class="spinner"></span> Cloning…'; btn.disabled = true;
   try {
@@ -663,10 +1173,10 @@ async function importFromGitHub() {
       closeModal("modal-import-github");
       window.location.href = `/editor?project=${encodeURIComponent(data.name)}`;
     } else {
-      alert("Import failed: " + (data.error || "unknown error"));
+      await dashboardMessage(data.error || "Unknown error", "Import failed");
     }
   } catch (e) {
-    alert("Import failed: " + e);
+    await dashboardMessage(String(e), "Import failed");
   } finally {
     btn.innerHTML = "Import"; btn.disabled = false;
   }
@@ -677,7 +1187,9 @@ function openModal(id) {
   document.getElementById(id).classList.add("open");
   // focus first input
   setTimeout(() => {
-    const inp = document.querySelector(`#${id} input[type="text"], #${id} input:not([type])`);
+    const inp = Array.from(document.querySelectorAll(
+      `#${id} input[type="text"], #${id} input:not([type])`
+    )).find(candidate => candidate.offsetParent !== null && !candidate.disabled);
     if (inp) inp.focus();
   }, 80);
 }
@@ -685,11 +1197,32 @@ function closeModal(id) {
   document.getElementById(id).classList.remove("open");
 }
 document.querySelectorAll(".modal-overlay").forEach(o => {
-  o.addEventListener("click", e => { if (e.target === o) o.classList.remove("open"); });
+  o.addEventListener("click", e => {
+    if (e.target !== o) return;
+    if (o.id === "modal-dashboard-dialog") _finishDashboardDialog(null);
+    else if (o.id === "modal-new-project") closeNewProjectModal();
+    else if (o.id === "modal-move-project") closeMoveProjectModal();
+    else o.classList.remove("open");
+  });
 });
 document.addEventListener("keydown", e => {
-  if (e.key === "Escape") document.querySelectorAll(".modal-overlay.open").forEach(o => o.classList.remove("open"));
+  if (e.key !== "Escape") return;
+  const appDialog = document.getElementById("modal-dashboard-dialog");
+  if (appDialog.classList.contains("open")) {
+    _finishDashboardDialog(null);
+    return;
+  }
+  document.querySelectorAll(".modal-overlay.open").forEach(o => {
+    if (o.id === "modal-new-project") closeNewProjectModal();
+    else if (o.id === "modal-move-project") closeMoveProjectModal();
+    else o.classList.remove("open");
+  });
 });
+// pywebview dispatches this non-bubbling event on window (not document).
+window.addEventListener("pywebviewready", _syncNewProjectLocationChooser);
+window.addEventListener("pywebviewready", _syncMoveProjectActions);
+setTimeout(_syncNewProjectLocationChooser, 0);
+setTimeout(_syncMoveProjectActions, 0);
 
 // ── INIT ─────────────────────────────────────────────────────
 loadProjects();

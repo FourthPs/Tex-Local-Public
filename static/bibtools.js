@@ -63,27 +63,30 @@ export async function jumpToTodo(file, line) {
 // v5.0.0-beta.0.0 — Popover
 export function toggleBibPanel(e){ _togglePopover(e, { panelId: "bib-panel", btnId: "bib-toggle-btn", width: 440, onOpen: loadBibAuditUI }); }
 
-let _bibAuditInFlight = null;   // v4.9.6 (B2) — coalesce concurrent audit fetches
-async function _fetchBibAudit() {
-  if (!currentProject) return null;
+const _bibAuditInFlight = new Map();   // v5.8.7 — coalesce concurrent audits per project
+async function _fetchBibAudit(project = currentProject) {
+  if (!project) return null;
   // v4.9.6 (B2) — a successful compile fires two audits back-to-back
   // (updateBibBadge via loadCiteData, then _appendBibAuditBreadcrumb); if one
   // is already in flight, share its promise instead of issuing a second
   // identical request. The backend also mtime-caches /bib-audit now, so even
   // staggered calls are cheap — this just kills the duplicate round-trip.
   // Cleared the moment the request settles, so a later edit re-fetches fresh.
-  if (_bibAuditInFlight) return _bibAuditInFlight;
-  const proj = currentProject;
-  _bibAuditInFlight = (async () => {
-    try {
-      const r = await fetch(`/api/projects/${encodeURIComponent(proj)}/bib-audit`);
-      if (!r.ok) throw new Error("bib-audit " + r.status);
-      return await r.json();
-    } finally {
-      _bibAuditInFlight = null;
-    }
+  const existing = _bibAuditInFlight.get(project);
+  if (existing) return existing;
+  const request = (async () => {
+    const r = await fetch(`/api/projects/${encodeURIComponent(project)}/bib-audit`);
+    if (!r.ok) throw new Error("bib-audit " + r.status);
+    return await r.json();
   })();
-  return _bibAuditInFlight;
+  _bibAuditInFlight.set(project, request);
+  try {
+    return await request;
+  } finally {
+    if (_bibAuditInFlight.get(project) === request) {
+      _bibAuditInFlight.delete(project);
+    }
+  }
 }
 
 // Lightweight badge refresh — no panel needed. Counts only the "broken"
@@ -91,9 +94,11 @@ async function _fetchBibAudit() {
 export async function updateBibBadge() {
   const badge = document.getElementById("bib-badge");
   if (!badge) return;
-  if (!currentProject) { badge.style.display = "none"; return; }
+  const project = currentProject;
+  if (!project) { badge.style.display = "none"; return; }
   try {
-    const d = await _fetchBibAudit();
+    const d = await _fetchBibAudit(project);
+    if (currentProject !== project) return;
     const c = (d && d.counts) || {};
     const broken = (c.unresolved || 0) + (c.duplicate || 0);
     if (broken > 0) {
@@ -103,7 +108,7 @@ export async function updateBibBadge() {
       badge.style.display = "none";
     }
   } catch (_) {
-    badge.style.display = "none";
+    if (currentProject === project) badge.style.display = "none";
   }
 }
 
@@ -111,7 +116,8 @@ let _lastBibAudit = null;   // v4.9.2
 export async function loadBibAuditUI() {
   const list  = document.getElementById("bib-list");
   const count = document.getElementById("bib-count");
-  if (!currentProject) {
+  const project = currentProject;
+  if (!project) {
     list.innerHTML = '<div class="bib-empty">Open a project first</div>';
     count.textContent = "";
     return;
@@ -120,11 +126,13 @@ export async function loadBibAuditUI() {
   count.textContent = "";
   let d;
   try {
-    d = await _fetchBibAudit();
+    d = await _fetchBibAudit(project);
   } catch (e) {
+    if (currentProject !== project) return;
     list.innerHTML = `<div class="bib-empty" style="color:var(--red)">Load failed: ${escapeHtml(e.message)}</div>`;
     return;
   }
+  if (currentProject !== project) return;
   const unresolved = d.unresolved || [];
   const duplicate  = d.duplicate  || [];
   const unused     = d.unused     || [];
@@ -251,13 +259,13 @@ function _bibToast(msg) {
 // same /bib-audit scan; prepends one line onto the already-rendered log. Cheap
 // enough to fetch per compile (same profile as the badge refresh). Failures
 // are swallowed silently — a breadcrumb is a nice-to-have, never a blocker.
-export async function _appendBibAuditBreadcrumb() {
-  if (!currentProject) return;
+export async function _appendBibAuditBreadcrumb(project = currentProject) {
+  if (!project || currentProject !== project) return;
   const logEl = document.getElementById("log-content");
   if (!logEl) return;
   let d;
-  try { d = await _fetchBibAudit(); } catch (_) { return; }
-  if (!d) return;
+  try { d = await _fetchBibAudit(project); } catch (_) { return; }
+  if (!d || currentProject !== project) return;
   const c = d.counts || {};
   const parts = [];
   if (c.unresolved) parts.push(`${c.unresolved} unresolved`);

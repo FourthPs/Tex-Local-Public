@@ -1,6 +1,6 @@
 import { setQuickOpenFiles } from "quickopen";
 import { CM, _ssCurrentFile, _ssEditorDirty, _ssMainFile, _ssOpenTabs, _ssSaveTimer, closeModal, compile, currentFile, currentProject, editorDirty, escapeAttr, escapeHtml, isImageFile, loadIncludes, loadProjects, mainFile, openModal, openTabs, saveTimer, switchGen, switchProject, updateWordCount } from "editor";
-import { clearErrorMarkers } from "errors";
+import { clearErrorMarkers, repaintErrorMarkers } from "errors";
 
 // static/files.js — TexLocal Phase 2 module split (v5.0.0-beta.2.0)
 // Lifted verbatim from editor.js (CM-light cluster). Interim shared-scope:
@@ -239,13 +239,22 @@ export async function openFile(name) {
   const content = (typeof data.content === "string") ? data.content : "";
   if (!openTabs.find(t => t.name === name)) openTabs.push({ name, content });
   else openTabs.find(t => t.name === name).content = content;
+  // v5.8.5p2 — clear the OUTGOING file's error markers BEFORE replacing the doc.
+  // Under CM6 the error line-classes (_decoField) and the error-gutter RangeSet
+  // are mapped through every change; a full-doc setValue collapses their offsets
+  // (line decos land off a line-start), which leaves the lineNumbers gutter
+  // rendering blank cells until a reflow — the p1 symptom PoL still saw after the
+  // refresh nudge (refresh re-measures geometry but doesn't rebuild the number
+  // cells). Clearing first makes setValue map an EMPTY set, so this jump-open is
+  // identical to a plain cross-file open — the path the p1 bisect proved clean.
+  // (Was called AFTER setValue, i.e. once the stale decos had already mapped.)
+  clearErrorMarkers();
   CM.setValue(content);
   CM.clearHistory();
   // v5.0.3 — setValue() above fires a synchronous "change" that sets editorDirty;
   // this is a freshly-loaded buffer that already matches disk, so clear it. Any
   // real edit after this re-sets it, so the next save still fires correctly.
   _ssEditorDirty(false);
-  clearErrorMarkers();
   const ext = name.split(".").pop();
   CM.setOption("mode", ext === "bib" ? "bibtex" : "stex");
   // v4.7.0beta (PR#2) — restore the last cursor line for this file so you reopen
@@ -262,6 +271,11 @@ export async function openFile(name) {
   loadFiles();
   updateOutline();
   updateWordCount();
+  // v5.8.5p4 — repaint this file's compile markers (per-open-file). No-op until a
+  // compile has run; after a cross-file error jump this puts the ✕/! back on the
+  // right line of the file we just opened. Runs after setValue, so markers land
+  // on the new content (openFile cleared the old file's markers before setValue).
+  repaintErrorMarkers();
 }
 
 // v4.7.0beta (PR#2) — Persist the cursor line per (project, file), debounced,

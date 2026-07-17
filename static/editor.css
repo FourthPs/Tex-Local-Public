@@ -334,6 +334,15 @@
   .log-panel.open { height: 180px; }
   .log-header { padding: 6px 16px; font-size: 10px; font-weight: 600; letter-spacing: 1.5px; text-transform: uppercase; color: var(--muted); display: flex; align-items: center; justify-content: space-between; }
   .log-header button { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 14px; }
+  .log-header-actions { display: flex; align-items: center; gap: 8px; }
+  .log-header .log-export-btn {
+    border: 1px solid var(--border); border-radius: 5px; padding: 3px 8px;
+    color: var(--text); font: 600 9px var(--font-ui); letter-spacing: .5px;
+    text-transform: uppercase; transition: border-color .15s, color .15s, opacity .15s;
+  }
+  .log-header .log-export-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+  .log-header .log-export-btn:disabled { cursor: default; opacity: .4; }
+  .log-header .log-close-btn:hover { color: var(--text); }
   #log-content { padding: 0 16px 12px; font-family: var(--font-code); font-size: 11px; line-height: 1.6; color: var(--muted); overflow-y: auto; height: 140px; white-space: pre-wrap; }
 
   /* ── PDF PANEL ── */
@@ -812,6 +821,24 @@
   }
   .modal input:focus { border-color: var(--accent); }
   .modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
+  .new-project-location-card {
+    margin: -2px 0 16px; padding: 10px 11px; background: var(--bg);
+    border: 1px solid var(--border); border-radius: 8px;
+  }
+  .new-project-location-head {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    margin-bottom: 6px; color: var(--muted); font: 600 10px var(--font-ui);
+    letter-spacing: .6px; text-transform: uppercase;
+  }
+  .new-project-location-head > div { display: flex; gap: 5px; }
+  .new-project-location-head .btn { padding: 3px 7px; font-size: 9px; }
+  .new-project-location-value {
+    color: var(--text); font: 11px var(--font-code); white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis;
+  }
+  .new-project-location-hint { margin-top: 4px; color: var(--muted); font: 10px/1.4 var(--font-ui); }
+  .new-project-location-error { min-height: 0; margin-top: 0; color: var(--red); font: 10px/1.4 var(--font-ui); }
+  .new-project-location-error:not(:empty) { margin-top: 5px; }
 
   /* v5.8.0 — GitHub Backup readiness, destination, and friendly result UI. */
   .gh-status-row {
@@ -877,6 +904,10 @@
   }
   .project-row:hover { border-color: var(--accent); }
   .project-row.active-proj { border-color: var(--accent); background: rgba(var(--accent-rgb),.07); }
+  .project-row.project-unavailable { cursor: default; opacity: .58; }
+  .project-row.project-unavailable:hover { border-color: var(--border); }
+  .project-row.project-unavailable .project-row-date { color: var(--red); }
+  .project-row.project-unavailable button:disabled { cursor: default; opacity: .45; }
   .project-row-name { flex: 1; font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .project-row-date { font-size: 11px; color: var(--muted); flex-shrink: 0; }
   .project-row-del {

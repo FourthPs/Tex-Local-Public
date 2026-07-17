@@ -2,7 +2,7 @@
 
 A lightweight, self-hosted LaTeX editor that runs entirely on your own machine — no internet dependency, no compile timeout, full multi-file project support. Use it as a browser app or install the standalone Windows desktop build with bundled MiKTeX.
 
-![Version](https://img.shields.io/badge/version-5.8.6-informational)
+![Version](https://img.shields.io/badge/version-6.0.0-informational)
 ![Python](https://img.shields.io/badge/Python-3.10--3.12-blue)
 ![Flask](https://img.shields.io/badge/Flask-3.1-lightgrey)
 ![Platform](https://img.shields.io/badge/Desktop-Windows-0078d6)
@@ -57,7 +57,7 @@ A lightweight, self-hosted LaTeX editor that runs entirely on your own machine �
 - **User-macro autocomplete** — your own `\newcommand` / `\newenvironment` definitions are suggested as you type
 - **Auto-save** — every 800 ms; manual save with `Ctrl+S`
 
-> The editor runs on CodeMirror 6. The previous CodeMirror 5 engine stays available as a fallback — add `?cm=5` to the URL, with a one-click button to switch back.
+> The editor runs exclusively on CodeMirror 6. The retired CodeMirror 5 fallback and vendored assets were removed during the source v6.0.0 line.
 
 ### Compiling
 - **pdflatex / xelatex / lualatex** — no timeout; per-project compiler preference is remembered
@@ -94,7 +94,7 @@ A lightweight, self-hosted LaTeX editor that runs entirely on your own machine �
 
 ### A) Windows Desktop App (recommended)
 
-Download **`TexLocal-Setup-5.8.6.exe`** from the [Releases page](https://github.com/FourthPs/Tex-Local-Public/releases) and run it. Per-user install (no admin required), bundles a portable MiKTeX — nothing else to set up. The app opens in a native window and checks for updates automatically on launch.
+Download **`TexLocal-Setup-6.0.0.exe`** from the [Releases page](https://github.com/FourthPs/Tex-Local-Public/releases) and run it. Per-user install (no admin required), bundles a portable MiKTeX — nothing else to set up. The app opens in a native window and checks for updates automatically on launch. v6.0.0 rolls up everything since v5.8.4 — the complete move to CodeMirror 6, the packaged backend, and the validated GitHub backup flow.
 
 ### B) From Source
 
@@ -113,6 +113,8 @@ pip install -r requirements.txt
 ```bash
 python texlocal.py
 ```
+
+> **Note:** the source in this repository is currently a **v5.8.7 snapshot** (the last release before the v6.0.0 internal restructure). The v6.0.0 changes ship in the installer first; the restructured source will be published here once it has settled.
 
 **4. Open** `http://texlocal.localhost:52839` (opens automatically; `http://127.0.0.1:52839` also works)
 
@@ -135,7 +137,8 @@ The desktop installer (option A) bundles MiKTeX — no separate install needed.
 
 ```
 texlocal/
-├── texlocal.py             ← Flask backend (routes, compile, SyncTeX, APIs)
+├── texlocal/               ← Backend package: core.py (app + state + helpers),
+│   │                          routes/ (Flask Blueprints), __main__.py (web entry)
 ├── texlocal_app.py         ← Desktop bootstrap (PyWebView window)
 ├── templates/
 │   ├── index.html          ← Editor UI shell

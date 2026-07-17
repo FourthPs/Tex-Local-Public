@@ -88,7 +88,7 @@
     border: 1px solid var(--border); border-radius: 10px; overflow: hidden;
     background: var(--surface);
   }
-  table { width: 100%; border-collapse: collapse; }
+  table { width: 100%; border-collapse: collapse; table-layout: fixed; }
   thead { background: var(--panel); }
   th {
     padding: 10px 16px; font-size: 10.5px; font-weight: 600; letter-spacing: 1.2px;
@@ -101,6 +101,8 @@
   th .sort-ico { margin-left: 4px; font-size: 10px; opacity: .6; }
   th.sorted .sort-ico { opacity: 1; }
   th:last-child { cursor: default; text-align: right; }
+  th:nth-child(2), td:nth-child(2) { width: 190px; }
+  th:last-child, td:last-child { width: 300px; }
 
   td {
     padding: 14px 16px; border-bottom: 1px solid var(--border);
@@ -110,9 +112,25 @@
   tbody tr { cursor: pointer; transition: background .1s; }
   tbody tr:hover { background: rgba(var(--accent-rgb),.05); }
 
-  .proj-name { font-weight: 600; color: var(--text); transition: color .15s; }
+  .proj-name {
+    font-weight: 600; color: var(--text); transition: color .15s;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
   tbody tr:hover .proj-name { color: var(--accent); }
   .proj-sub  { font-size: 11px; color: var(--muted); margin-top: 3px; font-family: var(--font-code); }
+  .proj-location {
+    max-width: 430px; margin-top: 3px; color: var(--muted); opacity: .72;
+    font: 9.5px var(--font-code); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  tbody tr.project-unavailable { cursor: default; opacity: .62; }
+  tbody tr.project-unavailable:hover { background: transparent; }
+  tbody tr.project-unavailable:hover .proj-name { color: var(--text); }
+  tbody tr.project-unavailable .proj-sub { color: var(--red); }
+  tbody tr.project-unavailable .proj-actions { opacity: .45; }
+  .proj-actions button:disabled { cursor: default; pointer-events: none; }
+  .proj-actions button[data-act="move"]:disabled {
+    cursor: not-allowed; pointer-events: auto; opacity: .45;
+  }
   .proj-date { font-size: 12px; color: var(--muted); white-space: nowrap; }
   .proj-date-full { font-size: 10.5px; color: var(--muted); margin-top: 2px; font-family: var(--font-code); }
 
@@ -121,6 +139,29 @@
     opacity: 0; transition: opacity .15s;
   }
   tbody tr:hover .proj-actions { opacity: 1; }
+
+  /* Keep every project action visible at the desktop app's 900px minimum
+     width and in equivalently narrow browser windows. Fixed table columns
+     stop long, unbroken project names from pushing Delete out of the frame. */
+  @media (max-width: 1000px) {
+    .dash-main { padding: 36px 16px 72px; }
+    th, td { padding-left: 12px; padding-right: 12px; }
+    th:nth-child(2), td:nth-child(2) { width: 168px; }
+    th:last-child, td:last-child { width: 258px; }
+    .proj-actions { gap: 4px; }
+    .proj-actions .btn-sm { padding-left: 8px; padding-right: 8px; }
+  }
+
+  @media (max-width: 760px) {
+    header { padding-left: 14px; padding-right: 14px; }
+    .dash-main { padding-left: 10px; padding-right: 10px; }
+    th, td { padding-left: 8px; padding-right: 8px; }
+    th:nth-child(2), td:nth-child(2) { width: 132px; }
+    th:last-child, td:last-child { width: 218px; }
+    .proj-date-full { display: none; }
+    .proj-actions { gap: 2px; }
+    .proj-actions .btn-sm { padding-left: 6px; padding-right: 6px; }
+  }
 
   /* ── EMPTY STATE ── */
   .empty-state {
@@ -148,6 +189,18 @@
   }
   .modal input:focus { border-color: var(--accent); }
   .modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
+  /* v5.8.6p1 — shared dashboard message / confirm / prompt dialog. */
+  #modal-dashboard-dialog { z-index: 130; }
+  .dashboard-dialog-message {
+    color: var(--muted); font-size: 13px; line-height: 1.55;
+    white-space: pre-line; margin: -6px 0 18px;
+  }
+  .dashboard-dialog-message[hidden], .dashboard-dialog input[hidden] { display: none; }
+  .btn-danger-solid { background: var(--red); color: #fff; }
+  .btn-danger-solid:hover { filter: brightness(.92); transform: translateY(-1px); }
+  .btn:focus-visible {
+    outline: none; box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px rgba(var(--accent-rgb),.45);
+  }
   /* v4.2.1 — template chooser cards: 2x2 grid with SVG preview on top */
   .template-grid {
     display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
@@ -166,10 +219,15 @@
   /* hide native radio — visual state comes from :has(input:checked) */
   .template-opt input[type=radio] {
     position: absolute; opacity: 0; pointer-events: none;
-    width: 0; height: 0;
+    width: 1px; height: 1px; margin: 0; padding: 0;
+    overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap;
   }
   .template-opt:has(input:checked) {
     border-color: var(--accent); background: rgba(var(--accent-rgb),.06);
+  }
+  .template-opt:has(input:focus-visible) {
+    outline: none;
+    box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px rgba(var(--accent-rgb),.45);
   }
   .template-opt:has(input:checked) .template-graphic {
     background: rgba(var(--accent-rgb),.10); color: var(--accent);
@@ -190,6 +248,95 @@
   }
   .template-info span:first-child { font-size: 13px; font-weight: 600; color: var(--text); }
   .template-desc { font-size: 11px; color: var(--muted); line-height: 1.35; }
+
+  /* v5.8.6p4 — compact Template → Details New Project flow. */
+  .new-project-step[hidden] { display: none; }
+  .new-project-step-label {
+    margin-bottom: 8px; color: var(--muted); font-size: 11px; font-weight: 600;
+    letter-spacing: .5px; text-transform: uppercase;
+  }
+  .new-project-template-actions { margin-top: 16px; }
+  .new-project-template-echo {
+    display: flex; align-items: center; gap: 10px;
+    margin: -2px 0 14px; padding: 9px 11px;
+    border: 1px solid var(--border); border-radius: 8px;
+    background: rgba(var(--accent-rgb),.05);
+  }
+  .new-project-template-echo > svg {
+    width: 25px; height: 25px; flex: 0 0 auto; color: var(--accent);
+  }
+  .new-project-template-echo > div {
+    display: grid; grid-template-columns: auto 1fr; align-items: baseline;
+    column-gap: 8px; min-width: 0;
+  }
+  .new-project-template-echo-label {
+    grid-column: 1; grid-row: 1; color: var(--muted); font-size: 9.5px;
+    font-weight: 600; letter-spacing: .6px; text-transform: uppercase;
+  }
+  .new-project-template-echo strong {
+    grid-column: 2; grid-row: 1; min-width: 0; color: var(--text);
+    font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .new-project-template-echo #new-project-template-description {
+    grid-column: 1 / -1; grid-row: 2; margin-top: 2px;
+    color: var(--muted); font-size: 10.5px; line-height: 1.35;
+  }
+  .new-project-detail-actions .new-project-back { margin-right: auto; }
+
+  /* v5.8.6p3 — optional per-project parent folder in the desktop New Project flow. */
+  .project-location-card {
+    margin: 0 0 16px; padding: 11px 12px; background: var(--bg);
+    border: 1px solid var(--border); border-radius: 8px;
+  }
+  .project-location-head {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    margin-bottom: 6px; color: var(--muted); font-size: 10.5px; font-weight: 600;
+    letter-spacing: .7px; text-transform: uppercase;
+  }
+  .project-location-actions { display: flex; align-items: center; gap: 6px; }
+  .project-location-actions .btn { padding: 3px 8px; font-size: 9.5px; }
+  .project-location-value {
+    color: var(--text); font: 11.5px var(--font-code); white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis;
+  }
+  .project-location-hint { margin-top: 4px; color: var(--muted); font-size: 10.5px; line-height: 1.45; }
+
+  /* v5.8.6p5 — one-step Move project dialog. */
+  .move-project-name {
+    margin: -7px 0 15px; color: var(--text); font-size: 14px; font-weight: 600;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .move-location-card {
+    margin-bottom: 11px; padding: 11px 12px; background: var(--bg);
+    border: 1px solid var(--border); border-radius: 8px;
+  }
+  .move-location-destination { margin-bottom: 12px; }
+  .move-location-label, .move-location-head {
+    color: var(--muted); font-size: 10.5px; font-weight: 600;
+    letter-spacing: .7px; text-transform: uppercase;
+  }
+  .move-location-label { margin-bottom: 6px; }
+  .move-location-head {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    margin-bottom: 6px;
+  }
+  .move-location-actions { display: flex; align-items: center; gap: 6px; }
+  .move-location-actions .btn { padding: 3px 8px; font-size: 9.5px; }
+  .move-location-value {
+    color: var(--text); font: 11.5px var(--font-code); white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis;
+  }
+  .move-location-value.is-placeholder { color: var(--muted); font-family: var(--font-ui); }
+  .move-location-hint {
+    margin-top: 4px; color: var(--muted); font-size: 10.5px; line-height: 1.45;
+  }
+  .move-project-notice {
+    margin: 1px 0 7px; color: var(--muted); font-size: 10.5px; line-height: 1.45;
+  }
+  .move-project-error {
+    min-height: 17px; margin-bottom: 8px; color: var(--red); font-size: 11px;
+    line-height: 1.45;
+  }
 
   .zip-drop-zone {
     border: 2px dashed var(--border); border-radius: 8px; padding: 26px 16px;

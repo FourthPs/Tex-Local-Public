@@ -4,18 +4,51 @@ All notable changes to TexLocal are documented here.
 
 ---
 
+## v6.0.0 — 2026-07-18
+
+## v6.0.0 — 2026-07-18
+
+### The complete move to CodeMirror 6
+- TexLocal now runs on a single, modern editor engine. Multi-cursor editing (Alt-click / Alt-drag column select), smoother performance on long chapters, and stronger Thai + English mixed-input handling are now the standard experience.
+- The retired legacy editor engine and its assets were removed — the app is lighter and loads less on every start.
+- Fixed: the highlighted row in citation autocomplete shows its text in white again (it could be unreadable on some themes).
+
+### GitHub backup — validated end to end and hardened
+- Sign-in now uses TexLocal's own verified GitHub app.
+- Fixed a hang where the app kept waiting even after GitHub showed "your device is now connected" — sign-in polling is now sequential and respects GitHub's pacing hints.
+- Sync status now correctly says both sides changed when GitHub is ahead *and* you have unsaved local changes, instead of claiming only GitHub changed.
+- The full backup cycle (create private repo, push, pull, conflict handling, sign-out) has been validated live against real repositories.
+
+### Under the hood
+- The whole backend was restructured into a proper Python package with modular routes. No visible change today — it makes future features faster and safer to build.
+
+## v5.8.7 — 2026-07-17
+
+### Improvements
+- Compile diagnostics are now remembered separately for each project during the current Editor session. Switching back to a project restores its latest Raw Log, warning/error badge, and parsed diagnostics without automatically reopening a panel.
+
+### Fixes
+- Switching projects no longer carries the previous project's Raw Log or Error/Logs state into the newly opened project.
+- A late bibliography-audit response from an old project can no longer overwrite the current project's log, badge, or Bibliography panel.
+- The project picker now displays the active project immediately when entering the Editor instead of temporarily remaining on “Select project”.
+
 ## v5.8.6 — 2026-07-17
 
 ### New
 - **Choose where a new project is saved.** The New Project dialog is now a cleaner two-step flow — pick a template, then name the project and choose its folder. Projects can be stored outside the default TexLocal projects folder.
 - **Move a project to another folder.** A new folder action on each dashboard project relocates its files to a folder you pick, with a safe verified move (nothing is deleted until the copy is confirmed).
+- **`minted` support.** Syntax-highlighted code via the `minted` package now works out of the box with the bundled MiKTeX.
 - **Export the raw compile log** to a file from the Compile Log panel.
 
 ### Improvements
 - Dashboard dialogs (rename, duplicate, delete, and error messages) now use TexLocal's own themed dialogs instead of browser pop-ups.
+- The Error/Logs panel now surfaces the **real fatal engine error** (for example a missing font or file) instead of only the downstream citation warnings, and reconstructs long messages that TeX wraps across several lines.
+- Smarter bibliography detection: a commented-out `\addbibresource` no longer overrides your active bibliography.
+- Dashboard actions stay inside the frame even with long project names; the web view shows the Move action (disabled) with a note that relocation is Desktop-only.
 
 ### Fixes
-- **Desktop app:** bundled MiKTeX fonts now resolve correctly after installation. This fixes spurious font errors — and the resulting "all citations undefined" — that could appear on a freshly installed app.
+- **Desktop app:** bundled MiKTeX fonts now resolve correctly after installation, and a one-time font-database refresh after an install or upgrade means fresh projects no longer need a second Compile to get fonts and citations right. This clears the spurious font errors and "all citations undefined" that could appear on a freshly installed app.
+- A single Full Compile now leaves the Error Panel at the final resolved citation/reference state; warnings from earlier internal passes remain available only in Raw Log.
 
 ## v5.8.5 — 2026-07-16
 

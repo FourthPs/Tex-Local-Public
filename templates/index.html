@@ -150,8 +150,12 @@
     <div id="image-viewer"></div>
     <div class="log-panel" id="log-panel">
       <div class="log-header">
-        Compile Log
-        <button onclick="toggleLog()">✕</button>
+        <span>Compile Log</span>
+        <div class="log-header-actions">
+          <button id="export-raw-log-btn" class="log-export-btn" onclick="exportRawLog()"
+                  title="Compile once to export the raw log" disabled>Export Log</button>
+          <button class="log-close-btn" onclick="toggleLog()" title="Close raw log" aria-label="Close raw log">✕</button>
+        </div>
       </div>
       <div id="log-content"></div>
     </div>
@@ -370,9 +374,23 @@
   <div class="modal">
     <h3>New Project</h3>
     <input id="input-project-name" placeholder="Project name" onkeydown="if(event.key==='Enter')createProject()">
+    <div class="new-project-location-card">
+      <div class="new-project-location-head">
+        <span>Location</span>
+        <div>
+          <button class="btn btn-ghost" id="editor-project-location-default"
+                  onclick="useDefaultEditorProjectLocation()" hidden>Use default</button>
+          <button class="btn btn-ghost" id="editor-project-location-choose"
+                  onclick="chooseEditorProjectLocation()" hidden>Choose folder…</button>
+        </div>
+      </div>
+      <div class="new-project-location-value" id="editor-project-location-value">Default project folder</div>
+      <div class="new-project-location-hint" id="editor-project-location-hint">The project will be stored with your existing TexLocal projects.</div>
+      <div class="new-project-location-error" id="editor-project-location-error"></div>
+    </div>
     <div class="modal-actions">
       <button class="btn btn-ghost" onclick="closeModal('modal-project')">Cancel</button>
-      <button class="btn btn-primary" onclick="createProject()">Create</button>
+      <button class="btn btn-primary" id="create-project-btn" onclick="createProject()">Create</button>
     </div>
   </div>
 </div>

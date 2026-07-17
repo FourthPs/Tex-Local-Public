@@ -28,6 +28,11 @@ import threading
 import time
 import urllib.request
 
+from texlocal_fontconfig import repair_portable_fontconfig
+from texlocal_miktex_config import ensure_portable_minted_restricted_shell
+from texlocal_miktex_config import ensure_portable_fndb_current
+from texlocal_project_locations import issue_project_location_token
+
 # Signal to texlocal.py that we're running embedded.
 os.environ["TEXLOCAL_EMBEDDED"] = "1"
 
@@ -73,6 +78,41 @@ def _inject_bundled_miktex() -> None:
     # Mark for downstream code that may want to know which engine is active.
     os.environ["TEXLOCAL_MIKTEX_BUNDLED"] = miktex_bin
 
+    # minted v3's bundled latexminted helper is designed for restricted shell
+    # escape. MiKTeX does not trust it by default, so authorize exactly that
+    # bundled command; never enable unrestricted shell escape for documents.
+    minted_config_file = None
+    minted_config_error = None
+    try:
+        minted_config_file = ensure_portable_minted_restricted_shell(app_dir)
+    except Exception as e:
+        minted_config_error = str(e)
+
+    # Installer upgrades may preserve generated PK fonts while replacing the
+    # portable file-name database. Reconcile it once per installed build, at
+    # desktop bootstrap only — never in the per-document compile path.
+    fndb_status = None
+    fndb_error = None
+    try:
+        fndb_status = ensure_portable_fndb_current(
+            app_dir, app_executable=sys.executable
+        )
+    except Exception as e:
+        fndb_error = str(e)
+
+    # v5.8.5p13 — MiKTeX Portable's generated fonts.conf contains absolute
+    # paths from the build directory. The installer relocates the tree, so
+    # XeTeX could no longer load that config and became blind to Windows fonts
+    # (Kinnari was the real-project trigger). Repair those generated Fontconfig
+    # paths atomically at startup and keep its cache in the user's
+    # writable app-data tree. Failure degrades to prior behavior.
+    fontconfig_file = None
+    fontconfig_error = None
+    try:
+        fontconfig_file = repair_portable_fontconfig(app_dir)
+    except Exception as e:
+        fontconfig_error = str(e)
+
     # Diagnostic dump — opt-in via TEXLOCAL_DEBUG. The cost of always writing
     # is negligible, but a stray log file in users' install dirs is noise we
     # don't want by default. Debug Mode shortcut sets the env var for support
@@ -89,6 +129,24 @@ def _inject_bundled_miktex() -> None:
                 f.write(f"miktex_bin = {miktex_bin}\n")
                 f.write(f"PATH (first 800):\n  {os.environ['PATH'][:800]}\n")
                 f.write(f"TEXLOCAL_MIKTEX_BUNDLED = {miktex_bin}\n")
+                f.write(f"minted restricted config = {minted_config_file or '(not changed)'}\n")
+                if minted_config_error:
+                    f.write(f"minted config error = {minted_config_error}\n")
+                if fndb_status:
+                    f.write(
+                        "portable fndb = "
+                        f"{'refreshed' if fndb_status['attempted'] else 'already checked'}; "
+                        f"success={fndb_status['success']}\n"
+                    )
+                    if fndb_status.get("detail"):
+                        f.write(f"fndb detail = {fndb_status['detail']}\n")
+                else:
+                    f.write("portable fndb = (not available)\n")
+                if fndb_error:
+                    f.write(f"fndb bootstrap error = {fndb_error}\n")
+                f.write(f"portable fontconfig = {fontconfig_file or '(not repaired)'}\n")
+                if fontconfig_error:
+                    f.write(f"fontconfig bootstrap error = {fontconfig_error}\n")
                 f.write(f"shutil.which('pdflatex') = {_sh.which('pdflatex')}\n")
                 f.write(f"shutil.which('xelatex')  = {_sh.which('xelatex')}\n")
                 f.write("=== injection complete ===\n")
@@ -208,6 +266,62 @@ class _DownloadBridge:
         except OSError as e:
             return {"ok": False, "error": f"Could not write file: {e}"}
         return {"ok": True, "path": dest}
+
+    def save_text(self, content, suggested_name):
+        """Save exact UTF-8 text supplied by the local frontend.
+
+        Raw compile output exists client-side as the combined multi-pass log,
+        not as one backend file, so it cannot reuse ``save_file``'s localhost
+        fetch. The native Save dialog remains the only path authority: the
+        suggested name is reduced to a basename and the user chooses the final
+        destination before any write occurs.
+        """
+        if self._window is None:
+            return {"ok": False, "error": "Download bridge not ready."}
+        if not isinstance(content, str) or not isinstance(suggested_name, str):
+            return {"ok": False, "error": "Invalid text export."}
+        safe_name = os.path.basename(suggested_name.replace("\\", "/")).strip()
+        if not safe_name:
+            safe_name = "compile.log"
+
+        try:
+            chosen = self._window.create_file_dialog(
+                webview.SAVE_DIALOG, save_filename=safe_name
+            )
+        except Exception as e:
+            return {"ok": False, "error": f"Could not open Save dialog: {e}"}
+        if not chosen:
+            return {"ok": False, "cancelled": True}
+        dest = chosen[0] if isinstance(chosen, (list, tuple)) else chosen
+
+        try:
+            with open(dest, "wb") as f:
+                f.write(content.encode("utf-8"))
+        except (OSError, UnicodeError) as e:
+            return {"ok": False, "error": f"Could not write file: {e}"}
+        return {"ok": True, "path": dest}
+
+    def choose_project_folder(self):
+        """Choose a parent for one new project and return a one-time token.
+
+        The absolute path never becomes an open HTTP API parameter.  The
+        backend accepts only the opaque token issued here, then consumes it
+        once while creating the named child project directory.
+        """
+        if self._window is None:
+            return {"ok": False, "error": "Desktop bridge not ready."}
+        try:
+            chosen = self._window.create_file_dialog(webview.FOLDER_DIALOG)
+        except Exception as e:
+            return {"ok": False, "error": f"Could not open folder picker: {e}"}
+        if not chosen:
+            return {"ok": False, "cancelled": True}
+        parent = chosen[0] if isinstance(chosen, (list, tuple)) else chosen
+        try:
+            token, normalized = issue_project_location_token(parent)
+        except (OSError, ValueError) as e:
+            return {"ok": False, "error": str(e)}
+        return {"ok": True, "token": token, "path": normalized}
 
 
 # -- Main -------------------------------------------------------------

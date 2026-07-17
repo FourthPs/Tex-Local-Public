@@ -1,5 +1,6 @@
-import { CM, _copyFallback, _esc, compile, escapeHtml } from "editor";
+import { CM, CM6_ENGINE, _copyFallback, _esc, bibkeysCache, citationLocationsCache, citeDataReady, compile, currentFile, currentProject, escapeHtml } from "editor";
 import { openPackageManager } from "panels";
+import { openFile } from "files";
 
 // static/errors.js — TexLocal Phase 3 module split (v5.0.0-beta.3.0)
 // Lifted verbatim from editor.js (error markers + panel + logs cluster).
@@ -15,9 +16,177 @@ export function _ssLastParsedLog(v){ lastParsedLog = v; }  // v5.0.0-beta.4.0 �
 let logsActiveTab = "all";  // tab ที่เลือกอยู่ใน Logs panel
 let errorPanelPdfState = { available: false, fresh: false };
 
+// v5.8.6 — LaTeX log path → project-relative. MiKTeX prints absolute file-open
+// markers like `(D:/texlocal/projects/<PROJECT>\Content/02.tex` (mixed slashes).
+// openFile() wants the app's project-relative, forward-slash form
+// (`Content/02.tex`), so strip everything up to and including
+// `/<currentProject>/`. If we can't map it to a project-relative path (no marker,
+// still absolute), return null so the caller falls back to a current-buffer jump
+// — never worse than today's file:null behavior.
+function _logPathToRel(raw, project) {
+  if (!raw) return null;
+  const p = raw.replace(/\\/g, "/").replace(/^\.\//, "");
+  if (project) {
+    const marker = "/" + project + "/";
+    const idx = p.lastIndexOf(marker);
+    if (idx >= 0) return p.slice(idx + marker.length);
+  }
+  return /^([A-Za-z]:)?\//.test(p) ? null : p;   // already-relative log path is usable as-is
+}
+
+// TeX hard-wraps long diagnostics at its print-line limit, including in the
+// middle of words (`input li` + `ne 37.`). Reconstruct only records that start
+// as an error/warning/info message, and stop before TeX's help/source-line
+// boilerplate. This keeps package chatter separate while allowing the Error
+// panel to show the same complete message that remains visible in Raw Logs.
+// Raw Logs themselves are never modified.
+function _joinWrappedDiagnostics(physicalLines) {
+  const logical = [];
+  for (let i = 0; i < physicalLines.length; i++) {
+    let line = physicalLines[i];
+    const isDiagnostic = /^!\s*\S/.test(line)
+      || /^(?:LaTeX|Package\s+\S+)\s+(?:Font\s+)?(?:Warning|Info)\b/i.test(line);
+    if (isDiagnostic) {
+      const packageName = (line.match(/^Package\s+(\S+)\s+/i) || [])[1] || null;
+      const isReferenceWarning = /^LaTeX\s+Warning:\s+(?:Citation|Reference)\b/i.test(line);
+      let previousPhysical = line;
+      for (let joined = 0; joined < 10; joined++) {
+        const next = physicalLines[i + 1];
+        if (next === undefined || !next.trim()) break;
+        if (/^!\s*\S/.test(next)
+            || /^(?:LaTeX|Package\s+\S+)\s+(?:Font\s+)?(?:Warning|Info)\b/i.test(next)) break;
+
+        const trimmed = next.trim();
+        if (/^(?:See the .+ documentation|Type\s+H\b|\.\.\.|l\.\d+\b|Fatal error occurred|Here is how much|Output written|Transcript written)/i.test(trimmed)) break;
+
+        let continuation = null;
+        const packagePrefix = next.match(/^\(([^)]+)\)\s*(.*)$/);
+        if (packageName && packagePrefix
+            && packagePrefix[1].toLowerCase() === packageName.toLowerCase()) {
+          // Package warnings commonly repeat `(package)` on continuation lines.
+          continuation = " " + packagePrefix[2].trimStart();
+        } else if (/^\s/.test(next) || previousPhysical.length >= 70
+                   || (isReferenceWarning
+                       && !/on input line\s+\d+\.?\s*$/i.test(line))) {
+          // Preserve the physical prefix exactly: a leading space is a real word
+          // separator, while no space means TeX split in the middle of a word.
+          continuation = next;
+        }
+        if (continuation === null) break;
+        line += continuation;
+        previousPhysical = next;
+        i++;
+      }
+    }
+    logical.push(line);
+  }
+  return logical;
+}
+
+// v5.8.5p12 — LaTeX reports a citation in a moving caption once while the
+// generated .lof is read and again where the figure is typeset. Those are not
+// separate source problems, and "page xi / input line 5" points at generated
+// state instead of the user's \cite. Collapse by key, classify against BibTeX
+// and the already-loaded cite index, then rebuild occurrences from real .tex
+// locations. The raw compiler log remains untouched in the Raw Logs view.
+const _UNDEFINED_CITATION_RE = /^Citation\s+[`'"]([^`'"]+)[`'"]\s+on page\b.*\bundefined$/i;
+
+function _undefinedCitationKey(msg) {
+  const m = String(msg || "").trim().match(_UNDEFINED_CITATION_RE);
+  return m ? m[1].trim() : null;
+}
+
+function _normalizeCitationWarnings(warnings, logLines) {
+  const missingFromBibtex = new Set();
+  const databaseFiles = new Set();
+  for (const line of logLines) {
+    let m = line.match(/Warning--I didn't find a database entry for\s+["']([^"']+)["']/i);
+    if (m) missingFromBibtex.add(m[1].trim());
+    m = line.match(/^Database file #\d+:\s*(.+?\.bib)\s*$/i);
+    if (m) databaseFiles.add(m[1].replace(/\\/g, "/").split("/").pop());
+  }
+
+  // Live preview has no BibTeX transcript of its own. Fall back to the source
+  // file recorded on each cached bib entry when the full log names no database.
+  if (!databaseFiles.size) {
+    for (const entry of bibkeysCache) {
+      if (entry.file) databaseFiles.add(String(entry.file).replace(/\\/g, "/"));
+    }
+  }
+  const bibLabel = databaseFiles.size === 1 ? [...databaseFiles][0] : null;
+  const definedKeys = new Set(bibkeysCache.map(entry => entry.key));
+  const locationsByKey = new Map();
+  for (const loc of citationLocationsCache) {
+    if (!loc || !loc.key || !loc.file || !Number.isFinite(Number(loc.line))) continue;
+    if (!locationsByKey.has(loc.key)) locationsByKey.set(loc.key, []);
+    const locations = locationsByKey.get(loc.key);
+    const id = `${loc.file}:${loc.line}`;
+    if (!locations.some(existing => `${existing.file}:${existing.line}` === id)) {
+      locations.push(loc);
+    }
+  }
+
+  const emitted = new Set();
+  const normalized = [];
+  for (const warning of warnings) {
+    const key = _undefinedCitationKey(warning.msg);
+    if (!key) {
+      normalized.push(warning);
+      continue;
+    }
+    if (emitted.has(key)) continue;
+    emitted.add(key);
+
+    const missing = missingFromBibtex.has(key)
+      || (citeDataReady && !definedKeys.has(key));
+    const msg = missing
+      ? `Missing bibliography entry \`${key}\`${bibLabel ? ` in ${bibLabel}` : ""}`
+      : `Citation \`${key}\` is unresolved — run Full Compile`;
+    const sourceLocations = locationsByKey.get(key) || [];
+    if (sourceLocations.length) {
+      for (const loc of sourceLocations) {
+        normalized.push({ ...warning, file: loc.file, line: Number(loc.line) - 1,
+                          msg, citationKey: key });
+      }
+    } else {
+      // Cache unavailable: keep one actionable card rather than the repeated
+      // .lof/page diagnostics. The existing file-stack location is the fallback.
+      normalized.push({ ...warning, msg, citationKey: key });
+    }
+  }
+  return normalized;
+}
+
 export function parseLatexErrors(log) {
   const errors = [], warnings = [], infos = [];
-  const lines = log.split("\n");
+  const lines = _joinWrappedDiagnostics(log.split("\n"));
+
+  // v5.8.6 — file-stack tracker so page/line-only diagnostics get attributed to
+  // the source file they live in (the cross-file jump needs this). A citation/
+  // reference warning ("Citation `X' on page N undefined on input line M") or a
+  // Pattern-B "! …" error names a LINE but never a FILE — only the surrounding
+  // `(path …)` nesting LaTeX prints as it opens each input does. Approach mirrors
+  // Overleaf's log parser: every "(" bumps `_depth`; a "(" immediately followed
+  // by a *.tex path pushes a frame at that depth; every ")" drops `_depth` and
+  // pops frames opened deeper. Balanced prose parens like "(Type 1)" net out;
+  // non-.tex opens (.sty/.aux) only move depth, never become the attributed file.
+  // `curFile()` = innermost open .tex (project-relative), or null when unknown.
+  let _depth = 0;
+  const fileStack = [];
+  const scanFileStack = (s) => {
+    for (let k = 0; k < s.length; k++) {
+      const ch = s[k];
+      if (ch === "(") {
+        _depth++;
+        const m = s.slice(k).match(/^\(((?:[A-Za-z]:)?[^()\s]*?\.tex)\b/i);
+        if (m) fileStack.push({ rel: _logPathToRel(m[1], currentProject), depth: _depth });
+      } else if (ch === ")") {
+        if (_depth > 0) _depth--;
+        while (fileStack.length && fileStack[fileStack.length - 1].depth > _depth) fileStack.pop();
+      }
+    }
+  };
+  const curFile = () => (fileStack.length ? fileStack[fileStack.length - 1].rel : null);
   // v3.3.0 — Missing-package detection. Tracks packages/classes the user
   // doesn't have installed; surfaced as a dedicated card with an `mpm
   // --install=<pkg>` copy button. Dedup by name so spam from a hundred
@@ -37,6 +206,7 @@ export function parseLatexErrors(log) {
 
   for (let i = 0; i < lines.length; i++) {
     const l = lines[i];
+    scanFileStack(l);   // v5.8.6 — update the (file …) nesting BEFORE matching, so curFile() reflects this line's enclosing input
 
     // v3.3.0 — Missing-package patterns. Three forms seen in the wild:
     //   `! LaTeX Error: File `foo.sty' not found.`     (MiKTeX, TeX Live)
@@ -63,14 +233,14 @@ export function parseLatexErrors(log) {
     }
 
     // Pattern B: ! Error → look ahead for l.N
-    const mB = l.match(/^! (.+)$/);
+    const mB = l.match(/^!\s*(.+)$/);
     if (mB) {
       let lineNo = -1;
       for (let j = i + 1; j < Math.min(i + 15, lines.length); j++) {
         const mL = lines[j].match(/^l\.(\d+)/);
         if (mL) { lineNo = parseInt(mL[1]) - 1; break; }
       }
-      errors.push({ file: null, line: lineNo, msg: mB[1].trim() });
+      errors.push({ file: curFile(), line: lineNo, msg: mB[1].trim() });   // v5.8.6 — attribute to the enclosing input file
       continue;
     }
 
@@ -78,7 +248,7 @@ export function parseLatexErrors(log) {
     const mOF = l.match(/^((?:Over|Under)full \\[hv]box[^)]*\))\s+(?:detected at line (\d+)|in paragraph at lines (\d+))/i);
     if (mOF) {
       const lineNo = parseInt(mOF[2] || mOF[3]) - 1;
-      warnings.push({ file: null, line: lineNo, msg: mOF[0].trim() });
+      warnings.push({ file: curFile(), line: lineNo, msg: mOF[0].trim() });   // v5.8.6 — attribute to the enclosing input file
       continue;
     }
 
@@ -87,7 +257,7 @@ export function parseLatexErrors(log) {
     if (mW) {
       const msg = mW[1].trim() || l.trim();
       const lineNo = mW[2] ? parseInt(mW[2]) - 1 : -1;
-      warnings.push({ file: null, line: lineNo, msg });
+      warnings.push({ file: curFile(), line: lineNo, msg });   // v5.8.6 — Citation/Reference undefined etc. → enclosing input file
       continue;
     }
 
@@ -106,8 +276,64 @@ export function parseLatexErrors(log) {
       if (seen.has(key)) return false; seen.add(key); return true;
     });
   };
-  return { errors: dedup(errors), warnings: dedup(warnings), infos: dedup(infos),
+  const normalizedWarnings = _normalizeCitationWarnings(warnings, lines);
+  return { errors: dedup(errors), warnings: dedup(normalizedWarnings), infos: dedup(infos),
            missingPackages };   // v3.3.0
+}
+
+// v5.8.5 — cross-file error jump. Pattern-A log lines attribute an error to a
+// file (project-relative, forward slashes — the exact shape openFile() takes),
+// but both jump handlers only moved the cursor in whatever buffer was open:
+// right line, wrong file whenever the error lived in an \input'ed file. Open
+// the owning file first (same pattern as bibtools.js), then jump. file == null
+// keeps the old behavior: jump within the current buffer. (v5.8.6: Patterns B/C/D
+// — "! …" errors, Overfull boxes, and Citation/Reference-undefined warnings that
+// name a line but no file — are now attributed to their enclosing input file via
+// the parser's file-stack tracker, so those jump cross-file too; only truly
+// file-less lines and Info messages stay null.) errors.js<->files.js cycle is safe: both
+// sides only call each other at event time, never during module eval (same
+// precedent as the existing editor.js<->errors.js cycle).
+// v5.8.5 (same-day fix) — two guards added after PoL's live repro:
+// (1) _jumpBusy: openFile is async now, so a double-click (or two rapid card
+//     clicks) used to run TWO interleaved openFile calls — observed end state
+//     was tab/buffer mismatch + every CM6 line-number gutter cell rendered
+//     EMPTY (the "gray bar disappeared"). openFile has no reentrancy guard of
+//     its own, so serialize at this entry point: ignore clicks while a jump
+//     is in flight.
+// (2) post-jump CM.refresh(): the blanked gutter heals on any reflow (opening
+//     DevTools / resize proved this), so nudge a measure after the jump. Cheap
+//     no-op when the gutter is healthy. Deep CM6 root cause of the empty
+//     cells is logged in CHANGELOG for a proper fix.
+let _jumpBusy = false;
+async function _jumpToErrorLoc(file, line) {
+  if (_jumpBusy) return;
+  _jumpBusy = true;
+  try {
+    if (file && file !== currentFile) await openFile(file);
+  } catch (_) {
+    _jumpBusy = false;
+    return;
+  }
+  // v5.8.5p7 — attack the CAUSE, not just heal it. The blank lineNumbers cells
+  // came from doing setCursor + scrollIntoView SYNCHRONOUSLY right after openFile's
+  // full-doc setValue — before CM6 had measured the new document. The scroll then
+  // computed a target + rendered the gutter against a stale viewport, leaving empty
+  // number cells until a reflow. Fix: set the cursor now (cheap, no scroll), then
+  // defer the SCROLL to the next animation frame, once CM6 has laid out the new
+  // doc — so the scroll and the gutter render both run on a measured view. A
+  // forceLineNumbers() compartment rebuild + refresh() ride along as a guaranteed
+  // repaint backstop. The jump lock is held until this frame completes, so rapid
+  // clicks can't interleave a second setValue mid-scroll (the old p1 hazard).
+  CM.setCursor(line, 0);
+  CM.focus();
+  requestAnimationFrame(() => {
+    try {
+      CM.scrollIntoView({ line, ch: 0 }, 80);
+      if (CM.forceLineNumbers) CM.forceLineNumbers();
+      CM.refresh();
+    } catch (_) {}
+    _jumpBusy = false;
+  });
 }
 
 // v5.0.0-beta.0.0 — Unified error/logs card renderer (Phase 0 of the editor.js
@@ -135,7 +361,7 @@ function renderErrorCards(items, cards) {
     const icon = kind === "error" ? "✕" : kind === "info" ? "ℹ" : "!";
     const card = document.createElement("div");
     card.className = `err-card ${cls}`;
-    const locText = [rep.file, rep.line >= 0 ? `line ${rep.line + 1}` : null].filter(Boolean).join(", ");
+    const locText = [rep.file, rep.line >= 0 ? `line ${rep.line + 1}` : null].filter(Boolean).join(" · ");
 
     let headerExtra = "";
     if (n > 1) {
@@ -156,11 +382,7 @@ function renderErrorCards(items, cards) {
     `;
 
     if (n === 1 && rep.line >= 0) {
-      card.querySelector(".err-nav").onclick = () => {
-        CM.setCursor(rep.line, 0);
-        CM.scrollIntoView({ line: rep.line, ch: 0 }, 80);
-        CM.focus();
-      };
+      card.querySelector(".err-nav").onclick = () => _jumpToErrorLoc(rep.file, rep.line);   // v5.8.5 — open rep.file first
     } else if (n > 1) {
       // Populate the occurrences list lazily — only build DOM rows when first
       // expanded (a missing-\def cascade can produce 50+ occurrences).
@@ -179,11 +401,7 @@ function renderErrorCards(items, cards) {
             .filter(Boolean).join(", ");
           row.textContent = `↗  ${where}`;
           if (occ.line >= 0) {
-            row.onclick = () => {
-              CM.setCursor(occ.line, 0);
-              CM.scrollIntoView({ line: occ.line, ch: 0 }, 80);
-              CM.focus();
-            };
+            row.onclick = () => _jumpToErrorLoc(occ.file, occ.line);   // v5.8.5 — open occ.file first
           } else {
             row.disabled = true;
             row.style.cursor = "default";
@@ -462,10 +680,22 @@ export function toggleLogsPanel() {
 }
 
 export function clearErrorMarkers() {
-  CM.clearGutter("cm-errors-gutter");
-  CM.eachLine(lh => {
-    CM.removeLineClass(lh, "background", "cm-error-line");
-    CM.removeLineClass(lh, "background", "cm-warn-line");
+  // v5.8.5p5 — one transaction (batched), and no per-line loop under CM6.
+  CM.operation(() => {
+    CM.clearGutter("cm-errors-gutter");
+    if (CM6_ENGINE) {
+      // Under CM6, removeLineClass is group-based — a single call clears every
+      // line carrying that class. The CM5-era eachLine loop fired one dispatch
+      // PER LINE (hundreds on a big file); doing that around a jump's setValue is
+      // what blanked the gutter. One call each is enough.
+      CM.removeLineClass(0, "background", "cm-error-line");
+      CM.removeLineClass(0, "background", "cm-warn-line");
+    } else {
+      CM.eachLine(lh => {
+        CM.removeLineClass(lh, "background", "cm-error-line");
+        CM.removeLineClass(lh, "background", "cm-warn-line");
+      });
+    }
   });
 }
 
@@ -503,29 +733,55 @@ function _hideMarkerTip() {
 }
 
 export function showErrorMarkers({ errors, warnings }) {
+ CM.operation(() => {   // v5.8.5p5 — clear + all markers in ONE transaction (was hundreds of dispatches)
   clearErrorMarkers();
   const total = CM.lineCount();
+  // v5.8.5p4 — gutter markers are per-open-file. Only paint diagnostics that
+  // belong to the file currently in the editor; a null file (log named no file)
+  // means "the current buffer", so it still paints. Cross-file diagnostics —
+  // now correctly attributed by the file-stack (p3) — are skipped here and shown
+  // when their own file is opened (repaintErrorMarkers, called from openFile).
+  // Before this, addMarker painted EVERY diagnostic by line number into whatever
+  // buffer was open, so a Content/02.tex error landed on the same line number of
+  // MainPage.tex (wrong file/line) or was dropped when that line was past EOF.
+  const _mine = (f) => !f || f === currentFile;
 
   const addMarker = (lineNo, msg, isError) => {
     if (lineNo < 0 || lineNo >= total) return;
-    const el = document.createElement("div");
-    el.className = isError ? "cm-error-marker" : "cm-warn-marker";
-    el.textContent = isError ? "✕" : "!";
-    // Kept as a fallback if our styled tooltip ever fails to mount (e.g.
-    // headless screenshot tooling). The custom tooltip below wins because
-    // it fires on mouseenter instantly while title needs ~1s delay.
-    el.title = msg || "";
-    el.addEventListener("mouseenter", () => _showMarkerTip(el, msg, isError));
-    el.addEventListener("mouseleave", _hideMarkerTip);
-    el.onclick = () => {
-      CM.setCursor(lineNo, 0);
-      CM.scrollIntoView({ line: lineNo, ch: 0 }, 80);
-      CM.focus();
+    // v5.8.5p8 — CM6 gutter markers may render more than once as viewport cells are
+    // recycled. Give its adapter a factory so every render owns a fresh DOM
+    // node; CM5 still receives the single Element its native API expects.
+    const makeMarker = () => {
+      const el = document.createElement("div");
+      el.className = isError ? "cm-error-marker" : "cm-warn-marker";
+      el.textContent = isError ? "✕" : "!";
+      // Kept as a fallback if our styled tooltip ever fails to mount (e.g.
+      // headless screenshot tooling). The custom tooltip below wins because
+      // it fires on mouseenter instantly while title needs ~1s delay.
+      el.title = msg || "";
+      el.addEventListener("mouseenter", () => _showMarkerTip(el, msg, isError));
+      el.addEventListener("mouseleave", _hideMarkerTip);
+      el.onclick = () => {
+        CM.setCursor(lineNo, 0);
+        CM.scrollIntoView({ line: lineNo, ch: 0 }, 80);
+        CM.focus();
+      };
+      return el;
     };
-    CM.setGutterMarker(lineNo, "cm-errors-gutter", el);
+    CM.setGutterMarker(lineNo, "cm-errors-gutter", CM6_ENGINE ? makeMarker : makeMarker());
     CM.addLineClass(lineNo, "background", isError ? "cm-error-line" : "cm-warn-line");
   };
 
-  errors.forEach(e   => addMarker(e.line, e.msg, true));
-  warnings.forEach(w => addMarker(w.line, w.msg, false));
+  errors.forEach(e   => { if (_mine(e.file)) addMarker(e.line, e.msg, true); });
+  warnings.forEach(w => { if (_mine(w.file)) addMarker(w.line, w.msg, false); });
+ });
+}
+
+// v5.8.5p4 — repaint markers for the current buffer from the last compile's
+// parse, so per-open-file gutter markers follow you across file switches and
+// cross-file jumps. No-op until a compile has produced a parse. Called by
+// openFile() after the new buffer loads (openFile clears markers before the
+// setValue, so this repaints the ones that belong to the file just opened).
+export function repaintErrorMarkers() {
+  if (lastParsedLog) showErrorMarkers(lastParsedLog);
 }

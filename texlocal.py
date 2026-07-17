@@ -1,5 +1,5 @@
 from flask import Flask, request, jsonify, send_file, render_template
-import os, sys, subprocess, shutil, zipfile, io, re, gzip, json, hashlib, base64
+import os, sys, subprocess, shutil, zipfile, io, re, gzip, json, hashlib, base64, errno
 import threading, urllib.request, urllib.error, urllib.parse, tempfile, time, webbrowser, signal
 
 # v4.2.0-phase4 — Single source of truth for the running version. Used by:
@@ -9,7 +9,7 @@ import threading, urllib.request, urllib.error, urllib.parse, tempfile, time, we
 # The Inno installer keeps its own MyAppVersion in texlocal.iss; the two
 # MUST be bumped together when cutting a release. Discipline reminder in
 # HANDOFF section 1.
-TEXLOCAL_VERSION = "5.8.4"
+TEXLOCAL_VERSION = "5.8.7"
 
 # GitHub release-check endpoint. Points to the public repo for update checks and About modal link.
 TEXLOCAL_GITHUB_OWNER = "FourthPs"
@@ -46,6 +46,14 @@ PROJECTS_DIR = os.path.join(APP_BASE, "projects")
 os.makedirs(PROJECTS_DIR, exist_ok=True)
 PROJECTS_DIR_REAL = os.path.realpath(PROJECTS_DIR)
 
+from texlocal_project_locations import (  # noqa: E402
+    ProjectLocationStore,
+    consume_project_location_token,
+    default_registry_path,
+)
+
+PROJECT_LOCATION_STORE = ProjectLocationStore(default_registry_path())
+
 # v4.0.1-phase2 - When TexLocal runs as a windowed (.exe console=False)
 # PyInstaller bundle, child processes spawned via subprocess inherit no
 # console - Windows then creates a fresh cmd window for each one, which
@@ -73,6 +81,9 @@ def _safe_project(name):
     """Return absolute project dir path, or raise _PathError."""
     if not _is_safe_project_name(name):
         raise _PathError("Invalid project name")
+    registered = PROJECT_LOCATION_STORE.get(name)
+    if registered is not None:
+        return registered
     p = os.path.realpath(os.path.join(PROJECTS_DIR, name))
     # Must be a direct child of PROJECTS_DIR (allow == when name is exactly
     # rejected above, so this is just defence in depth).
@@ -81,9 +92,188 @@ def _safe_project(name):
     return p
 
 
+def _project_name_in_use(name):
+    """Names stay globally unique across default and external locations."""
+    if PROJECT_LOCATION_STORE.contains(name):
+        return True
+    return os.path.exists(os.path.join(PROJECTS_DIR, name))
+
+
+def _is_external_project(name):
+    return PROJECT_LOCATION_STORE.get(name) is not None
+
+
+def _path_is_within(path, root):
+    path_n = os.path.normcase(os.path.realpath(path))
+    root_n = os.path.normcase(os.path.realpath(root))
+    return path_n == root_n or path_n.startswith(root_n + os.sep)
+
+
+def _project_parent_conflict(parent):
+    """Reject creating one TexLocal project inside another project."""
+    if (_path_is_within(parent, PROJECTS_DIR_REAL)
+            and os.path.normcase(parent) != os.path.normcase(PROJECTS_DIR_REAL)):
+        return True
+    return any(_path_is_within(parent, project_path)
+               for project_path in PROJECT_LOCATION_STORE.all().values())
+
+
+class _ProjectMoveError(Exception):
+    """A project move could not finish without risking the source copy."""
+
+
+_project_moves = set()
+_project_moves_guard = threading.Lock()
+
+
+def _project_move_key(name):
+    return os.path.normcase(str(name))
+
+
+def _project_move_active(name):
+    with _project_moves_guard:
+        return _project_move_key(name) in _project_moves
+
+
+def _project_tree_manifest(root):
+    """Return a content manifest used to verify a cross-volume project copy."""
+    manifest = []
+    for current, dirs, files in os.walk(root, topdown=True, followlinks=False):
+        dirs.sort(key=os.path.normcase)
+        files.sort(key=os.path.normcase)
+        for dirname in dirs:
+            full = os.path.join(current, dirname)
+            rel = os.path.relpath(full, root).replace("\\", "/")
+            if os.path.islink(full):
+                manifest.append(("link-dir", rel, os.readlink(full)))
+            else:
+                manifest.append(("dir", rel))
+        for filename in files:
+            full = os.path.join(current, filename)
+            rel = os.path.relpath(full, root).replace("\\", "/")
+            if os.path.islink(full):
+                manifest.append(("link-file", rel, os.readlink(full)))
+                continue
+            digest = hashlib.sha256()
+            with open(full, "rb") as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            manifest.append(("file", rel, os.path.getsize(full), digest.hexdigest()))
+    return tuple(manifest)
+
+
+def _same_filesystem(source, destination_parent):
+    return os.stat(source).st_dev == os.stat(destination_parent).st_dev
+
+
+def _set_project_location(name, path, external):
+    if external:
+        PROJECT_LOCATION_STORE.register(name, path)
+    else:
+        PROJECT_LOCATION_STORE.unregister(name)
+
+
+def _move_project_directory(name, source, destination, destination_external):
+    """Move a project and update its registry entry.
+
+    Same-volume moves use an atomic directory rename. Cross-volume moves copy
+    into a hidden staging directory, verify every file by SHA-256, publish the
+    destination atomically, then rename the source aside before committing the
+    registry. Until that commit succeeds, the original can always be restored.
+    """
+    if _same_filesystem(source, os.path.dirname(destination)):
+        try:
+            os.rename(source, destination)
+        except OSError as rename_error:
+            # Network shares and mounted folders can report misleading st_dev
+            # values on Windows. Fall through to the verified copy path when
+            # the filesystem itself says this is actually cross-device.
+            if (rename_error.errno != errno.EXDEV
+                    and getattr(rename_error, "winerror", None) != 17):
+                raise
+        else:
+            try:
+                _set_project_location(name, destination, destination_external)
+            except BaseException:
+                try:
+                    os.rename(destination, source)
+                except OSError as rollback_error:
+                    raise _ProjectMoveError(
+                        f"Location update failed and the folder rollback also failed: {rollback_error}"
+                    )
+                raise
+            return None
+
+    staging = tempfile.mkdtemp(prefix=".texlocal-move-", dir=os.path.dirname(destination))
+    tombstone = os.path.join(
+        os.path.dirname(source),
+        f".texlocal-move-source-{os.getpid()}-{time.time_ns()}",
+    )
+    published = False
+    source_renamed = False
+    try:
+        shutil.copytree(
+            source, staging, dirs_exist_ok=True, symlinks=True,
+            copy_function=shutil.copy2,
+        )
+        if _project_tree_manifest(source) != _project_tree_manifest(staging):
+            raise _ProjectMoveError("Copied project verification failed; the original was not changed.")
+        os.replace(staging, destination)
+        published = True
+        os.replace(source, tombstone)
+        source_renamed = True
+        _set_project_location(name, destination, destination_external)
+    except BaseException:
+        rollback_error = None
+        if source_renamed and os.path.exists(tombstone) and not os.path.exists(source):
+            try:
+                os.replace(tombstone, source)
+                source_renamed = False
+            except OSError as error:
+                rollback_error = error
+        if published and not source_renamed and os.path.exists(destination):
+            try:
+                _rmtree_force(destination)
+                published = False
+            except OSError as error:
+                rollback_error = rollback_error or error
+        if os.path.exists(staging):
+            try:
+                _rmtree_force(staging)
+            except OSError:
+                pass
+        if rollback_error is not None:
+            raise _ProjectMoveError(
+                "The move failed and automatic rollback was incomplete. "
+                f"Recovery data remains near the original folder: {rollback_error}"
+            )
+        raise
+
+    try:
+        _rmtree_force(tombstone)
+    except OSError as cleanup_error:
+        return (
+            "Project moved successfully, but temporary source data could not be removed from "
+            f'"{tombstone}": {cleanup_error}'
+        )
+    return None
+
+
 
 def _err(msg, code=400):
     return jsonify({"error": msg}), code
+
+
+@app.before_request
+def _block_project_mutation_during_move():
+    """Keep editor/Git mutations from racing a verified project relocation."""
+    if request.method not in {"POST", "PUT", "PATCH", "DELETE"}:
+        return None
+    args = request.view_args or {}
+    project = args.get("project") or args.get("name")
+    if project and _project_move_active(project):
+        return _err("Project is being moved. Wait for the move to finish.", 409)
+    return None
 
 
 # v5.1.1 — per-project compile lock. Two concurrent compiles of the same
@@ -97,6 +287,54 @@ _compile_locks_guard = threading.Lock()
 _compile_jobs = {}
 _compile_jobs_guard = threading.Lock()
 _compile_pending_cancels = {}
+_LAST_GOOD_PDF_DIR = ".texlocal-last-good"
+
+
+def _pdf_is_structurally_valid(full):
+    """Cheap guard against truncated compiler output before PDF.js sees it."""
+    try:
+        size = os.path.getsize(full)
+        if size < 16:
+            return False
+        with open(full, "rb") as fh:
+            if fh.read(5) != b"%PDF-":
+                return False
+            fh.seek(max(0, size - 4096))
+            tail = fh.read()
+        return b"startxref" in tail and b"%%EOF" in tail
+    except OSError:
+        return False
+
+
+def _last_good_pdf_path(project_path, pdf_rel):
+    rel = pdf_rel.replace("/", os.sep).replace("\\", os.sep)
+    return _safe_join(project_path, _LAST_GOOD_PDF_DIR, rel)
+
+
+def _atomic_copy_file(source, destination):
+    """Copy a file and expose it at destination only after the copy completes."""
+    parent = os.path.dirname(destination)
+    os.makedirs(parent, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=".texlocal-copy-", suffix=".tmp", dir=parent)
+    os.close(fd)
+    try:
+        shutil.copyfile(source, tmp)
+        os.replace(tmp, destination)
+    finally:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+
+
+def _restore_last_good_pdf(pdf_path, last_good_path):
+    if not last_good_path or not _pdf_is_structurally_valid(last_good_path):
+        return False
+    try:
+        _atomic_copy_file(last_good_path, pdf_path)
+    except OSError:
+        return False
+    return _pdf_is_structurally_valid(pdf_path)
 
 class _CompileCancelled(Exception):
     pass
@@ -177,7 +415,10 @@ def editor():
 @app.route("/api/projects", methods=["GET"])
 def list_projects():
     projects = []
+    registered = PROJECT_LOCATION_STORE.all()
     for name in os.listdir(PROJECTS_DIR):
+        if PROJECT_LOCATION_STORE.get(name) is not None:
+            continue
         path = os.path.join(PROJECTS_DIR, name)
         if not os.path.isdir(path):
             continue
@@ -190,7 +431,26 @@ def list_projects():
         projects.append({
             "name": name,
             "modified": os.path.getmtime(path),
-            "tex_files": tex_count
+            "tex_files": tex_count,
+            "external": False,
+            "unavailable": False,
+        })
+    for name, path in registered.items():
+        available = os.path.isdir(path)
+        tex_count = 0
+        if available:
+            try:
+                for r, dirs, fs in _walk_visible(path):
+                    tex_count += sum(1 for f in fs if f.endswith(".tex"))
+            except Exception:
+                pass
+        projects.append({
+            "name": name,
+            "modified": os.path.getmtime(path) if available else 0,
+            "tex_files": tex_count,
+            "external": True,
+            "unavailable": not available,
+            "location": path,
         })
     projects.sort(key=lambda x: x["modified"], reverse=True)
     return jsonify(projects)
@@ -267,19 +527,63 @@ def create_project():
     data = request.get_json(silent=True) or {}
     name     = data.get("name", "").strip()
     template = data.get("template", "article")
+    location_token = data.get("location_token", "")
     if not name:
         return _err("Name required")
     _reason = _project_name_error(name)
     if _reason:
         return _err(_reason)
-    path = os.path.join(PROJECTS_DIR, name)
-    if os.path.exists(path):
+    if _project_name_in_use(name):
         return _err("Project exists")
-    os.makedirs(path)
-    content = TEMPLATES.get(template, TEMPLATES["article"])
-    with open(os.path.join(path, "main.tex"), "w", encoding="utf-8") as f:
-        f.write(content)
-    return jsonify({"name": name})
+    parent = PROJECTS_DIR_REAL
+    if location_token:
+        parent = consume_project_location_token(location_token)
+        if parent is None:
+            return jsonify({
+                "error": "Folder selection expired. Choose the folder again.",
+                "location_token_consumed": True,
+            }), 400
+        if not os.path.isdir(parent) or not os.access(parent, os.R_OK | os.W_OK):
+            return jsonify({
+                "error": "Selected folder is unavailable or not writable",
+                "location_token_consumed": True,
+            }), 400
+    parent = os.path.realpath(parent)
+    if _project_parent_conflict(parent):
+        return jsonify({
+            "error": "Choose a folder outside an existing TexLocal project.",
+            "location_token_consumed": bool(location_token),
+        }), 400
+    path = os.path.realpath(os.path.join(parent, name))
+    if os.path.normcase(os.path.dirname(path)) != os.path.normcase(parent):
+        return jsonify({
+            "error": "Invalid project location",
+            "location_token_consumed": bool(location_token),
+        }), 400
+    if os.path.exists(path):
+        return jsonify({
+            "error": f'A folder named "{name}" already exists in that location',
+            "location_token_consumed": bool(location_token),
+        }), 400
+    external = os.path.normcase(parent) != os.path.normcase(PROJECTS_DIR_REAL)
+    try:
+        os.makedirs(path)
+        content = TEMPLATES.get(template, TEMPLATES["article"])
+        with open(os.path.join(path, "main.tex"), "w", encoding="utf-8") as f:
+            f.write(content)
+        if external:
+            PROJECT_LOCATION_STORE.register(name, path)
+    except Exception as e:
+        shutil.rmtree(path, ignore_errors=True)
+        return jsonify({
+            "error": f"Could not create project: {e}",
+            "location_token_consumed": bool(location_token),
+        }), 500
+    return jsonify({
+        "name": name,
+        "external": external,
+        "location": path if external else None,
+    })
 
 @app.route("/api/projects/<name>", methods=["DELETE"])
 def delete_project(name):
@@ -287,8 +591,12 @@ def delete_project(name):
         path = _safe_project(name)
     except _PathError as e:
         return _err(str(e))
-    if os.path.exists(path):
-        _rmtree_force(path)
+    external = _is_external_project(name)
+    if not os.path.exists(path):
+        return _err("Project location is unavailable", 404)
+    _rmtree_force(path)
+    if external:
+        PROJECT_LOCATION_STORE.unregister(name)
     return jsonify({"ok": True})
 
 @app.route("/api/projects/<name>/rename", methods=["POST"])
@@ -303,12 +611,21 @@ def rename_project(name):
         src = _safe_project(name)
     except _PathError as e:
         return _err(str(e))
-    dst = os.path.join(PROJECTS_DIR, new_name)
     if not os.path.exists(src):
         return _err("Project not found", 404)
-    if os.path.exists(dst):
+    if _project_name_in_use(new_name):
         return _err("Name already taken")
+    external = _is_external_project(name)
+    dst = os.path.join(os.path.dirname(src), new_name) if external else os.path.join(PROJECTS_DIR, new_name)
+    if os.path.exists(dst):
+        return _err("A folder with that name already exists")
     os.rename(src, dst)
+    if external:
+        try:
+            PROJECT_LOCATION_STORE.rename(name, new_name, dst)
+        except Exception as e:
+            os.rename(dst, src)
+            return _err(f"Could not update project location: {e}", 500)
     return jsonify({"ok": True, "name": new_name})
 
 @app.route("/api/projects/<name>/duplicate", methods=["POST"])
@@ -323,13 +640,128 @@ def duplicate_project(name):
         src = _safe_project(name)
     except _PathError as e:
         return _err(str(e))
-    dst = os.path.join(PROJECTS_DIR, new_name)
     if not os.path.exists(src):
         return _err("Project not found", 404)
-    if os.path.exists(dst):
+    if _project_name_in_use(new_name):
         return _err("Name already taken")
+    external = _is_external_project(name)
+    dst = os.path.join(os.path.dirname(src), new_name) if external else os.path.join(PROJECTS_DIR, new_name)
+    if os.path.exists(dst):
+        return _err("A folder with that name already exists")
     shutil.copytree(src, dst)
+    if external:
+        try:
+            PROJECT_LOCATION_STORE.register(new_name, dst)
+        except Exception as e:
+            shutil.rmtree(dst, ignore_errors=True)
+            return _err(f"Could not register duplicated project: {e}", 500)
     return jsonify({"ok": True, "name": new_name})
+
+
+@app.route("/api/projects/<name>/move", methods=["POST"])
+def move_project(name):
+    """Move one project to a selected parent or back to the default folder."""
+    try:
+        source = _safe_project(name)
+    except _PathError as e:
+        return _err(str(e))
+    if not os.path.isdir(source):
+        return _err("Project location is unavailable", 404)
+
+    move_key = _project_move_key(name)
+    with _project_moves_guard:
+        if move_key in _project_moves:
+            return _err("Project is already being moved.", 409)
+        _project_moves.add(move_key)
+
+    source_external = _is_external_project(name)
+    source_lock = _compile_lock_for(source)
+    if not source_lock.acquire(blocking=False):
+        with _project_moves_guard:
+            _project_moves.discard(move_key)
+        return _err("Wait for the current compile to finish before moving this project.", 409)
+
+    destination_lock = None
+    destination_lock_acquired = False
+    token_consumed = False
+    try:
+        data = request.get_json(silent=True) or {}
+        use_default = bool(data.get("use_default"))
+        location_token = data.get("location_token", "")
+        if use_default:
+            if not source_external:
+                return _err("Project is already in the default folder.")
+            parent = PROJECTS_DIR_REAL
+        else:
+            if not location_token:
+                return _err("Choose a destination folder.")
+            parent = consume_project_location_token(location_token)
+            token_consumed = True
+            if parent is None:
+                return jsonify({
+                    "error": "Folder selection expired. Choose the folder again.",
+                    "location_token_consumed": True,
+                }), 400
+
+        parent = os.path.realpath(parent)
+        if not os.path.isdir(parent) or not os.access(parent, os.R_OK | os.W_OK):
+            return jsonify({
+                "error": "Selected folder is unavailable or not writable",
+                "location_token_consumed": token_consumed,
+            }), 400
+        if _project_parent_conflict(parent):
+            return jsonify({
+                "error": "Choose a folder outside an existing TexLocal project.",
+                "location_token_consumed": token_consumed,
+            }), 400
+
+        destination = os.path.realpath(os.path.join(parent, name))
+        if os.path.normcase(os.path.dirname(destination)) != os.path.normcase(parent):
+            return jsonify({
+                "error": "Invalid project location",
+                "location_token_consumed": token_consumed,
+            }), 400
+        if os.path.normcase(destination) == os.path.normcase(os.path.realpath(source)):
+            return jsonify({
+                "error": "Project is already in that location.",
+                "location_token_consumed": token_consumed,
+            }), 400
+        if os.path.exists(destination):
+            return jsonify({
+                "error": f'A folder named "{name}" already exists in that location.',
+                "location_token_consumed": token_consumed,
+            }), 409
+
+        destination_lock = _compile_lock_for(destination)
+        if not destination_lock.acquire(blocking=False):
+            return jsonify({
+                "error": "The destination is currently busy. Try again.",
+                "location_token_consumed": token_consumed,
+            }), 409
+        destination_lock_acquired = True
+
+        destination_external = os.path.normcase(parent) != os.path.normcase(PROJECTS_DIR_REAL)
+        warning = _move_project_directory(
+            name, source, destination, destination_external
+        )
+        return jsonify({
+            "ok": True,
+            "name": name,
+            "external": destination_external,
+            "location": destination if destination_external else None,
+            "warning": warning,
+        })
+    except (_ProjectMoveError, OSError, ValueError) as e:
+        return jsonify({
+            "error": f"Could not move project: {e}",
+            "location_token_consumed": token_consumed,
+        }), 500
+    finally:
+        if destination_lock_acquired:
+            destination_lock.release()
+        source_lock.release()
+        with _project_moves_guard:
+            _project_moves.discard(move_key)
 
 @app.route("/api/projects/<project>/files", methods=["GET"])
 def list_files(project):
@@ -488,7 +920,7 @@ def import_zip():
     if _reason:
         return _err(_reason)
     project_path = os.path.join(PROJECTS_DIR, name)
-    if os.path.exists(project_path):
+    if _project_name_in_use(name):
         return _err(f'Project "{name}" already exists')
     # v5.1.1 — open + pre-scan BEFORE creating the project dir: a rejected
     # archive must not leave an empty/partial project behind, and the limit
@@ -1103,6 +1535,8 @@ def github_import():
     name = re.sub(r"[^A-Za-z0-9_\- ]", "_", raw).strip() or "imported-repo"
     if not _is_safe_project_name(name):
         return _err("Invalid project name derived from the URL.")
+    if _project_name_in_use(name):
+        return _err(f'A project named "{name}" already exists.', 409)
     try:
         dest = _safe_project(name)
     except _PathError as e:
@@ -1481,6 +1915,49 @@ def cancel_compile(project):
     _terminate_compile_process(process)
     return jsonify({"ok": True, "cancelled": True})
 
+def _strip_tex_comments(source):
+    r"""Remove TeX comments while preserving escaped percent characters.
+
+    This is intentionally a small lexical pass rather than a TeX parser.  It
+    gives compile-tool detection the same essential meaning as TeX: an
+    unescaped ``%`` comments out the rest of the physical line, while ``\%``
+    remains content.  Counting the immediately preceding backslashes also
+    handles ``\\%`` correctly (the percent is unescaped again).
+    """
+    active_lines = []
+    for line in source.splitlines(keepends=True):
+        comment_at = None
+        for index, char in enumerate(line):
+            if char != "%":
+                continue
+            backslashes = 0
+            cursor = index - 1
+            while cursor >= 0 and line[cursor] == "\\":
+                backslashes += 1
+                cursor -= 1
+            if backslashes % 2 == 0:
+                comment_at = index
+                break
+        if comment_at is None:
+            active_lines.append(line)
+        else:
+            # Preserve the newline so commands on the next physical line can
+            # never be joined to the text before the comment marker.
+            newline = "\r\n" if line.endswith("\r\n") else (
+                "\n" if line.endswith("\n") else ""
+            )
+            active_lines.append(line[:comment_at] + newline)
+    return "".join(active_lines)
+
+
+_ACTIVE_ADDBIBRESOURCE_RE = re.compile(
+    r"\\addbibresource\s*(?:\[[^\]]*\]\s*)?\{", re.IGNORECASE
+)
+_ACTIVE_BIBLIOGRAPHY_RE = re.compile(
+    r"\\bibliography\s*\{", re.IGNORECASE
+)
+
+
 def _compile_project_locked(project, compile_job):
     data     = request.get_json(silent=True) or {}
     main_tex = data.get("main", "main.tex")
@@ -1530,6 +2007,77 @@ def _compile_project_locked(project, compile_job):
     rel_dir     = os.path.dirname(main_tex).replace("\\", "/")
     pdf_rel     = (rel_dir + "/" + job + ".pdf") if rel_dir else (job + ".pdf")
     pdf_path    = os.path.join(main_dir, job + ".pdf")
+    log_lines   = []
+    # v5.8.6 — Raw Logs retain every subprocess transcript, but actionable
+    # diagnostics must describe the settled document.  Keep command-sized
+    # chunks so the response can expose the final TeX pass plus the bibliography
+    # tool output without replaying stale citation/reference warnings from an
+    # earlier pass in the same one-click Full Compile.
+    diagnostic_runs = []
+
+    def _diagnostic_log():
+        final_compiler = next(
+            (i for i in range(len(diagnostic_runs) - 1, -1, -1)
+             if diagnostic_runs[i][0] == "compiler"),
+            None,
+        )
+        final_bibliography = next(
+            (i for i in range(len(diagnostic_runs) - 1, -1, -1)
+             if diagnostic_runs[i][0] == "bibliography"),
+            None,
+        )
+        selected = sorted(i for i in (final_compiler, final_bibliography)
+                          if i is not None)
+        if not selected:
+            return "\n".join(log_lines)
+        return "\n".join(
+            line
+            for i in selected
+            for line in diagnostic_runs[i][1]
+        )
+    # v5.8.5p11 — preview has a separate jobname, so TeX otherwise reads
+    # `_tlpreview.aux/.bbl` instead of the full compile's `<base>.aux/.bbl`.
+    # That contradicted the quick-mode contract above: every citation became
+    # `[?]` even when it was valid in the last full compile. Seed the disposable
+    # preview artifacts from the full job before each one-pass preview. Copies
+    # are atomic and strictly one-way; the full artifacts are never modified.
+    if preview:
+        seeded_preview_artifacts = []
+        for ext in (".aux", ".bbl"):
+            source_artifact = os.path.join(main_dir, base + ext)
+            preview_artifact = os.path.join(main_dir, job + ext)
+            if not os.path.isfile(source_artifact):
+                continue
+            try:
+                _atomic_copy_file(source_artifact, preview_artifact)
+                seeded_preview_artifacts.append(ext)
+            except OSError as e:
+                log_lines.append(
+                    f"[preview] couldn't seed {ext} from last full compile: {e}")
+        if seeded_preview_artifacts:
+            log_lines.append(
+                "[preview] seeded last full "
+                + "/".join(seeded_preview_artifacts)
+                + " for refs/citations")
+
+    # v5.8.5p10 — a TeX engine writes the destination PDF in place. If it is
+    # cancelled (or crashes) mid-write, the old valid PDF can become a large
+    # but truncated file which PDF.js rejects on the next app launch. Adopt an
+    # existing valid PDF once, then keep a hidden last-known-good snapshot for
+    # normal/full output. Live preview already has its own disposable jobname.
+    protect_last_good = not preview
+    last_good_path = (_last_good_pdf_path(path, pdf_rel)
+                      if protect_last_good else None)
+    if protect_last_good:
+        if _pdf_is_structurally_valid(pdf_path):
+            if not _pdf_is_structurally_valid(last_good_path):
+                try:
+                    _atomic_copy_file(pdf_path, last_good_path)
+                except OSError as e:
+                    log_lines.append(f"[pdf] couldn't snapshot last good PDF: {e}")
+        elif _pdf_is_structurally_valid(last_good_path):
+            _restore_last_good_pdf(pdf_path, last_good_path)
+
     def _pdf_signature():
         try:
             st = os.stat(pdf_path)
@@ -1538,7 +2086,15 @@ def _compile_project_locked(project, compile_job):
             return None
     pdf_before  = _pdf_signature()
     main_name   = os.path.basename(main_tex)
-    log_lines = []
+
+    def _recover_interrupted_pdf():
+        """Undo a partial in-place write without replacing an untouched PDF."""
+        current_valid = _pdf_is_structurally_valid(pdf_path)
+        output_changed = _pdf_signature() != pdf_before
+        if (protect_last_good and (output_changed or not current_valid)
+                and _restore_last_good_pdf(pdf_path, last_good_path)):
+            return True
+        return current_valid
 
     # Strip UTF-8 BOM from all .tex files before compiling (silent — was logging
     # noise on every compile).
@@ -1619,14 +2175,19 @@ def _compile_project_locked(project, compile_job):
                     pass
             raise
         _last_out["txt"] = (r.stdout or "") + "\n" + (r.stderr or "")
-        log_lines.append("$ " + " ".join(cmd))
+        command_lines = ["$ " + " ".join(cmd)]
         # Separate greppable line (not appended to the `$` line) so
         # parseLatexErrors / existing log consumers see unchanged `$` lines.
-        log_lines.append(f"[time] {cmd[0]} finished in "
-                         f"{time.perf_counter() - _t0:.1f} s")
-        log_lines.append(r.stdout)
+        command_lines.append(f"[time] {cmd[0]} finished in "
+                             f"{time.perf_counter() - _t0:.1f} s")
+        command_lines.append(r.stdout or "")
         if r.stderr:
-            log_lines.append(r.stderr)
+            command_lines.append(r.stderr)
+        log_lines.extend(command_lines)
+        kind = ("compiler" if cmd[0] == compiler else
+                "bibliography" if cmd[0] in ("bibtex", "biber") else
+                "other")
+        diagnostic_runs.append((kind, command_lines))
         return r.returncode
 
     # ── Inline-command argument builder ──────────────────────────────
@@ -1684,10 +2245,11 @@ def _compile_project_locked(project, compile_job):
                             src = fh.read()
                     except Exception:
                         continue
-                    if "\\addbibresource{" in src:
+                    active_src = _strip_tex_comments(src)
+                    if _ACTIVE_ADDBIBRESOURCE_RE.search(active_src):
                         has_bib_cmd = True
                         needs_biber = True
-                    elif "\\bibliography{" in src:
+                    elif _ACTIVE_BIBLIOGRAPHY_RE.search(active_src):
                         has_bib_cmd = True
 
         run_bib = (use_bib or (bib_files and has_bib_cmd)) and not quick  # v5.7.0
@@ -1765,13 +2327,24 @@ def _compile_project_locked(project, compile_job):
             state_prev = _aux_state()
             run_compile()                             # pass 1 — always
             state_cur = _aux_state()
-            need_more = (state_cur != state_prev) or _rerun_requested()
+            # v5.8.5p9 — a failed compiler pass cannot be repaired by replaying
+            # it with the same inputs. Failure often truncates/changes .aux (and
+            # may still print "Rerun"), which previously fooled the smart-pass
+            # loop into running bibtex plus up to three more doomed passes.
+            # Preserve any recovered PDF, but stop the pipeline immediately.
+            need_more = (final_compile_rc == 0) and (
+                (state_cur != state_prev) or _rerun_requested()
+            )
 
-            if run_bib and bib_files:
+            if final_compile_rc == 0 and run_bib and bib_files:
                 # bibtex/biber must run in the same dir as the .aux (= main_dir)
                 bib_rc = run(["biber", base] if needs_biber else ["bibtex", base])
                 if bib_rc != 0:
-                    log_lines.append(f"Warning: bib tool exited with code {bib_rc}")
+                    bib_warning = f"Warning: bib tool exited with code {bib_rc}"
+                    log_lines.append(bib_warning)
+                    # Keep the tool-level failure beside its transcript in the
+                    # diagnostic-only view as well as in the complete Raw Log.
+                    diagnostic_runs[-1][1].append(bib_warning)
                 state_bib = _aux_state()
                 if state_bib != state_cur:            # .bbl changed → must re-read it
                     need_more = True
@@ -1783,9 +2356,17 @@ def _compile_project_locked(project, compile_job):
                 state_prev = state_cur
                 run_compile()
                 state_cur = _aux_state()
+                if final_compile_rc != 0:
+                    need_more = False
+                    break
                 need_more = (state_cur != state_prev) or _rerun_requested()
 
-            if need_more:
+            if final_compile_rc != 0:
+                log_lines.append("[passes] stopped after "
+                                 f"{1 + extra} compiler pass(es) — {compiler} "
+                                 f"exited with code {final_compile_rc}; "
+                                 "no further reruns")
+            elif need_more:
                 log_lines.append("[passes] aux still changing after "
                                  f"{1 + extra} passes — stopped at the cap "
                                  "(oscillating package? refs may need one more compile)")
@@ -1798,9 +2379,28 @@ def _compile_project_locked(project, compile_job):
         # explicitly recovered; an unchanged old PDF remains unavailable to
         # the success path.
         pdf_after = _pdf_signature()
-        pdf_available = pdf_after is not None
-        pdf_fresh = pdf_available and pdf_after != pdf_before
+        pdf_valid = _pdf_is_structurally_valid(pdf_path)
+        pdf_fresh = pdf_valid and pdf_after != pdf_before
         process_ok = final_compile_rc == 0
+
+        # Promote only a structurally complete, successful output. A non-zero
+        # nonstopmode run may still yield a complete PDF; keep reporting that
+        # as recovered, but don't let it replace the durable known-good copy.
+        if protect_last_good and process_ok and pdf_fresh:
+            try:
+                _atomic_copy_file(pdf_path, last_good_path)
+            except OSError as e:
+                log_lines.append(f"[pdf] couldn't update last good PDF: {e}")
+        elif not pdf_valid:
+            restored = _restore_last_good_pdf(pdf_path, last_good_path)
+            if restored:
+                log_lines.append("[pdf] incomplete output discarded; restored last good PDF")
+            pdf_valid = _pdf_is_structurally_valid(pdf_path)
+            # A restored older PDF is available to view, but it is not output
+            # from this compile and must never enter the success/recovered path.
+            pdf_fresh = False
+
+        pdf_available = pdf_valid
         payload = {
             "ok": bool(process_ok and pdf_fresh),
             "process_ok": process_ok,
@@ -1809,20 +2409,29 @@ def _compile_project_locked(project, compile_job):
             "recovered": bool(pdf_fresh and not process_ok),
             "return_code": final_compile_rc,
             "log": "\n".join(log_lines),
+            "diagnostic_log": _diagnostic_log(),
         }
         if pdf_available:
             payload["pdf"] = pdf_rel
         return jsonify(payload)
 
     except _CompileCancelled:
+        pdf_available = _recover_interrupted_pdf()
         return jsonify({"ok": False, "cancelled": True,
-                        "process_ok": False, "pdf_available": _pdf_signature() is not None,
+                        "process_ok": False, "pdf_available": pdf_available,
                         "pdf_fresh": False, "recovered": False,
-                        "return_code": 130, "log": "\n".join(log_lines)})
+                        "return_code": 130, "log": "\n".join(log_lines),
+                        "diagnostic_log": _diagnostic_log()})
     except FileNotFoundError:
-        return jsonify({"ok": False, "log": f"{compiler} not found. Install TeX Live or MiKTeX."})
+        _recover_interrupted_pdf()
+        message = f"{compiler} not found. Install TeX Live or MiKTeX."
+        return jsonify({"ok": False, "log": message,
+                        "diagnostic_log": message})
     except Exception as e:
-        return jsonify({"ok": False, "log": str(e)})
+        _recover_interrupted_pdf()
+        message = str(e)
+        return jsonify({"ok": False, "log": message,
+                        "diagnostic_log": message})
 
 @app.route("/api/projects/<project>/synctex/forward", methods=["GET"])
 def synctex_forward(project):
@@ -2140,19 +2749,21 @@ from texlocal_bib import (
 from texlocal_stats import build_stats_md   # v5.1.0 STATS.md export
 
 def _build_cite_data(path):
-    """Return {bibkeys, labels, commands, environments} aggregated over all
-    .bib and .tex files in path."""
+    """Return citation/reference editor data aggregated over project sources."""
     bibkeys = []
     labels  = []
+    citations = []
     commands = []
     environments = []
     seen_keys   = set()
     seen_labels = set()
+    seen_citations = set()
     seen_cmds   = set()
     seen_envs   = set()
     for root, dirs, files in _walk_visible(path):
         for f in files:
             full = os.path.join(root, f)
+            rel = os.path.relpath(full, path).replace("\\", "/")
             if f.endswith(".bib"):
                 try:
                     with open(full, "r", encoding="utf-8", errors="replace") as fh:
@@ -2163,9 +2774,8 @@ def _build_cite_data(path):
                     if e["key"] in seen_keys:
                         continue
                     seen_keys.add(e["key"])
-                    bibkeys.append(e)
+                    bibkeys.append({**e, "file": rel})
             elif f.endswith(".tex"):
-                rel = os.path.relpath(full, path).replace("\\", "/")
                 try:
                     with open(full, "r", encoding="utf-8", errors="replace") as fh:
                         for lineno, line in enumerate(fh, start=1):
@@ -2184,6 +2794,21 @@ def _build_cite_data(path):
                                 if name and name not in seen_cmds:
                                     seen_cmds.add(name)
                                     commands.append("\\" + name)
+                            code = _strip_tex_comment(line)
+                            if "cite" in code:
+                                for m in _CITE_CMD_RE.finditer(code):
+                                    for part in m.group(1).split(","):
+                                        key = part.strip()
+                                        citation_id = (key, rel, lineno)
+                                        if (not key or key == "*"
+                                                or citation_id in seen_citations):
+                                            continue
+                                        seen_citations.add(citation_id)
+                                        citations.append({
+                                            "key": key,
+                                            "file": rel,
+                                            "line": lineno,
+                                        })
                             for m in _ENV_DEF_RE.finditer(line):
                                 env = next((g for g in m.groups() if g), None)
                                 if env:
@@ -2197,7 +2822,8 @@ def _build_cite_data(path):
     labels.sort(key=lambda e: e["name"].lower())
     commands.sort(key=str.lower)
     environments.sort(key=str.lower)
-    return {"bibkeys": bibkeys, "labels": labels,
+    citations.sort(key=lambda e: (e["key"].lower(), e["file"], e["line"]))
+    return {"bibkeys": bibkeys, "labels": labels, "citations": citations,
             "commands": commands, "environments": environments}
 
 # ── v4.9.0 — Bibliography audit (cite/bib cross-check) ────────────────
@@ -2277,7 +2903,7 @@ def includes(project):
 
 @app.route("/api/projects/<project>/cite-data", methods=["GET"])
 def cite_data(project):
-    """Aggregated autocomplete data for \\cite{...} and \\ref{...} hints.
+    """Aggregated autocomplete and source-location data for citations/refs.
     Cached by the max mtime among .bib + .tex files; reparses only when
     something changed since the last call."""
     try:
@@ -2285,7 +2911,7 @@ def cite_data(project):
     except _PathError as e:
         return _err(str(e))
     if not os.path.exists(path):
-        return jsonify({"bibkeys": [], "labels": []})
+        return jsonify({"bibkeys": [], "labels": [], "citations": []})
     # Cheapest refresh signal — walk once and take the max mtime
     latest = 0.0
     for root, dirs, files in _walk_visible(path):
@@ -3038,16 +3664,30 @@ def raw_file(project):
 def get_pdf(project):
     filename = request.args.get("file", "main.pdf")
     try:
-        full = _safe_join(_safe_project(project), filename)
+        project_path = _safe_project(project)
+        full = _safe_join(project_path, filename)
     except _PathError:
         return "Invalid path", 400
     # v5.1.1 — this endpoint serves exactly one thing: a compiled PDF.
     if _has_dot_segment(filename) or not filename.lower().endswith(".pdf"):
         return "Invalid path", 400
-    if not os.path.isfile(full):
+    last_good = _last_good_pdf_path(project_path, filename)
+    if _pdf_is_structurally_valid(full):
+        served = full
+        source = "current"
+    elif _pdf_is_structurally_valid(last_good):
+        # A previous process/app shutdown may have prevented the compile
+        # exception handler from restoring the file. Serve the durable copy
+        # directly so PDF.js never receives the truncated current file.
+        served = last_good
+        source = "last-good"
+    elif os.path.isfile(full):
+        return "PDF is incomplete or invalid", 422
+    else:
         return "PDF not found", 404
-    resp = send_file(full, mimetype="application/pdf")
+    resp = send_file(served, mimetype="application/pdf")
     resp.headers["X-Content-Type-Options"] = "nosniff"
+    resp.headers["X-TexLocal-PDF-Source"] = source
     return resp
 
 
