@@ -4,7 +4,13 @@ All notable changes to TexLocal are documented here.
 
 ---
 
-## v6.0.0 — 2026-07-18
+## v6.0.1 — 2026-07-20
+
+### Smaller, lighter install
+- The installer and installed app are now much smaller — roughly 80 MB of unused Qt graphics libraries that were being bundled by accident have been removed. Nothing changes in how TexLocal looks or works; it just downloads faster and takes far less disk space.
+
+### Fixes
+- The compile error panel now points to the correct **source file** (not just the line number) for errors like "Undefined control sequence", even when your project sits in a deeply nested folder. Previously a long project path could make the error jump land on the wrong file.
 
 ## v6.0.0 — 2026-07-18
 
