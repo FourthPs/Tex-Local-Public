@@ -2,7 +2,7 @@
 
 A lightweight, self-hosted LaTeX editor that runs entirely on your own machine — no internet dependency, no compile timeout, full multi-file project support. Use it as a browser app or install the standalone Windows desktop build with bundled MiKTeX.
 
-![Version](https://img.shields.io/badge/version-6.0.1-informational)
+![Version](https://img.shields.io/badge/version-6.0.2-informational)
 ![Python](https://img.shields.io/badge/Python-3.10--3.12-blue)
 ![Flask](https://img.shields.io/badge/Flask-3.1-lightgrey)
 ![Platform](https://img.shields.io/badge/Desktop-Windows-0078d6)
@@ -94,7 +94,7 @@ A lightweight, self-hosted LaTeX editor that runs entirely on your own machine �
 
 ### A) Windows Desktop App (recommended)
 
-Download **`TexLocal-Setup-6.0.1.exe`** from the [Releases page](https://github.com/FourthPs/Tex-Local-Public/releases) and run it. Per-user install (no admin required), bundles a portable MiKTeX — nothing else to set up. The app opens in a native window and checks for updates automatically on launch. v6.0.1 adds a much smaller installer and an error-panel fix on top of v6.0.0's complete move to CodeMirror 6, packaged backend, and validated GitHub backup flow.
+Download **`TexLocal-Setup-6.0.2.exe`** from the [Releases page](https://github.com/FourthPs/Tex-Local-Public/releases) and run it. Per-user install (no admin required), bundles a portable MiKTeX — nothing else to set up. The app opens in a native window and checks for updates automatically on launch. v6.0.1 adds a much smaller installer and an error-panel fix on top of v6.0.0's complete move to CodeMirror 6, packaged backend, and validated GitHub backup flow.
 
 ### B) From Source
 

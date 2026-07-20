@@ -4,6 +4,11 @@ All notable changes to TexLocal are documented here.
 
 ---
 
+## v6.0.2 — 2026-07-21
+
+### Much smaller installed footprint
+- The installed app now takes about **530 MB less disk space** (roughly 987 MB → 457 MB). TexLocal bundles one MiKTeX engine under many command names, and the installer used to write each as a full copy; a new post-install step restores them to NTFS hardlinks instead. Every LaTeX command still resolves to byte-identical content — nothing is downloaded and nothing is removed. The step runs automatically and offline, and is skipped safely on non-NTFS drives, so it can never fail your install.
+
 ## v6.0.1 — 2026-07-20
 
 ### Smaller, lighter install
