@@ -2,9 +2,9 @@
 
 A lightweight, self-hosted LaTeX editor that runs entirely on your own machine — no internet dependency, no compile timeout, full multi-file project support. Use it as a browser app or install the standalone Windows desktop build with bundled MiKTeX.
 
-![Version](https://img.shields.io/badge/version-6.0.2-informational)
-![Python](https://img.shields.io/badge/Python-3.10--3.12-blue)
-![Flask](https://img.shields.io/badge/Flask-3.1-lightgrey)
+![Version](https://img.shields.io/badge/version-7.1.0-informational)
+![Release Runtime](https://img.shields.io/badge/release-Go-00ADD8)
+![Source Snapshot](https://img.shields.io/badge/source-Python%205.8.7-blue)
 ![Platform](https://img.shields.io/badge/Desktop-Windows-0078d6)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
@@ -56,6 +56,9 @@ A lightweight, self-hosted LaTeX editor that runs entirely on your own machine �
 - **Closable, resumable tabs** — × / middle-click to close; reopens your last file and cursor line when you reopen a project
 - **User-macro autocomplete** — your own `\newcommand` / `\newenvironment` definitions are suggested as you type
 - **Auto-save** — every 800 ms; manual save with `Ctrl+S`
+- **Safe multi-tab editing** — one tab owns project writes at a time; other
+  same-project tabs are read-only until an explicit warned takeover, and stale
+  buffers are rejected instead of overwriting newer disk content
 
 > The editor runs exclusively on CodeMirror 6. The retired CodeMirror 5 fallback and vendored assets were removed during the source v6.0.0 line.
 
@@ -74,6 +77,9 @@ A lightweight, self-hosted LaTeX editor that runs entirely on your own machine �
 
 ### Project Tools
 - **File manager** — create, rename, delete files/folders; drag-and-drop upload
+- **Local History** — automatic text-file checkpoints, A/M/D comparison,
+  Milestones, exact-byte Restore with a reversible pre-restore checkpoint,
+  Save as copy, retention controls, and corruption-safe storage cleanup
 - **Image viewer** — preview image files inline
 - **Import / Export ZIP** — import an Overleaf-exported ZIP; export a clean project ZIP
 - **Writing goals & word count** — per-project goals tracking with live word count
@@ -84,6 +90,10 @@ A lightweight, self-hosted LaTeX editor that runs entirely on your own machine �
 ### GitHub & Packages
 - **Sign in with GitHub** in-app (device-flow, no CLI) and **back up a project** in one click — git init + LaTeX-aware `.gitignore` + commit + create repo + push (private by default)
 - **Import from GitHub** and **pull remote changes** (auto-stashes your local edits)
+- **Safe remote recovery** — clearly distinguishes healthy, local-only,
+  unlinked, inaccessible, empty, moved, diverged, and unrelated-history states;
+  recovery is explicit and preserves local commits, project bytes, and Local
+  History when validation fails
 - **Package manager panel** — see the packages your document uses, check what's installed, and open MiKTeX / TeX Live to add any that are missing
 
 > GitHub sign-in and Grammar mode work best in browser/source mode; Grammar mode is browser-only (it relies on browser grammar extensions).
@@ -94,7 +104,43 @@ A lightweight, self-hosted LaTeX editor that runs entirely on your own machine �
 
 ### A) Windows Desktop App (recommended)
 
-Download **`TexLocal-Setup-6.0.2.exe`** from the [Releases page](https://github.com/FourthPs/Tex-Local-Public/releases) and run it. Per-user install (no admin required), bundles a portable MiKTeX — nothing else to set up. The app opens in a native window and checks for updates automatically on launch. v6.0.1 adds a much smaller installer and an error-panel fix on top of v6.0.0's complete move to CodeMirror 6, packaged backend, and validated GitHub backup flow.
+Download **`TexLocal-Setup-7.1.0.exe`** from the
+[Releases page](https://github.com/FourthPs/Tex-Local-Public/releases) and run
+it. The current-user installer requires no administrator account and includes
+the portable MiKTeX environment used for local compilation.
+
+The v7.1.0 installer provides two Start Menu entries backed by the same projects
+and protected backend:
+
+- **TexLocal** opens the native WebView2 desktop window.
+- **TexLocal Web** opens the editor in the default browser and provides a tray
+  icon for Open/Exit.
+
+Only one Desktop or Web owner runs at a time. Clear in-app notices explain which
+mode is active and how to switch. Browser tabs have a separate per-project
+writer rule, so different projects can be edited simultaneously without letting
+two same-project tabs silently overwrite each other.
+
+> **Windows security notice:** the v7.1.0 installer is not currently
+> Authenticode-signed, so Windows SmartScreen may display a warning. Download it
+> only from the official Releases page and verify the SHA-256 checksum published
+> with the release.
+
+#### Upgrading from an older all-users installation
+
+Older TexLocal builds may be registered for all Windows users, while v7.1.0 is
+a current-user installation. Back up your projects, uninstall the older
+all-users entry, and then install v7.1.0. Installing directly over the old entry
+can leave conflicting uninstall registrations. Project folders are preserved by
+the current installer design, but an external backup is still recommended.
+
+#### v7.1.0 installer checksum
+
+`TexLocal-Setup-7.1.0.exe`
+
+SHA-256:
+
+`8bff8c333dba62304c2d574b0c45a5eda65a8f1dd6f993e8029cf0404f36d799`
 
 ### B) From Source
 
@@ -114,7 +160,10 @@ pip install -r requirements.txt
 python texlocal.py
 ```
 
-> **Note:** the source in this repository is currently a **v5.8.7 snapshot** (the last release before the v6.0.0 internal restructure). The v6.0.0 changes ship in the installer first; the restructured source will be published here once it has settled.
+> **Source availability note:** this public repository currently retains the
+> **v5.8.7 Python source snapshot**. The v7.1.0 Go application is distributed as
+> the Windows installer above; do not expect the source-mode commands in this
+> section to reproduce the v7.1.0 desktop runtime.
 
 **4. Open** `http://texlocal.localhost:52839` (opens automatically; `http://127.0.0.1:52839` also works)
 
@@ -160,16 +209,14 @@ To compile documents with Thai text, use **XeLaTeX** and install Thai fonts such
 
 ## Tech Stack
 
-| Layer     | Technology                           |
-|-----------|--------------------------------------|
-| Backend   | Python + Flask                       |
-| Desktop   | PyWebView + PyInstaller + Inno Setup |
-| Frontend  | Vanilla HTML / CSS / JavaScript      |
-| Editor    | CodeMirror 6 (stex mode)             |
-| PDF       | pdf.js                               |
-| Spell     | Typo.js (Hunspell)                   |
-| LaTeX     | pdflatex / xelatex / lualatex (MiKTeX) |
-| Fonts     | JetBrains Mono + Sora                |
+| Layer | v7.1.0 release | Public source snapshot |
+|-------|----------------|------------------------|
+| Backend | Go `net/http` | Python + Flask |
+| Desktop | Go + WebView2 + Inno Setup | PyWebView |
+| Frontend | Vanilla HTML / CSS / JavaScript | Vanilla HTML / CSS / JavaScript |
+| Editor | CodeMirror 6 (stex mode) | CodeMirror 6 (stex mode) |
+| PDF | pdf.js | pdf.js |
+| LaTeX | pdflatex / xelatex / lualatex (bundled MiKTeX) | System LaTeX distribution |
 
 ---
 
@@ -179,6 +226,7 @@ TexLocal bundles or links the following open-source libraries:
 
 | Library | License |
 |---------|---------|
+| Go webview2 | MIT |
 | Flask | BSD-3-Clause |
 | CodeMirror 6 | MIT |
 | pdf.js | Apache-2.0 |

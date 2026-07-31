@@ -4,6 +4,88 @@ All notable changes to TexLocal are documented here.
 
 ---
 
+## v7.1.0 — 2026-08-01
+
+### New Go desktop runtime
+
+- TexLocal's installed Windows application now runs on the Go v7 runtime with
+  an embedded web interface and native WebView2 desktop shell.
+- The installer adds **TexLocal** for the native desktop window and **TexLocal
+  Web** for the default browser. Both entries share one protected backend and
+  the same Production projects.
+- Cross-mode notices explain which owner is active. Reopening the active mode is
+  quiet, while switching modes requires exiting the current owner first.
+
+### Local History
+
+- Automatic, default-on checkpoints protect supported visible UTF-8 text files
+  without placing project history on a remote service.
+- A full-screen timeline shows added, modified, and deleted text files and lets
+  you compare earlier content.
+- Milestones can be retained explicitly. Automatic retention and a storage cap
+  prevent unbounded growth.
+- Restore is exact-byte and creates a reversible **Before restore** checkpoint.
+  **Save as copy** restores content without overwriting the current file.
+- History storage uses deduplicated objects, validation, atomic publication,
+  and crash-safe cleanup. Binary files are outside the Local History scope.
+
+### Safer editing in multiple tabs
+
+- The first Editor tab to open a project owns its writes. Another tab for the
+  same project is read-only until it explicitly takes over after a warning.
+- Tabs on different projects can remain writable at the same time.
+- Autosave carries a file revision; stale buffers receive a conflict response
+  instead of silently replacing newer disk content.
+
+### GitHub backup and recovery
+
+- GitHub status now distinguishes healthy, local-only, unlinked, inaccessible,
+  empty, moved, diverged, and unrelated-history repositories.
+- Backup results truthfully distinguish remote sync, a successful local-only
+  commit, nothing new to commit, and failure before commit.
+- Missing or inaccessible remotes provide explicit Retry, reconnect,
+  replacement-repository, and disconnect actions.
+- Candidate remotes are validated before `origin` is changed. Failed recovery
+  leaves HEAD, origin, project bytes, and Local History untouched.
+- Concurrent Git operations on one project are rejected cleanly, and sensitive
+  credentials or authorization data are redacted from diagnostics.
+
+### Windows installation
+
+- v7.1.0 installs for the current Windows user and does not require an
+  administrator account.
+- The installer includes the portable MiKTeX environment used for local
+  compilation and keeps projects outside uninstall cleanup.
+- Users upgrading from an older all-users installation should back up their
+  projects, uninstall the older entry, and then install v7.1.0. Installing
+  directly over an all-users registration can leave conflicting uninstall
+  records.
+
+### Validation
+
+- Full serialized Go tests and Go vet passed.
+- GitHub recovery, Local History, stale-write, and writer-ownership regression
+  suites passed.
+- Installed Test and Production builds passed TLS/runtime smoke tests, bundled
+  MiKTeX compilation, and project/Local History preservation checks.
+
+### Download verification
+
+- Installer: `TexLocal-Setup-7.1.0.exe`
+- Size: `156,293,140 bytes`
+- SHA-256:
+  `8bff8c333dba62304c2d574b0c45a5eda65a8f1dd6f993e8029cf0404f36d799`
+- Packaged build revision:
+  `7b195529cbab782bfc156dddd5c9e2f2e9e33f2e`
+
+The installer is not currently Authenticode-signed. Windows SmartScreen may
+display a warning; download only from the official Releases page and verify the
+published SHA-256 checksum.
+
+> **Source availability:** this public repository continues to expose the
+> v5.8.7 Python source snapshot. The v7.1.0 Go application is distributed as the
+> Windows installer.
+
 ## v6.0.2 — 2026-07-21
 
 ### Much smaller installed footprint
