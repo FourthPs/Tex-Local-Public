@@ -2,7 +2,7 @@
 
 A lightweight, self-hosted LaTeX editor that runs entirely on your own machine — no internet dependency, no compile timeout, full multi-file project support. Use it as a browser app or install the standalone Windows desktop build with bundled MiKTeX.
 
-![Version](https://img.shields.io/badge/version-7.1.0-informational)
+![Version](https://img.shields.io/badge/version-7.1.3-informational)
 ![Release Runtime](https://img.shields.io/badge/release-Go-00ADD8)
 ![Source Snapshot](https://img.shields.io/badge/source-Python%205.8.7-blue)
 ![Platform](https://img.shields.io/badge/Desktop-Windows-0078d6)
@@ -76,7 +76,7 @@ A lightweight, self-hosted LaTeX editor that runs entirely on your own machine �
 - **SyncTeX** — forward search (`Ctrl+Alt+→`) and backward search (Ctrl-click in the PDF jumps to the source line)
 
 ### Project Tools
-- **File manager** — create, rename, delete files/folders; drag-and-drop upload
+- **File manager** — create, rename, delete files/folders; drag files and folders within a project; drag-and-drop upload
 - **Local History** — automatic text-file checkpoints, A/M/D comparison,
   Milestones, exact-byte Restore with a reversible pre-restore checkpoint,
   Save as copy, retention controls, and corruption-safe storage cleanup
@@ -104,12 +104,12 @@ A lightweight, self-hosted LaTeX editor that runs entirely on your own machine �
 
 ### A) Windows Desktop App (recommended)
 
-Download **`TexLocal-Setup-7.1.0.exe`** from the
+Download **`TexLocal-Setup-7.1.3.exe`** from the
 [Releases page](https://github.com/FourthPs/Tex-Local-Public/releases) and run
 it. The current-user installer requires no administrator account and includes
 the portable MiKTeX environment used for local compilation.
 
-The v7.1.0 installer provides two Start Menu entries backed by the same projects
+The v7 installer provides two Start Menu entries backed by the same projects
 and protected backend:
 
 - **TexLocal** opens the native WebView2 desktop window.
@@ -121,7 +121,7 @@ mode is active and how to switch. Browser tabs have a separate per-project
 writer rule, so different projects can be edited simultaneously without letting
 two same-project tabs silently overwrite each other.
 
-> **Windows security notice:** the v7.1.0 installer is not currently
+> **Windows security notice:** the v7.1.3 installer is not currently
 > Authenticode-signed, so Windows SmartScreen may display a warning. Download it
 > only from the official Releases page and verify the SHA-256 checksum published
 > with the release.
@@ -134,13 +134,13 @@ all-users entry, and then install v7.1.0. Installing directly over the old entry
 can leave conflicting uninstall registrations. Project folders are preserved by
 the current installer design, but an external backup is still recommended.
 
-#### v7.1.0 installer checksum
+#### v7.1.3 installer checksum
 
-`TexLocal-Setup-7.1.0.exe`
+`TexLocal-Setup-7.1.3.exe`
 
 SHA-256:
 
-`8bff8c333dba62304c2d574b0c45a5eda65a8f1dd6f993e8029cf0404f36d799`
+`187a3779a8fc9d85c10f50a6163f9d546583d5e518cbb2a5a2f3fd8b88ab548f`
 
 ### B) From Source
 
@@ -161,9 +161,9 @@ python texlocal.py
 ```
 
 > **Source availability note:** this public repository currently retains the
-> **v5.8.7 Python source snapshot**. The v7.1.0 Go application is distributed as
+> **v5.8.7 Python source snapshot**. The v7.1.3 Go application is distributed as
 > the Windows installer above; do not expect the source-mode commands in this
-> section to reproduce the v7.1.0 desktop runtime.
+> section to reproduce the v7.1.3 desktop runtime.
 
 **4. Open** `http://texlocal.localhost:52839` (opens automatically; `http://127.0.0.1:52839` also works)
 
@@ -209,7 +209,7 @@ To compile documents with Thai text, use **XeLaTeX** and install Thai fonts such
 
 ## Tech Stack
 
-| Layer | v7.1.0 release | Public source snapshot |
+| Layer | v7.1.3 release | Public source snapshot |
 |-------|----------------|------------------------|
 | Backend | Go `net/http` | Python + Flask |
 | Desktop | Go + WebView2 + Inno Setup | PyWebView |

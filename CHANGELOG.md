@@ -4,6 +4,18 @@ All notable changes to TexLocal are documented here.
 
 ---
 
+## v7.1.3 — 2026-09-24
+
+- Cancelling a compile restores previous auxiliary files, removes new partial
+  auxiliary files, and preserves the last good PDF so compilation can restart.
+- Folders can be dragged to another folder or the project root in the File
+  panel. Open tabs and the selected main file follow the new path. LaTeX paths
+  written inside `.tex` files must be updated manually.
+- Native PDF, ZIP, and LOG Save dialogs now offer matching file types and an
+  All files option. Missing file extensions are restored, while duplicates are
+  avoided.
+- The installer is unsigned, as with previous v7 releases.
+
 ## v7.1.0 — 2026-08-01
 
 ### New Go desktop runtime
